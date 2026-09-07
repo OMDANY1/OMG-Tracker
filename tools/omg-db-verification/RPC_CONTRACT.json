@@ -1,0 +1,386 @@
+[
+  {
+    "function_name": "accept_workspace_invitation",
+    "arguments": "p_raw_token text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "add_task_collaborator",
+    "arguments": "p_task_id uuid, p_roster_person_id uuid, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "archive_campaign",
+    "arguments": "p_campaign_id uuid, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "archive_client",
+    "arguments": "p_workspace_id uuid, p_client_id uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "bootstrap_owner",
+    "arguments": "p_workspace_id uuid, p_owner_user_id uuid, p_roster_person_id uuid",
+    "result": "jsonb",
+    "authenticated_execute": false,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "change_task_assignee",
+    "arguments": "p_task_id uuid, p_new_assignee_id uuid, p_reason text DEFAULT 'Reassigned by management'::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "change_task_due_date",
+    "arguments": "p_task_id uuid, p_new_due_date timestamp with time zone, p_reason text DEFAULT 'Due date updated'::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "change_task_reviewer",
+    "arguments": "p_task_id uuid, p_new_reviewer_id uuid, p_reason text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_campaign",
+    "arguments": "p_workspace_id uuid, p_client_id uuid, p_title text, p_objective text DEFAULT NULL::text, p_brief text DEFAULT NULL::text, p_start_date date DEFAULT NULL::date, p_due_date date DEFAULT NULL::date, p_status campaign_status DEFAULT 'Draft'::campaign_status, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_client",
+    "arguments": "p_workspace_id uuid, p_name text, p_owner_roster_id uuid DEFAULT NULL::uuid, p_difficulty client_difficulty DEFAULT 'Medium'::client_difficulty, p_extra_workload client_extra_workload DEFAULT 'None'::client_extra_workload, p_state client_state DEFAULT 'Active'::client_state, p_notes text DEFAULT NULL::text, p_brand_guide_url text DEFAULT NULL::text, p_brief_url text DEFAULT NULL::text, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_manual_time_entry",
+    "arguments": "p_task_id uuid, p_started_at timestamp with time zone, p_ended_at timestamp with time zone, p_category time_category DEFAULT 'initial_design'::time_category, p_note text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_review_routing_rule",
+    "arguments": "p_workspace_id uuid, p_priority integer, p_designer_roster_id uuid, p_client_difficulty client_difficulty, p_reviewer_roster_id uuid, p_fallback_reviewer_id uuid, p_is_workspace_default boolean DEFAULT false, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_roster_person",
+    "arguments": "p_workspace_id uuid, p_display_name text, p_job_title text, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_task",
+    "arguments": "p_workspace_id uuid, p_client_id uuid, p_campaign_id uuid DEFAULT NULL::uuid, p_title text DEFAULT ''::text, p_deliverable_type text DEFAULT NULL::text, p_deliverable_number text DEFAULT NULL::text, p_priority task_priority DEFAULT 'Normal'::task_priority, p_primary_assignee_id uuid DEFAULT NULL::uuid, p_reviewer_id uuid DEFAULT NULL::uuid, p_due_at timestamp with time zone DEFAULT NULL::timestamp with time zone, p_estimated_minutes integer DEFAULT NULL::integer, p_brief text DEFAULT NULL::text, p_description text DEFAULT NULL::text, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_task_attachment",
+    "arguments": "p_task_id uuid, p_file_name text, p_storage_path text, p_file_size_bytes bigint, p_mime_type text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_task_checklist_item",
+    "arguments": "p_task_id uuid, p_title text, p_sort_order integer DEFAULT 0, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_task_rpc",
+    "arguments": "p_workspace_id uuid, p_client_id uuid, p_campaign_id uuid DEFAULT NULL::uuid, p_title text DEFAULT ''::text, p_brief text DEFAULT NULL::text, p_description text DEFAULT NULL::text, p_deliverable_format text DEFAULT NULL::text, p_deliverable_number text DEFAULT ''::text, p_priority task_priority DEFAULT 'Normal'::task_priority, p_primary_assignee_id uuid DEFAULT NULL::uuid, p_reviewer_id uuid DEFAULT NULL::uuid, p_due_date timestamp with time zone DEFAULT NULL::timestamp with time zone, p_estimated_hours numeric DEFAULT NULL::numeric, p_working_file_url text DEFAULT NULL::text, p_reference_urls text[] DEFAULT '{}'::text[], p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "create_workspace_invitation",
+    "arguments": "p_workspace_id uuid, p_email text, p_role roster_role, p_roster_person_id uuid, p_idempotency_key text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "decide_review_round",
+    "arguments": "p_decision review_decision, p_round_id uuid DEFAULT NULL::uuid, p_review_round_id uuid DEFAULT NULL::uuid, p_feedback text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "decide_time_correction",
+    "arguments": "p_request_id uuid, p_decision correction_status, p_review_notes text DEFAULT NULL::text, p_rejection_reason text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "delete_review_routing_rule",
+    "arguments": "p_workspace_id uuid, p_rule_id uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "delete_task_attachment",
+    "arguments": "p_attachment_id uuid, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "delete_task_checklist_item",
+    "arguments": "p_item_id uuid, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "finalize_monthly_report_snapshot",
+    "arguments": "p_workspace_id uuid, p_month_key text, p_management_commentary jsonb DEFAULT '{}'::jsonb, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "generate_campaign_posts",
+    "arguments": "p_workspace_id uuid, p_campaign_id uuid, p_client_id uuid, p_post_count integer DEFAULT 12, p_deliverable_type text DEFAULT 'Post'::text, p_priority task_priority DEFAULT 'Normal'::task_priority, p_primary_assignee_id uuid DEFAULT NULL::uuid, p_reviewer_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "generate_monthly_report_draft",
+    "arguments": "p_workspace_id uuid, p_month_key text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "manage_leave_day",
+    "arguments": "p_workspace_id uuid, p_roster_person_id uuid, p_leave_date date, p_hours numeric, p_leave_type leave_type DEFAULT 'annual'::leave_type, p_action text DEFAULT 'add'::text, p_leave_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "reassign_task",
+    "arguments": "p_task_id uuid, p_new_assignee_id uuid, p_reason text DEFAULT 'Reassigned by management'::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "record_manual_time_entry",
+    "arguments": "p_task_id uuid, p_started_at timestamp with time zone, p_ended_at timestamp with time zone, p_category time_category DEFAULT 'initial_design'::time_category, p_note text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "remove_task_collaborator",
+    "arguments": "p_task_id uuid, p_roster_person_id uuid, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "request_time_correction",
+    "arguments": "p_time_entry_id uuid, p_proposed_started_at timestamp with time zone, p_proposed_ended_at timestamp with time zone, p_reason text, p_proposed_category time_category DEFAULT NULL::time_category, p_proposed_note text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "revoke_workspace_invitation",
+    "arguments": "p_workspace_id uuid, p_invitation_id uuid, p_idempotency_key text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "start_or_switch_timer",
+    "arguments": "p_task_id uuid, p_category time_category DEFAULT 'initial_design'::time_category, p_note text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "start_timer_on_behalf",
+    "arguments": "p_task_id uuid, p_reason text, p_target_roster_id uuid DEFAULT NULL::uuid, p_target_roster_person_id uuid DEFAULT NULL::uuid, p_category time_category DEFAULT 'initial_design'::time_category, p_note text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "stop_timer",
+    "arguments": "p_time_entry_id uuid, p_reason text DEFAULT NULL::text, p_note text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "submit_review_round",
+    "arguments": "p_task_id uuid, p_preview_url text, p_note text DEFAULT NULL::text, p_round_type review_round_type DEFAULT 'internal'::review_round_type, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "transfer_workspace_ownership",
+    "arguments": "p_workspace_id uuid, p_new_owner_roster_id uuid, p_idempotency_key text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "transition_task_status",
+    "arguments": "p_task_id uuid, p_new_status task_status DEFAULT NULL::task_status, p_to_status task_status DEFAULT NULL::task_status, p_reason text DEFAULT NULL::text, p_final_deliverable_url text DEFAULT NULL::text, p_deliverable_url text DEFAULT NULL::text, p_final_deliverable_attachment_id uuid DEFAULT NULL::uuid, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "update_campaign",
+    "arguments": "p_campaign_id uuid, p_title text DEFAULT NULL::text, p_objective text DEFAULT NULL::text, p_brief text DEFAULT NULL::text, p_start_date date DEFAULT NULL::date, p_due_date date DEFAULT NULL::date, p_status campaign_status DEFAULT NULL::campaign_status, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "update_client",
+    "arguments": "p_workspace_id uuid, p_client_id uuid, p_name text DEFAULT NULL::text, p_owner_roster_id uuid DEFAULT NULL::uuid, p_difficulty client_difficulty DEFAULT NULL::client_difficulty, p_extra_workload client_extra_workload DEFAULT NULL::client_extra_workload, p_state client_state DEFAULT NULL::client_state, p_notes text DEFAULT NULL::text, p_brand_guide_url text DEFAULT NULL::text, p_brief_url text DEFAULT NULL::text, p_reassign_open_tasks boolean DEFAULT false, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "update_roster_person",
+    "arguments": "p_workspace_id uuid, p_roster_person_id uuid, p_display_name text, p_job_title text, p_is_active boolean, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "update_task_checklist_item",
+    "arguments": "p_item_id uuid, p_is_completed boolean DEFAULT NULL::boolean, p_title text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "update_task_details",
+    "arguments": "p_workspace_id uuid, p_task_id uuid, p_title text DEFAULT NULL::text, p_brief text DEFAULT NULL::text, p_description text DEFAULT NULL::text, p_deliverable_format text DEFAULT NULL::text, p_deliverable_number text DEFAULT NULL::text, p_priority task_priority DEFAULT NULL::task_priority, p_working_file_url text DEFAULT NULL::text, p_reference_urls text[] DEFAULT NULL::text[], p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "update_task_due_date",
+    "arguments": "p_task_id uuid, p_new_due_date timestamp with time zone, p_reason text DEFAULT 'Due date updated'::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "update_task_priority",
+    "arguments": "p_task_id uuid, p_priority task_priority, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "update_workspace_settings",
+    "arguments": "p_workspace_id uuid, p_name text, p_workweek_days integer[], p_day_start_time time without time zone DEFAULT NULL::time without time zone, p_day_end_time time without time zone DEFAULT NULL::time without time zone, p_long_session_threshold_mins integer DEFAULT 240, p_default_timezone text DEFAULT NULL::text, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "upsert_member_capacity",
+    "arguments": "p_workspace_id uuid, p_roster_person_id uuid, p_weekly_hours numeric, p_reserved_management_hours numeric DEFAULT 0, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  },
+  {
+    "function_name": "void_time_entry",
+    "arguments": "p_time_entry_id uuid, p_reason text DEFAULT NULL::text, p_void_reason text DEFAULT NULL::text, p_workspace_id uuid DEFAULT NULL::uuid, p_idempotency_key text DEFAULT NULL::text",
+    "result": "jsonb",
+    "authenticated_execute": true,
+    "anon_execute": false,
+    "service_role_execute": true
+  }
+]

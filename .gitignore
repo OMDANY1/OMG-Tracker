@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Testing
+/coverage
+test_artifacts_backup.json
+tools/omg-db-verification/test_artifacts_backup.json
+
+# Next.js
+/.next/
+/out/
+
+# Production
+/build
+
+# Misc
+.DS_Store
+*.pem
+*.log
+*.tmp
+*.zip
+scratch/
+backup_previous_migrations/
+tools/omg-db-verification/backup_previous_migrations/
+supabase/.temp/
+.temp/
+
+# Local env files & secrets
+.env
+.env.local
+.env.*.local
+.owner-setup-token
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts

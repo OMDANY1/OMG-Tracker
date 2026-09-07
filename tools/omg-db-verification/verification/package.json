@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.8"
+  },
+  "name": "omg-database-verification",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test.mjs",
+    "test:migrations": "node migrate.mjs",
+    "catalog": "node catalog.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

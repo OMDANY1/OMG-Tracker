@@ -1,0 +1,1823 @@
+--- original/20260906000001_initial_schema.sql
++++ migrations/20260906000001_initial_schema.sql
+@@ -1,4 +1,4 @@
+--- OMG Creative Workspace: Initial Schema (V3.5 Clean Baseline)
++-- OMG Creative Workspace: Initial Schema (V3.5-R1 repaired baseline)
+ -- Migration: 20260906000001_initial_schema.sql
+ -- Strictly Transactional: Everything wrapped in BEGIN; ... COMMIT;
+ 
+@@ -7,11 +7,12 @@
+ -- -----------------------------------------------------------------------------
+ -- 1. EXTENSIONS & SCHEMAS
+ -- -----------------------------------------------------------------------------
++CREATE SCHEMA IF NOT EXISTS extensions;
+ CREATE SCHEMA IF NOT EXISTS private;
+ REVOKE ALL ON SCHEMA private FROM PUBLIC, anon;
+-GRANT USAGE ON SCHEMA private TO authenticated;
++GRANT USAGE ON SCHEMA private TO authenticated, service_role;
+ ALTER DEFAULT PRIVILEGES IN SCHEMA private REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon, authenticated;
+-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon;
++ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon, authenticated;
+ 
+ CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+ CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA extensions;
+@@ -390,7 +391,7 @@
+     CONSTRAINT uq_client_name_workspace UNIQUE (workspace_id, name),
+     CONSTRAINT uq_clients_composite UNIQUE (workspace_id, id),
+     CONSTRAINT fk_client_owner FOREIGN KEY (workspace_id, owner_roster_id)
+-        REFERENCES public.roster_people(workspace_id, id) ON DELETE SET NULL
++        REFERENCES public.roster_people(workspace_id, id) ON DELETE SET NULL (owner_roster_id)
+ );
+ 
+ CREATE TRIGGER trg_clients_updated_at
+@@ -569,7 +570,7 @@
+     END IF;
+ 
+     IF TG_OP = 'UPDATE' THEN
+-        -- Only permit transition from pending to decided (approved, changes_requested, rejected)
++        -- Only permit transition from pending to decided (approved, changes_requested)
+         IF OLD.decision <> 'pending' THEN
+             RAISE EXCEPTION 'Decided review rounds are immutable and cannot be updated.' USING ERRCODE = '42501';
+         END IF;
+@@ -578,7 +579,14 @@
+             RAISE EXCEPTION 'Review round parameters cannot be updated while pending.' USING ERRCODE = '42501';
+         END IF;
+ 
+-        IF NEW.decision NOT IN ('approved', 'changes_requested', 'rejected') THEN
++        IF (to_jsonb(NEW) - ARRAY['decision','feedback','decided_at','updated_at'])
++           IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['decision','feedback','decided_at','updated_at']) THEN
++            RAISE EXCEPTION 'Review identity and submitted content are immutable.' USING ERRCODE = '42501';
++        END IF;
++        IF NEW.decided_at IS NULL OR NEW.decided_at < OLD.submitted_at THEN
++            RAISE EXCEPTION 'A valid decision timestamp is required.';
++        END IF;
++        IF NEW.decision NOT IN ('approved', 'changes_requested') THEN
+             RAISE EXCEPTION 'Invalid review decision transition.' USING ERRCODE = '42501';
+         END IF;
+     END IF;
+@@ -645,7 +653,7 @@
+     mime_type TEXT NOT NULL,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.now(),
+     CONSTRAINT uq_attachments_composite UNIQUE (workspace_id, task_id, id),
+-    CONSTRAINT chk_attachment_storage_path CHECK (storage_path ~ '^[0-9a-fA-F-]{36}/[0-9a-fA-F-]{36}/[^/]+$'),
++    CONSTRAINT chk_attachment_storage_path CHECK (storage_path ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/[^/]+$' AND lower(split_part(storage_path,'/',1)) = workspace_id::text AND lower(split_part(storage_path,'/',2)) = task_id::text),
+     CONSTRAINT fk_attachment_task FOREIGN KEY (workspace_id, task_id)
+         REFERENCES public.tasks(workspace_id, id) ON DELETE CASCADE,
+     CONSTRAINT fk_attachment_uploader FOREIGN KEY (workspace_id, uploader_roster_id)
+@@ -817,6 +825,7 @@
+     decided_at TIMESTAMPTZ,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.now(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.now(),
++    CONSTRAINT uq_time_change_requests_composite UNIQUE (workspace_id, id),
+     CONSTRAINT chk_proposed_range CHECK (proposed_ended_at > proposed_started_at),
+     CONSTRAINT fk_tcr_entry FOREIGN KEY (workspace_id, time_entry_id)
+         REFERENCES public.time_entries(workspace_id, id) ON DELETE CASCADE,
+@@ -914,9 +923,9 @@
+ -- -----------------------------------------------------------------------------
+ -- 26. RESTRICTIVE PERMISSIONS & LEAST-PRIVILEGE GRANTS
+ -- -----------------------------------------------------------------------------
+-REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC, anon;
+-REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon;
+-REVOKE ALL ON ALL ROUTINES IN SCHEMA public FROM PUBLIC, anon;
++REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC, anon, authenticated;
++REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated;
++REVOKE ALL ON ALL ROUTINES IN SCHEMA public FROM PUBLIC, anon, authenticated;
+ 
+ -- Workflow-sensitive tables: authenticated receives SELECT only (all mutations via secure audited RPCs)
+ GRANT SELECT ON public.workspaces TO authenticated;
+--- original/20260906000002_constraints_and_functions.sql
++++ migrations/20260906000002_constraints_and_functions.sql
+@@ -1,18 +1,9 @@
+--- OMG Creative Workspace: Constraints, Functions & Workflows (V3.5 Clean Baseline)
++-- OMG Creative Workspace: Constraints, Functions & Workflows (V3.5-R1 repaired baseline)
+ -- Migration: 20260906000002_constraints_and_functions.sql
+--- Strictly Transactional: Everything wrapped in BEGIN;
+-
++BEGIN;
+ ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon;
+ ALTER DEFAULT PRIVILEGES IN SCHEMA private REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon, authenticated;
+ 
+-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon;
+-ALTER DEFAULT PRIVILEGES IN SCHEMA private REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon, authenticated; ... COMMIT;
+-
+-BEGIN;
+-
+--- -----------------------------------------------------------------------------
+--- 1. INDEXES ON WORKFLOW TABLES
+--- -----------------------------------------------------------------------------
+ CREATE INDEX IF NOT EXISTS idx_time_entries_range
+ ON public.time_entries (workspace_id, roster_person_id, started_at, ended_at);
+ 
+@@ -445,7 +436,9 @@
+     v_safe_cached_result JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+ 
+     -- 1. Strictly Owner-Controlled
+     IF v_caller.role <> 'owner' THEN
+@@ -462,6 +455,14 @@
+     IF v_clean_email IS NULL OR v_clean_email = '' OR v_clean_email !~ '^[^@]+@[^@]+\.[^@]+$' THEN
+         RAISE EXCEPTION 'Valid email address is required.';
+     END IF;
++
++    -- Concurrency-Safe Idempotency Check
++    v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_email', p_email, 'p_role', p_role, 'p_roster_person_id', p_roster_person_id);
++    v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
++    v_cached := private.fn_acquire_idempotency_lock(p_workspace_id, v_caller.roster_person_id, 'create_workspace_invitation', p_idempotency_key, v_hash);
++    -- On retry, return safe cached result that does NOT reveal raw token
++    IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++
+ 
+     -- 4. Roster Person Validation (Must exist, active, unlinked to active membership)
+     IF p_roster_person_id IS NULL THEN
+@@ -506,18 +507,6 @@
+     ) THEN
+         RAISE EXCEPTION 'User with email % is already an active member of this workspace.', v_clean_email;
+     END IF;
+-
+-    -- Concurrency-Safe Idempotency Check
+-    v_payload := jsonb_build_object(
+-        'workspace_id', p_workspace_id,
+-        'email', v_clean_email,
+-        'role', p_role,
+-        'roster_person_id', p_roster_person_id
+-    );
+-    v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+-    v_cached := private.fn_acquire_idempotency_lock(p_workspace_id, v_caller.roster_person_id, 'create_workspace_invitation', p_idempotency_key, v_hash);
+-    -- On retry, return safe cached result that does NOT reveal raw token
+-    IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+ 
+     -- 5. Generate 32-byte cryptographically secure raw token and SHA-256 hash
+     v_raw_token := pg_catalog.encode(extensions.gen_random_bytes(32), 'hex');
+@@ -621,6 +610,8 @@
+     -- Compute SHA-256 hash server-side
+     v_token_hash := pg_catalog.encode(extensions.digest(p_raw_token, 'sha256'), 'hex');
+ 
++    PERFORM 1 FROM public.workspaces WHERE id = (SELECT workspace_id FROM public.workspace_invitations WHERE token_hash = v_token_hash) FOR UPDATE;
++
+     -- 1. Row-lock invitation
+     SELECT * INTO v_inv
+     FROM public.workspace_invitations
+@@ -678,7 +669,8 @@
+     SELECT * INTO v_existing_membership
+     FROM public.workspace_memberships
+     WHERE workspace_id = v_inv.workspace_id AND roster_person_id = v_inv.roster_person_id
+-    FOR UPDATE;
++    ORDER BY is_active DESC, (user_id = v_uid) DESC, created_at DESC, id DESC
++    LIMIT 1 FOR UPDATE;
+ 
+     IF FOUND THEN
+         -- CRITICAL: Never replace or rebind an already-active roster membership to another user!
+@@ -780,15 +772,14 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role <> 'owner' THEN
+         RAISE EXCEPTION 'Permission denied: Only workspace owner can revoke invitations.';
+     END IF;
+ 
+-    v_payload := jsonb_build_object(
+-        'workspace_id', p_workspace_id,
+-        'invitation_id', p_invitation_id
+-    );
++    v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_invitation_id', p_invitation_id);
+     v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+     v_cached := private.fn_acquire_idempotency_lock(p_workspace_id, v_caller.roster_person_id, 'revoke_workspace_invitation', p_idempotency_key, v_hash);
+     IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -838,7 +829,9 @@
+     v_target_membership RECORD;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role <> 'owner' THEN
+         RAISE EXCEPTION 'Permission denied: Only current workspace owner can transfer ownership.';
+     END IF;
+@@ -847,10 +840,7 @@
+         RAISE EXCEPTION 'Cannot transfer ownership to yourself.';
+     END IF;
+ 
+-    v_payload := jsonb_build_object(
+-        'workspace_id', p_workspace_id,
+-        'new_owner', p_new_owner_roster_id
+-    );
++    v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_new_owner_roster_id', p_new_owner_roster_id);
+     v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+     v_cached := private.fn_acquire_idempotency_lock(p_workspace_id, v_caller.roster_person_id, 'transfer_workspace_ownership', p_idempotency_key, v_hash);
+     IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -1057,7 +1047,9 @@
+     v_task_id UUID;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+ 
+     IF p_title IS NULL OR btrim(p_title) = '' THEN
+         RAISE EXCEPTION 'Task title cannot be empty.';
+@@ -1072,15 +1064,7 @@
+ 
+     -- Concurrency-Safe Idempotency Check
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', p_workspace_id,
+-            'client_id', p_client_id,
+-            'campaign_id', p_campaign_id,
+-            'title', p_title,
+-            'deliverable_number', COALESCE(p_deliverable_number, ''),
+-            'assignee', p_primary_assignee_id,
+-            'due_date', p_due_date
+-        );
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_client_id', p_client_id, 'p_campaign_id', p_campaign_id, 'p_title', p_title, 'p_brief', p_brief, 'p_description', p_description, 'p_deliverable_format', p_deliverable_format, 'p_deliverable_number', p_deliverable_number, 'p_priority', p_priority, 'p_primary_assignee_id', p_primary_assignee_id, 'p_reviewer_id', p_reviewer_id, 'p_due_date', p_due_date, 'p_estimated_hours', p_estimated_hours, 'p_working_file_url', p_working_file_url, 'p_reference_urls', p_reference_urls);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(p_workspace_id, v_caller.roster_person_id, 'create_task_rpc', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -1232,7 +1216,9 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+ 
+     SELECT * INTO v_task
+     FROM public.tasks
+@@ -1243,13 +1229,17 @@
+         RAISE EXCEPTION 'Task not found in this workspace.';
+     END IF;
+ 
++    IF p_priority IS NOT NULL AND v_caller.role NOT IN ('owner', 'manager')
++       AND p_priority IS DISTINCT FROM v_task.priority THEN
++        RAISE EXCEPTION 'Only Owner or Manager can change task priority.';
++    END IF;
+     -- Authorization check
+-    IF v_caller.role NOT IN ('owner', 'manager') AND v_task.primary_assignee_id <> v_caller.roster_person_id THEN
++    IF v_caller.role NOT IN ('owner', 'manager') AND v_task.primary_assignee_id IS DISTINCT FROM v_caller.roster_person_id THEN
+         RAISE EXCEPTION 'Permission denied: Only managers or the assigned designer can edit task details.';
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object('task_id', p_task_id, 'title', p_title, 'brief', p_brief);
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_task_id', p_task_id, 'p_title', p_title, 'p_brief', p_brief, 'p_description', p_description, 'p_deliverable_format', p_deliverable_format, 'p_deliverable_number', p_deliverable_number, 'p_priority', p_priority, 'p_working_file_url', p_working_file_url, 'p_reference_urls', p_reference_urls);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(p_workspace_id, v_caller.roster_person_id, 'update_task_details', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -1271,6 +1261,7 @@
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+         PERFORM private.fn_record_idempotency(p_workspace_id, v_caller.roster_person_id, 'update_task_details', p_idempotency_key, v_hash, v_result);
+     END IF;
++    INSERT INTO public.audit_events(workspace_id,actor_id,action,entity_type,entity_id,metadata) VALUES(p_workspace_id,v_caller.roster_person_id,'update_task_details','tasks',p_task_id,jsonb_build_object('result',v_result));
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -1301,6 +1292,7 @@
+     v_is_involved BOOLEAN;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     v_effective_status := COALESCE(p_new_status, p_to_status);
+     IF v_effective_status IS NULL THEN
+         RAISE EXCEPTION 'Target status is required.';
+@@ -1319,6 +1311,7 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     -- 1. COMPLETE RESOURCE AUTHORIZATION FIRST (Before any cached or early return)
+     SELECT * INTO v_task
+@@ -1355,14 +1348,7 @@
+ 
+     -- 2. Concurrency-Safe Idempotency Check AFTER resource authorization
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'task_id', p_task_id,
+-            'new_status', v_effective_status,
+-            'reason', p_reason,
+-            'final_url', v_effective_deliverable_url,
+-            'final_attachment', p_final_deliverable_attachment_id
+-        );
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_new_status', p_new_status, 'p_to_status', p_to_status, 'p_reason', p_reason, 'p_final_deliverable_url', p_final_deliverable_url, 'p_deliverable_url', p_deliverable_url, 'p_final_deliverable_attachment_id', p_final_deliverable_attachment_id, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'transition_task_status', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -1541,6 +1527,14 @@
+         RAISE EXCEPTION 'Invalid source status % for transition.', v_current_status;
+     END IF;
+ 
++    IF v_effective_status NOT IN ('in_progress', 'changes_requested') THEN
++        UPDATE public.time_entries SET
++            ended_at = GREATEST(clock_timestamp(), started_at + interval '1 microsecond'),
++            duration_seconds = EXTRACT(EPOCH FROM (GREATEST(clock_timestamp(), started_at + interval '1 microsecond') - started_at))::int,
++            updated_at = clock_timestamp()
++        WHERE workspace_id = v_effective_workspace_id AND task_id = p_task_id
++          AND ended_at IS NULL AND NOT is_voided;
++    END IF;
+     -- Apply update to tasks table
+     UPDATE public.tasks
+     SET
+@@ -1552,8 +1546,8 @@
+         block_reason = CASE WHEN v_effective_status = 'blocked' THEN p_reason ELSE block_reason END,
+         cancelled_at = CASE WHEN v_effective_status = 'cancelled' THEN pg_catalog.now() ELSE cancelled_at END,
+         cancel_reason = CASE WHEN v_effective_status = 'cancelled' THEN p_reason ELSE cancel_reason END,
+-        reopened_at = CASE WHEN (v_current_status IN ('delivered', 'approved', 'cancelled') AND v_effective_status = 'in_progress') THEN pg_catalog.now() ELSE reopened_at END,
+-        reopen_reason = CASE WHEN (v_current_status IN ('delivered', 'approved', 'cancelled') AND v_effective_status = 'in_progress') THEN p_reason ELSE reopen_reason END,
++        reopened_at = CASE WHEN (v_current_status IN ('delivered', 'approved', 'cancelled') AND v_effective_status IN ('in_progress','backlog','ready')) THEN pg_catalog.now() ELSE reopened_at END,
++        reopen_reason = CASE WHEN (v_current_status IN ('delivered', 'approved', 'cancelled') AND v_effective_status IN ('in_progress','backlog','ready')) THEN p_reason ELSE reopen_reason END,
+         updated_at = pg_catalog.now()
+     WHERE id = p_task_id;
+ 
+@@ -1631,6 +1625,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -1639,6 +1634,7 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can reassign tasks.';
+@@ -1649,12 +1645,7 @@
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'task_id', p_task_id,
+-            'new_assignee', p_new_assignee_id,
+-            'reason', p_reason
+-        );
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_new_assignee_id', p_new_assignee_id, 'p_reason', p_reason, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'reassign_task', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -1747,6 +1738,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -1755,17 +1747,14 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can change task reviewer.';
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'task_id', p_task_id,
+-            'new_reviewer', p_new_reviewer_id
+-        );
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_new_reviewer_id', p_new_reviewer_id, 'p_reason', p_reason, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'change_task_reviewer', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -1832,6 +1821,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -1840,6 +1830,7 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can change task due dates.';
+@@ -1850,12 +1841,7 @@
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'task_id', p_task_id,
+-            'new_due_date', p_new_due_date,
+-            'reason', p_reason
+-        );
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_new_due_date', p_new_due_date, 'p_reason', p_reason, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'update_task_due_date', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -1948,6 +1934,7 @@
+     v_new_task_status public.task_status;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -1956,6 +1943,7 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     -- 1. TASK INVOLVEMENT CHECK FIRST
+     IF NOT private.can_work_on_task(p_task_id) THEN
+@@ -1968,13 +1956,7 @@
+ 
+     -- Concurrency-Safe Idempotency Check
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'task_id', p_task_id,
+-            'preview_url', p_preview_url,
+-            'note', p_note,
+-            'round_type', p_round_type
+-        );
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_preview_url', p_preview_url, 'p_note', p_note, 'p_round_type', p_round_type, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'submit_review_round', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -2035,7 +2017,7 @@
+     ) t;
+ 
+     -- Resolve reviewer via routing engine
+-    v_reviewer_id := private.resolve_task_reviewer(v_effective_workspace_id, p_task_id, p_round_type, v_exclude_ids);
++    v_reviewer_id := private.resolve_task_reviewer(v_effective_workspace_id, p_task_id, COALESCE(v_task.primary_assignee_id, v_caller.roster_person_id), v_exclude_ids);
+ 
+     IF v_reviewer_id IS NULL THEN
+         RAISE EXCEPTION 'No eligible reviewer found for this task. An independent reviewer is required.';
+@@ -2153,6 +2135,7 @@
+     v_new_task_status public.task_status;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     v_effective_round_id := COALESCE(p_round_id, p_review_round_id);
+     IF v_effective_round_id IS NULL THEN
+         RAISE EXCEPTION 'Review round ID is required.';
+@@ -2166,8 +2149,9 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
+-
+-    IF p_decision = 'pending' THEN
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
++
++    IF p_decision IS NULL OR p_decision = 'pending' THEN
+         RAISE EXCEPTION 'Invalid review decision: pending. Must be approved or changes_requested.';
+     END IF;
+ 
+@@ -2176,12 +2160,7 @@
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'round_id', v_effective_round_id,
+-            'decision', p_decision,
+-            'feedback', p_feedback
+-        );
++        v_payload := jsonb_build_object('p_decision', p_decision, 'p_round_id', p_round_id, 'p_review_round_id', p_review_round_id, 'p_feedback', p_feedback, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'decide_review_round', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -2343,6 +2322,7 @@
+     v_entry_id UUID;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -2351,6 +2331,7 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     -- 1. TASK INVOLVEMENT CHECK FIRST
+     IF NOT private.can_work_on_task(p_task_id) THEN
+@@ -2358,11 +2339,7 @@
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'task_id', p_task_id,
+-            'category', p_category
+-        );
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_category', p_category, 'p_note', p_note, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'start_or_switch_timer', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -2453,6 +2430,7 @@
+     v_entry_id UUID;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     v_effective_target_id := COALESCE(p_target_roster_person_id, p_target_roster_id);
+     IF v_effective_target_id IS NULL THEN
+         RAISE EXCEPTION 'Target roster person ID is required.';
+@@ -2466,6 +2444,7 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can start a timer on behalf of another member.';
+@@ -2517,14 +2496,7 @@
+ 
+     -- 2. Concurrency-Safe Idempotency Check AFTER authorization
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'task_id', p_task_id,
+-            'target_roster_id', v_effective_target_id,
+-            'category', p_category,
+-            'note', p_note,
+-            'reason', p_reason
+-        );
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_reason', p_reason, 'p_target_roster_id', p_target_roster_id, 'p_target_roster_person_id', p_target_roster_person_id, 'p_category', p_category, 'p_note', p_note, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'start_timer_on_behalf', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -2607,6 +2579,7 @@
+     v_dur INT;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -2617,13 +2590,10 @@
+     v_effective_reason := COALESCE(p_reason, p_note);
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'entry_id', p_time_entry_id,
+-            'reason', v_effective_reason
+-        );
++        v_payload := jsonb_build_object('p_time_entry_id', p_time_entry_id, 'p_reason', p_reason, 'p_note', p_note, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'stop_timer', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -2710,6 +2680,7 @@
+     v_dur INT;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -2718,6 +2689,7 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     -- 1. TASK INVOLVEMENT CHECK FIRST
+     IF NOT private.can_work_on_task(p_task_id) THEN
+@@ -2745,12 +2717,7 @@
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'task_id', p_task_id,
+-            'started_at', p_started_at,
+-            'ended_at', p_ended_at
+-        );
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_started_at', p_started_at, 'p_ended_at', p_ended_at, 'p_category', p_category, 'p_note', p_note, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'create_manual_time_entry', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -2830,6 +2797,7 @@
+     v_entry RECORD;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -2843,17 +2811,14 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can void time entries.';
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'time_entry_id', p_time_entry_id,
+-            'reason', v_effective_reason
+-        );
++        v_payload := jsonb_build_object('p_time_entry_id', p_time_entry_id, 'p_reason', p_reason, 'p_void_reason', p_void_reason, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'void_time_entry', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -2921,6 +2886,7 @@
+     v_req_id UUID;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -2929,6 +2895,7 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     IF p_reason IS NULL OR btrim(p_reason) = '' THEN
+         RAISE EXCEPTION 'Correction reason is required.';
+@@ -2963,13 +2930,7 @@
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'entry_id', p_time_entry_id,
+-            'prop_start', p_proposed_started_at,
+-            'prop_end', p_proposed_ended_at,
+-            'reason', p_reason
+-        );
++        v_payload := jsonb_build_object('p_time_entry_id', p_time_entry_id, 'p_proposed_started_at', p_proposed_started_at, 'p_proposed_ended_at', p_proposed_ended_at, 'p_reason', p_reason, 'p_proposed_category', p_proposed_category, 'p_proposed_note', p_proposed_note, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'request_time_correction', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -3038,6 +2999,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -3046,12 +3008,13 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+ 
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can decide time corrections.';
+     END IF;
+ 
+-    IF p_decision = 'pending' THEN
++    IF p_decision IS NULL OR p_decision = 'pending' THEN
+         RAISE EXCEPTION 'Decision cannot be pending. Must be approved or rejected.';
+     END IF;
+ 
+@@ -3060,11 +3023,7 @@
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'request_id', p_request_id,
+-            'decision', p_decision
+-        );
++        v_payload := jsonb_build_object('p_request_id', p_request_id, 'p_decision', p_decision, 'p_review_notes', p_review_notes, 'p_rejection_reason', p_rejection_reason, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'decide_time_correction', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -3197,14 +3156,26 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_client_id UUID;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can create clients.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_name', p_name, 'p_owner_roster_id', p_owner_roster_id, 'p_difficulty', p_difficulty, 'p_extra_workload', p_extra_workload, 'p_state', p_state, 'p_notes', p_notes, 'p_brand_guide_url', p_brand_guide_url, 'p_brief_url', p_brief_url);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'create_client',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     IF p_name IS NULL OR btrim(p_name) = '' THEN
+         RAISE EXCEPTION 'Client name cannot be empty.';
+@@ -3240,6 +3211,9 @@
+     );
+ 
+     v_result := jsonb_build_object('success', TRUE, 'client_id', v_client_id);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'create_client',p_idempotency_key,v_hash,v_result);
++    END IF;
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3261,16 +3235,28 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_client RECORD;
+     v_reassigned_count INT := 0;
+     v_t RECORD;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can update clients.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_client_id', p_client_id, 'p_name', p_name, 'p_owner_roster_id', p_owner_roster_id, 'p_difficulty', p_difficulty, 'p_extra_workload', p_extra_workload, 'p_state', p_state, 'p_notes', p_notes, 'p_brand_guide_url', p_brand_guide_url, 'p_brief_url', p_brief_url, 'p_reassign_open_tasks', p_reassign_open_tasks);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'update_client',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     SELECT * INTO v_client
+     FROM public.clients
+@@ -3322,6 +3308,9 @@
+     );
+ 
+     v_result := jsonb_build_object('success', TRUE, 'client_id', p_client_id, 'reassigned_tasks', v_reassigned_count);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'update_client',p_idempotency_key,v_hash,v_result);
++    END IF;
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3334,13 +3323,25 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can archive clients.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_client_id', p_client_id);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'archive_client',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     UPDATE public.clients
+     SET state = 'Archived',
+@@ -3356,6 +3357,9 @@
+     );
+ 
+     v_result := jsonb_build_object('success', TRUE, 'client_id', p_client_id, 'state', 'Archived');
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'archive_client',p_idempotency_key,v_hash,v_result);
++    END IF;
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3374,14 +3378,26 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_campaign_id UUID;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can create campaigns.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_client_id', p_client_id, 'p_title', p_title, 'p_objective', p_objective, 'p_brief', p_brief, 'p_start_date', p_start_date, 'p_due_date', p_due_date, 'p_status', p_status);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'create_campaign',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     IF p_title IS NULL OR btrim(p_title) = '' THEN
+         RAISE EXCEPTION 'Campaign title cannot be empty.';
+@@ -3417,6 +3433,9 @@
+     );
+ 
+     v_result := jsonb_build_object('success', TRUE, 'campaign_id', v_campaign_id);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'create_campaign',p_idempotency_key,v_hash,v_result);
++    END IF;
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3448,7 +3467,9 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can generate campaign posts.';
+     END IF;
+@@ -3464,16 +3485,7 @@
+ 
+     -- Concurrency-Safe Idempotency Check with ALL behavior-affecting parameters
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', p_workspace_id,
+-            'campaign_id', p_campaign_id,
+-            'client_id', p_client_id,
+-            'post_count', v_count,
+-            'deliverable_type', p_deliverable_type,
+-            'priority', p_priority,
+-            'primary_assignee_id', p_primary_assignee_id,
+-            'reviewer_id', p_reviewer_id
+-        );
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_campaign_id', p_campaign_id, 'p_client_id', p_client_id, 'p_post_count', p_post_count, 'p_deliverable_type', p_deliverable_type, 'p_priority', p_priority, 'p_primary_assignee_id', p_primary_assignee_id, 'p_reviewer_id', p_reviewer_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(p_workspace_id, v_caller.roster_person_id, 'generate_campaign_posts', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -3570,13 +3582,25 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can manage member capacities.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_roster_person_id', p_roster_person_id, 'p_weekly_hours', p_weekly_hours, 'p_reserved_management_hours', p_reserved_management_hours);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'upsert_member_capacity',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     IF p_weekly_hours IS NOT NULL AND p_weekly_hours < 0 THEN
+         RAISE EXCEPTION 'Weekly hours must be nonnegative.';
+@@ -3610,6 +3634,10 @@
+         updated_at = pg_catalog.now();
+ 
+     v_result := jsonb_build_object('success', TRUE, 'roster_person_id', p_roster_person_id);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'upsert_member_capacity',p_idempotency_key,v_hash,v_result);
++    END IF;
++    INSERT INTO public.audit_events(workspace_id,actor_id,action,entity_type,entity_id,metadata) VALUES(p_workspace_id,v_caller.roster_person_id,'upsert_member_capacity','workspace_operation',p_workspace_id,jsonb_build_object('result',v_result));
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3627,13 +3655,25 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can manage leave days.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_roster_person_id', p_roster_person_id, 'p_leave_date', p_leave_date, 'p_hours', p_hours, 'p_leave_type', p_leave_type, 'p_action', p_action, 'p_leave_id', p_leave_id);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'manage_leave_day',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     IF p_action = 'delete' THEN
+         DELETE FROM public.leave_days
+@@ -3661,6 +3701,10 @@
+         v_result := jsonb_build_object('success', TRUE, 'action', 'saved');
+     END IF;
+ 
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'manage_leave_day',p_idempotency_key,v_hash,v_result);
++    END IF;
++    INSERT INTO public.audit_events(workspace_id,actor_id,action,entity_type,entity_id,metadata) VALUES(p_workspace_id,v_caller.roster_person_id,'manage_leave_day','workspace_operation',p_workspace_id,jsonb_build_object('result',v_result));
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3678,13 +3722,25 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role <> 'owner' THEN
+         RAISE EXCEPTION 'Permission denied: Only workspace owner can update workspace settings.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_name', p_name, 'p_workweek_days', p_workweek_days, 'p_day_start_time', p_day_start_time, 'p_day_end_time', p_day_end_time, 'p_long_session_threshold_mins', p_long_session_threshold_mins, 'p_default_timezone', p_default_timezone);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'update_workspace_settings',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     IF NOT public.fn_validate_workweek_days(p_workweek_days) THEN
+         RAISE EXCEPTION 'Invalid workweek days. Must contain unique integers 0..6 (where 0=Sunday).';
+@@ -3718,6 +3774,9 @@
+     );
+ 
+     v_result := jsonb_build_object('success', TRUE, 'workspace_id', p_workspace_id);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'update_workspace_settings',p_idempotency_key,v_hash,v_result);
++    END IF;
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3731,14 +3790,26 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_person_id UUID;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can create roster people.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_display_name', p_display_name, 'p_job_title', p_job_title);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'create_roster_person',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     IF p_display_name IS NULL OR btrim(p_display_name) = '' THEN
+         RAISE EXCEPTION 'Display name cannot be empty.';
+@@ -3768,6 +3839,9 @@
+     );
+ 
+     v_result := jsonb_build_object('success', TRUE, 'roster_person_id', v_person_id);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'create_roster_person',p_idempotency_key,v_hash,v_result);
++    END IF;
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3783,15 +3857,27 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_target_person RECORD;
+     v_target_membership RECORD;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can update roster people.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_roster_person_id', p_roster_person_id, 'p_display_name', p_display_name, 'p_job_title', p_job_title, 'p_is_active', p_is_active);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'update_roster_person',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     SELECT * INTO v_target_person
+     FROM public.roster_people
+@@ -3836,6 +3922,9 @@
+     );
+ 
+     v_result := jsonb_build_object('success', TRUE, 'roster_person_id', p_roster_person_id, 'is_active', p_is_active);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'update_roster_person',p_idempotency_key,v_hash,v_result);
++    END IF;
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3853,14 +3942,26 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_rule_id UUID;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can manage review routing rules.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_priority', p_priority, 'p_designer_roster_id', p_designer_roster_id, 'p_client_difficulty', p_client_difficulty, 'p_reviewer_roster_id', p_reviewer_roster_id, 'p_fallback_reviewer_id', p_fallback_reviewer_id, 'p_is_workspace_default', p_is_workspace_default);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'create_review_routing_rule',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     INSERT INTO public.review_routing_rules (
+         workspace_id,
+@@ -3881,6 +3982,10 @@
+     ) RETURNING id INTO v_rule_id;
+ 
+     v_result := jsonb_build_object('success', TRUE, 'rule_id', v_rule_id);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'create_review_routing_rule',p_idempotency_key,v_hash,v_result);
++    END IF;
++    INSERT INTO public.audit_events(workspace_id,actor_id,action,entity_type,entity_id,metadata) VALUES(p_workspace_id,v_caller.roster_person_id,'create_review_routing_rule','workspace_operation',p_workspace_id,jsonb_build_object('result',v_result));
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -3893,86 +3998,37 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
++    v_payload JSONB;
++    v_hash TEXT;
++    v_cached JSONB;
+     v_caller RECORD;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can delete review routing rules.';
+     END IF;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_payload := jsonb_build_object('p_workspace_id', p_workspace_id, 'p_rule_id', p_rule_id);
++        v_hash := encode(extensions.digest(v_payload::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(p_workspace_id,v_caller.roster_person_id,'delete_review_routing_rule',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
++    END IF;
++
+ 
+     DELETE FROM public.review_routing_rules
+     WHERE workspace_id = p_workspace_id AND id = p_rule_id;
+ 
+     v_result := jsonb_build_object('success', TRUE, 'rule_id', p_rule_id);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(p_workspace_id,v_caller.roster_person_id,'delete_review_routing_rule',p_idempotency_key,v_hash,v_result);
++    END IF;
++    INSERT INTO public.audit_events(workspace_id,actor_id,action,entity_type,entity_id,metadata) VALUES(p_workspace_id,v_caller.roster_person_id,'delete_review_routing_rule','workspace_operation',p_workspace_id,jsonb_build_object('result',v_result));
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+-
+--- -----------------------------------------------------------------------------
+--- 8. RESTRICTIVE EXECUTE PERMISSIONS & LEAST-PRIVILEGE GRANTS
+--- -----------------------------------------------------------------------------
+-
+--- Revoke default execute on internal helpers from PUBLIC, anon, and authenticated
+-REVOKE ALL ON FUNCTION private.get_caller_context(UUID) FROM PUBLIC, anon, authenticated;
+-REVOKE ALL ON FUNCTION private.fn_acquire_idempotency_lock(UUID, UUID, TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+-REVOKE ALL ON FUNCTION private.fn_record_idempotency(UUID, UUID, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
+-REVOKE ALL ON FUNCTION private.resolve_task_reviewer(UUID, UUID, UUID, UUID[]) FROM PUBLIC, anon, authenticated;
+-
+--- Bootstrap owner: EXCLUSIVELY service_role
+-REVOKE ALL ON FUNCTION public.bootstrap_owner(UUID, UUID, UUID) FROM PUBLIC, anon, authenticated;
+-GRANT EXECUTE ON FUNCTION public.bootstrap_owner(UUID, UUID, UUID) TO service_role;
+-
+--- RLS predicate helpers: Granted to authenticated for row security
+-GRANT EXECUTE ON FUNCTION private.is_workspace_member(UUID) TO authenticated;
+-GRANT EXECUTE ON FUNCTION private.caller_roster_id(UUID) TO authenticated;
+-GRANT EXECUTE ON FUNCTION private.caller_role(UUID) TO authenticated;
+-GRANT EXECUTE ON FUNCTION private.is_workspace_manager(UUID) TO authenticated;
+-GRANT EXECUTE ON FUNCTION private.can_access_task(UUID) TO authenticated;
+-GRANT EXECUTE ON FUNCTION private.can_work_on_task(UUID) TO authenticated;
+-
+--- Public business RPCs: Granted to authenticated and service_role
+-GRANT EXECUTE ON FUNCTION public.create_workspace_invitation(UUID, TEXT, public.roster_role, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.accept_workspace_invitation(TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.revoke_workspace_invitation(UUID, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.transfer_workspace_ownership(UUID, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.create_task_rpc(UUID, UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, public.task_priority, UUID, UUID, TIMESTAMPTZ, NUMERIC, TEXT, TEXT[], TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.create_task(UUID, UUID, UUID, TEXT, TEXT, TEXT, public.task_priority, UUID, UUID, TIMESTAMPTZ, INT, TEXT, TEXT, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.update_task_details(UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, public.task_priority, TEXT, TEXT[], TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.transition_task_status(UUID, public.task_status, public.task_status, TEXT, TEXT, TEXT, UUID, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.reassign_task(UUID, UUID, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.change_task_assignee(UUID, UUID, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.change_task_reviewer(UUID, UUID, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.update_task_due_date(UUID, TIMESTAMPTZ, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.change_task_due_date(UUID, TIMESTAMPTZ, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.submit_review_round(UUID, TEXT, TEXT, public.review_round_type, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.decide_review_round(public.review_decision, UUID, UUID, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.start_or_switch_timer(UUID, public.time_category, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.start_timer_on_behalf(UUID, TEXT, UUID, UUID, public.time_category, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.stop_timer(UUID, TEXT, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.create_manual_time_entry(UUID, TIMESTAMPTZ, TIMESTAMPTZ, public.time_category, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.record_manual_time_entry(UUID, TIMESTAMPTZ, TIMESTAMPTZ, public.time_category, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.void_time_entry(UUID, TEXT, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.request_time_correction(UUID, TIMESTAMPTZ, TIMESTAMPTZ, TEXT, public.time_category, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.decide_time_correction(UUID, public.correction_status, TEXT, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.create_client(UUID, TEXT, UUID, public.client_difficulty, public.client_extra_workload, public.client_state, TEXT, TEXT, TEXT, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.update_client(UUID, UUID, TEXT, UUID, public.client_difficulty, public.client_extra_workload, public.client_state, TEXT, TEXT, TEXT, BOOLEAN, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.archive_client(UUID, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.create_campaign(UUID, UUID, TEXT, TEXT, TEXT, DATE, DATE, public.campaign_status, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.generate_campaign_posts(UUID, UUID, UUID, INT, TEXT, public.task_priority, UUID, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.upsert_member_capacity(UUID, UUID, NUMERIC, NUMERIC, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.manage_leave_day(UUID, UUID, DATE, NUMERIC, public.leave_type, TEXT, UUID, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.update_workspace_settings(UUID, TEXT, INT[], TIME, TIME, INT, TEXT, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.create_roster_person(UUID, TEXT, TEXT, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.update_roster_person(UUID, UUID, TEXT, TEXT, BOOLEAN, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.create_review_routing_rule(UUID, INT, UUID, public.client_difficulty, UUID, UUID, BOOLEAN, TEXT) TO authenticated, service_role;
+-GRANT EXECUTE ON FUNCTION public.delete_review_routing_rule(UUID, UUID, TEXT) TO authenticated, service_role;
+-
+--- Grant ALL routines to service_role
+-GRANT ALL ON ALL ROUTINES IN SCHEMA public TO service_role;
+-GRANT ALL ON ALL ROUTINES IN SCHEMA private TO service_role;
+-
+-
+ 
+ -- -----------------------------------------------------------------------------
+ -- CAMPAIGN MANAGEMENT RPCS (Update & Archive)
+@@ -3998,6 +4054,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -4006,21 +4063,13 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can update campaigns.';
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'campaign_id', p_campaign_id,
+-            'title', p_title,
+-            'objective', p_objective,
+-            'brief', p_brief,
+-            'start_date', p_start_date,
+-            'due_date', p_due_date,
+-            'status', p_status
+-        );
++        v_payload := jsonb_build_object('p_campaign_id', p_campaign_id, 'p_title', p_title, 'p_objective', p_objective, 'p_brief', p_brief, 'p_start_date', p_start_date, 'p_due_date', p_due_date, 'p_status', p_status, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'update_campaign', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -4076,6 +4125,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -4084,12 +4134,13 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can archive campaigns.';
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object('workspace_id', v_effective_workspace_id, 'campaign_id', p_campaign_id);
++        v_payload := jsonb_build_object('p_campaign_id', p_campaign_id, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'archive_campaign', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -4139,6 +4190,7 @@
+     v_collab_id UUID;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -4147,12 +4199,13 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can manage task collaborators.';
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object('workspace_id', v_effective_workspace_id, 'task_id', p_task_id, 'roster_person_id', p_roster_person_id);
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_roster_person_id', p_roster_person_id, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'add_task_collaborator', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -4200,6 +4253,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -4208,12 +4262,13 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can manage task collaborators.';
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object('workspace_id', v_effective_workspace_id, 'task_id', p_task_id, 'roster_person_id', p_roster_person_id);
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_roster_person_id', p_roster_person_id, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'remove_task_collaborator', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -4258,6 +4313,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -4266,7 +4322,8 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
+-    IF NOT private.can_access_task(p_task_id) THEN
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
++    IF NOT private.can_work_on_task(p_task_id) THEN
+         RAISE EXCEPTION 'Access denied: You do not have access to this task.';
+     END IF;
+ 
+@@ -4275,7 +4332,7 @@
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object('workspace_id', v_effective_workspace_id, 'task_id', p_task_id, 'title', p_title);
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_title', p_title, 'p_sort_order', p_sort_order, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'create_task_checklist_item', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -4317,16 +4374,19 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     SELECT * INTO v_item FROM public.task_checklist_items WHERE id = p_item_id;
+     IF NOT FOUND THEN RAISE EXCEPTION 'Checklist item not found.'; END IF;
+ 
++    IF p_workspace_id IS NOT NULL AND p_workspace_id <> v_item.workspace_id THEN RAISE EXCEPTION 'Workspace mismatch.'; END IF;
+     SELECT * INTO v_caller FROM private.get_caller_context(v_item.workspace_id);
+-    IF NOT private.can_access_task(v_item.task_id) THEN
++    PERFORM 1 FROM public.workspaces WHERE id = v_item.workspace_id FOR UPDATE;
++    IF NOT private.can_work_on_task(v_item.task_id) THEN
+         RAISE EXCEPTION 'Access denied: You do not have access to this task.';
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object('item_id', p_item_id, 'is_completed', p_is_completed, 'title', p_title);
++        v_payload := jsonb_build_object('p_item_id', p_item_id, 'p_is_completed', p_is_completed, 'p_title', p_title, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_item.workspace_id, v_caller.roster_person_id, 'update_task_checklist_item', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -4344,6 +4404,7 @@
+         PERFORM private.fn_record_idempotency(v_item.workspace_id, v_caller.roster_person_id, 'update_task_checklist_item', p_idempotency_key, v_hash, v_result);
+     END IF;
+ 
++    INSERT INTO public.audit_events(workspace_id,actor_id,action,entity_type,entity_id,metadata) VALUES(v_item.workspace_id,v_caller.roster_person_id,'update_task_checklist_item','task_checklist_items',p_item_id,jsonb_build_object('result',v_result));
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+@@ -4355,38 +4416,54 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
+-    v_item RECORD;
++    v_workspace_id UUID;
+     v_caller RECORD;
+-    v_payload JSONB;
++    v_resource RECORD;
++    v_cached JSONB;
+     v_hash TEXT;
+-    v_cached JSONB;
+     v_result JSONB;
+ BEGIN
+-    SELECT * INTO v_item FROM public.task_checklist_items WHERE id = p_item_id;
+-    IF NOT FOUND THEN RAISE EXCEPTION 'Checklist item not found.'; END IF;
+-
+-    SELECT * INTO v_caller FROM private.get_caller_context(v_item.workspace_id);
+-    IF NOT private.can_access_task(v_item.task_id) THEN
+-        RAISE EXCEPTION 'Access denied: You do not have access to this task.';
+-    END IF;
+-
+-    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object('item_id', p_item_id);
+-        v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+-        v_cached := private.fn_acquire_idempotency_lock(v_item.workspace_id, v_caller.roster_person_id, 'delete_task_checklist_item', p_idempotency_key, v_hash);
+-        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+-    END IF;
+-
+-    DELETE FROM public.task_checklist_items WHERE id = p_item_id;
+-
+-    v_result := jsonb_build_object('success', TRUE, 'item_id', p_item_id);
+-    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        PERFORM private.fn_record_idempotency(v_item.workspace_id, v_caller.roster_person_id, 'delete_task_checklist_item', p_idempotency_key, v_hash, v_result);
+-    END IF;
+-
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN
++        RAISE EXCEPTION 'Idempotency key cannot be blank.';
++    END IF;
++    SELECT workspace_id INTO v_workspace_id FROM public.task_checklist_items WHERE id=p_item_id;
++    IF v_workspace_id IS NULL AND p_idempotency_key IS NOT NULL THEN
++        SELECT ir.workspace_id INTO v_workspace_id
++        FROM public.rpc_idempotency_records ir
++        JOIN public.workspace_memberships wm ON wm.workspace_id=ir.workspace_id AND wm.roster_person_id=ir.actor_id
++        JOIN public.roster_people rp ON rp.id=wm.roster_person_id
++        WHERE wm.user_id=auth.uid() AND wm.is_active AND rp.is_active
++          AND ir.operation_name='delete_task_checklist_item' AND ir.idempotency_key=p_idempotency_key
++          AND ir.response_payload->>'item_id'=p_item_id::text
++          AND (p_workspace_id IS NULL OR ir.workspace_id=p_workspace_id)
++        LIMIT 1;
++    END IF;
++    IF v_workspace_id IS NULL THEN RAISE EXCEPTION 'Resource not found or no access.'; END IF;
++    IF p_workspace_id IS NOT NULL AND p_workspace_id <> v_workspace_id THEN RAISE EXCEPTION 'Workspace mismatch.'; END IF;
++    SELECT * INTO v_caller FROM private.get_caller_context(v_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id=v_workspace_id FOR UPDATE;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_hash := encode(extensions.digest(jsonb_build_object('p_item_id',p_item_id,'p_workspace_id',p_workspace_id)::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(v_workspace_id,v_caller.roster_person_id,'delete_task_checklist_item',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN
++            IF private.can_access_task((v_cached->>'task_id')::uuid) IS NOT TRUE THEN RAISE EXCEPTION 'Access denied.'; END IF;
++            RETURN v_cached;
++        END IF;
++    END IF;
++    SELECT * INTO v_resource FROM public.task_checklist_items WHERE workspace_id=v_workspace_id AND id=p_item_id FOR UPDATE;
++    IF NOT FOUND THEN RAISE EXCEPTION 'Resource not found.'; END IF;
++    IF private.can_work_on_task(v_resource.task_id) IS NOT TRUE THEN RAISE EXCEPTION 'Access denied.'; END IF;
++    DELETE FROM public.task_checklist_items WHERE id=p_item_id;
++    INSERT INTO public.audit_events(workspace_id,actor_id,action,entity_type,entity_id,metadata)
++    VALUES(v_workspace_id,v_caller.roster_person_id,'delete_task_checklist_item','task_checklist_items',p_item_id,jsonb_build_object('task_id',v_resource.task_id));
++    v_result := jsonb_build_object('success',true,'item_id',p_item_id,'task_id',v_resource.task_id);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(v_workspace_id,v_caller.roster_person_id,'delete_task_checklist_item',p_idempotency_key,v_hash,v_result);
++    END IF;
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
++
+ 
+ -- -----------------------------------------------------------------------------
+ -- ATTACHMENT METADATA RPCS (Create & Delete with Path Validation)
+@@ -4414,6 +4491,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -4422,7 +4500,8 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
+-    IF NOT private.can_access_task(p_task_id) THEN
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
++    IF NOT private.can_work_on_task(p_task_id) THEN
+         RAISE EXCEPTION 'Access denied: You do not have access to this task.';
+     END IF;
+ 
+@@ -4448,13 +4527,7 @@
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object(
+-            'workspace_id', v_effective_workspace_id,
+-            'task_id', p_task_id,
+-            'storage_path', p_storage_path,
+-            'file_name', p_file_name,
+-            'file_size', p_file_size_bytes
+-        );
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_file_name', p_file_name, 'p_storage_path', p_storage_path, 'p_file_size_bytes', p_file_size_bytes, 'p_mime_type', p_mime_type, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'create_task_attachment', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -4501,47 +4574,60 @@
+ )
+ RETURNS JSONB AS $$
+ DECLARE
+-    v_att RECORD;
++    v_workspace_id UUID;
+     v_caller RECORD;
+-    v_payload JSONB;
++    v_resource RECORD;
++    v_cached JSONB;
+     v_hash TEXT;
+-    v_cached JSONB;
+     v_result JSONB;
+ BEGIN
+-    SELECT * INTO v_att FROM public.attachments WHERE id = p_attachment_id;
+-    IF NOT FOUND THEN RAISE EXCEPTION 'Attachment not found.'; END IF;
+-
+-    SELECT * INTO v_caller FROM private.get_caller_context(v_att.workspace_id);
+-
+-    -- Only uploader or manager/owner can delete attachments
+-    IF v_caller.role NOT IN ('owner', 'manager') AND v_att.uploader_roster_id <> v_caller.roster_person_id THEN
+-        RAISE EXCEPTION 'Permission denied: Only the uploader or a manager can delete this attachment.';
+-    END IF;
+-
+-    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object('attachment_id', p_attachment_id);
+-        v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+-        v_cached := private.fn_acquire_idempotency_lock(v_att.workspace_id, v_caller.roster_person_id, 'delete_task_attachment', p_idempotency_key, v_hash);
+-        IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+-    END IF;
+-
+-    DELETE FROM public.attachments WHERE id = p_attachment_id;
+-
+-    INSERT INTO public.audit_events (
+-        workspace_id, actor_id, action, entity_type, entity_id, metadata
+-    ) VALUES (
+-        v_att.workspace_id, v_caller.roster_person_id, 'delete_task_attachment', 'attachments', p_attachment_id,
+-        jsonb_build_object('storage_path', v_att.storage_path, 'file_name', v_att.file_name)
+-    );
+-
+-    v_result := jsonb_build_object('success', TRUE, 'attachment_id', p_attachment_id);
+-    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        PERFORM private.fn_record_idempotency(v_att.workspace_id, v_caller.roster_person_id, 'delete_task_attachment', p_idempotency_key, v_hash, v_result);
+-    END IF;
+-
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN
++        RAISE EXCEPTION 'Idempotency key cannot be blank.';
++    END IF;
++    SELECT workspace_id INTO v_workspace_id FROM public.attachments WHERE id=p_attachment_id;
++    IF v_workspace_id IS NULL AND p_idempotency_key IS NOT NULL THEN
++        SELECT ir.workspace_id INTO v_workspace_id
++        FROM public.rpc_idempotency_records ir
++        JOIN public.workspace_memberships wm ON wm.workspace_id=ir.workspace_id AND wm.roster_person_id=ir.actor_id
++        JOIN public.roster_people rp ON rp.id=wm.roster_person_id
++        WHERE wm.user_id=auth.uid() AND wm.is_active AND rp.is_active
++          AND ir.operation_name='delete_task_attachment' AND ir.idempotency_key=p_idempotency_key
++          AND ir.response_payload->>'attachment_id'=p_attachment_id::text
++          AND (p_workspace_id IS NULL OR ir.workspace_id=p_workspace_id)
++        LIMIT 1;
++    END IF;
++    IF v_workspace_id IS NULL THEN RAISE EXCEPTION 'Resource not found or no access.'; END IF;
++    IF p_workspace_id IS NOT NULL AND p_workspace_id <> v_workspace_id THEN RAISE EXCEPTION 'Workspace mismatch.'; END IF;
++    SELECT * INTO v_caller FROM private.get_caller_context(v_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id=v_workspace_id FOR UPDATE;
++    IF p_idempotency_key IS NOT NULL THEN
++        v_hash := encode(extensions.digest(jsonb_build_object('p_attachment_id',p_attachment_id,'p_workspace_id',p_workspace_id)::text,'sha256'),'hex');
++        v_cached := private.fn_acquire_idempotency_lock(v_workspace_id,v_caller.roster_person_id,'delete_task_attachment',p_idempotency_key,v_hash);
++        IF v_cached IS NOT NULL THEN
++            IF private.can_access_task((v_cached->>'task_id')::uuid) IS NOT TRUE THEN RAISE EXCEPTION 'Access denied.'; END IF;
++            RETURN v_cached;
++        END IF;
++    END IF;
++    SELECT * INTO v_resource FROM public.attachments WHERE workspace_id=v_workspace_id AND id=p_attachment_id FOR UPDATE;
++    IF NOT FOUND THEN RAISE EXCEPTION 'Resource not found.'; END IF;
++    IF private.can_work_on_task(v_resource.task_id) IS NOT TRUE THEN RAISE EXCEPTION 'Access denied.'; END IF;
++    IF v_caller.role NOT IN ('owner','manager') AND v_resource.uploader_roster_id <> v_caller.roster_person_id THEN
++        RAISE EXCEPTION 'Only uploader or management may delete an attachment.';
++    END IF;
++    IF EXISTS(SELECT 1 FROM public.tasks WHERE final_deliverable_attachment_id=p_attachment_id) THEN
++        RAISE EXCEPTION 'Cannot delete the selected final deliverable. Replace it through the delivery workflow first.';
++    END IF;
++    DELETE FROM public.attachments WHERE id=p_attachment_id;
++    INSERT INTO public.audit_events(workspace_id,actor_id,action,entity_type,entity_id,metadata)
++    VALUES(v_workspace_id,v_caller.roster_person_id,'delete_task_attachment','attachments',p_attachment_id,jsonb_build_object('task_id',v_resource.task_id));
++    v_result := jsonb_build_object('success',true,'attachment_id',p_attachment_id,'task_id',v_resource.task_id);
++    IF p_idempotency_key IS NOT NULL THEN
++        PERFORM private.fn_record_idempotency(v_workspace_id,v_caller.roster_person_id,'delete_task_attachment',p_idempotency_key,v_hash,v_result);
++    END IF;
+     RETURN v_result;
+ END;
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
++
+ 
+ -- -----------------------------------------------------------------------------
+ -- TASK PRIORITY RPCS (Audited)
+@@ -4562,6 +4648,7 @@
+     v_cached JSONB;
+     v_result JSONB;
+ BEGIN
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
+     IF p_workspace_id IS NOT NULL THEN
+         v_effective_workspace_id := p_workspace_id;
+     ELSE
+@@ -4570,12 +4657,13 @@
+     END IF;
+ 
+     SELECT * INTO v_caller FROM private.get_caller_context(v_effective_workspace_id);
++    PERFORM 1 FROM public.workspaces WHERE id = v_effective_workspace_id FOR UPDATE;
+     IF v_caller.role NOT IN ('owner', 'manager') THEN
+         RAISE EXCEPTION 'Permission denied: Only Owner or Manager can change task priority.';
+     END IF;
+ 
+     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
+-        v_payload := jsonb_build_object('workspace_id', v_effective_workspace_id, 'task_id', p_task_id, 'priority', p_priority);
++        v_payload := jsonb_build_object('p_task_id', p_task_id, 'p_priority', p_priority, 'p_workspace_id', p_workspace_id);
+         v_hash := pg_catalog.encode(extensions.digest(v_payload::TEXT, 'sha256'), 'hex');
+         v_cached := private.fn_acquire_idempotency_lock(v_effective_workspace_id, v_caller.roster_person_id, 'update_task_priority', p_idempotency_key, v_hash);
+         IF v_cached IS NOT NULL THEN RETURN v_cached; END IF;
+@@ -4605,52 +4693,54 @@
+ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+ 
+ 
+--- -----------------------------------------------------------------------------
+--- EXPLICIT ACL REVOCATIONS & AUTHORIZED EXECUTION GRANTS
+--- -----------------------------------------------------------------------------
+--- 1. Revoke default PUBLIC and anon execution on all routines in public and private schemas
+-REVOKE ALL ON ALL ROUTINES IN SCHEMA public FROM PUBLIC, anon;
++
++REVOKE ALL ON ALL ROUTINES IN SCHEMA public FROM PUBLIC, anon, authenticated;
+ REVOKE ALL ON ALL ROUTINES IN SCHEMA private FROM PUBLIC, anon, authenticated;
+-
+--- 2. Grant execution on RLS predicate helpers to authenticated
+ GRANT EXECUTE ON FUNCTION private.is_workspace_member(UUID) TO authenticated;
+ GRANT EXECUTE ON FUNCTION private.caller_roster_id(UUID) TO authenticated;
+ GRANT EXECUTE ON FUNCTION private.caller_role(UUID) TO authenticated;
+ GRANT EXECUTE ON FUNCTION private.is_workspace_manager(UUID) TO authenticated;
+ GRANT EXECUTE ON FUNCTION private.can_access_task(UUID) TO authenticated;
+ GRANT EXECUTE ON FUNCTION private.can_work_on_task(UUID) TO authenticated;
+-
+--- 3. Grant execution on intended business RPCs to authenticated
++GRANT EXECUTE ON FUNCTION public.safe_cast_uuid(TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.create_workspace_invitation(UUID, TEXT, public.roster_role, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.accept_workspace_invitation(TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.revoke_workspace_invitation(UUID, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.transfer_workspace_ownership(UUID, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.bootstrap_owner(UUID, UUID, UUID) TO service_role;
+ GRANT EXECUTE ON FUNCTION public.create_task_rpc(UUID, UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, public.task_priority, UUID, UUID, TIMESTAMPTZ, NUMERIC, TEXT, TEXT[], TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.create_task(UUID, UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, public.task_priority, UUID, UUID, TIMESTAMPTZ, NUMERIC, TEXT, TEXT[], TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.update_task_details(UUID, TEXT, TEXT, TEXT, TEXT, NUMERIC, TEXT, TEXT[], UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.create_task(UUID, UUID, UUID, TEXT, TEXT, TEXT, public.task_priority, UUID, UUID, TIMESTAMPTZ, INT, TEXT, TEXT, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.update_task_details(UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, public.task_priority, TEXT, TEXT[], TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.transition_task_status(UUID, public.task_status, public.task_status, TEXT, TEXT, TEXT, UUID, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.reassign_task(UUID, UUID, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.change_task_assignee(UUID, UUID, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.change_task_reviewer(UUID, UUID, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.reassign_task(UUID, UUID, TEXT, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.change_task_assignee(UUID, UUID, TEXT, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.change_task_reviewer(UUID, UUID, TEXT, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.update_task_due_date(UUID, TIMESTAMPTZ, TEXT, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.change_task_due_date(UUID, TIMESTAMPTZ, TEXT, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.submit_review_round(UUID, TEXT, TEXT, public.review_round_type, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.decide_review_round(UUID, public.review_decision, TEXT, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.decide_review_round(public.review_decision, UUID, UUID, TEXT, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.start_or_switch_timer(UUID, public.time_category, TEXT, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.start_timer_on_behalf(UUID, TEXT, UUID, UUID, public.time_category, TEXT, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.stop_timer(UUID, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.stop_timer(UUID, TEXT, TEXT, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.create_manual_time_entry(UUID, TIMESTAMPTZ, TIMESTAMPTZ, public.time_category, TEXT, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.record_manual_time_entry(UUID, TIMESTAMPTZ, TIMESTAMPTZ, public.time_category, TEXT, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.void_time_entry(UUID, TEXT, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.request_time_correction(UUID, TIMESTAMPTZ, TIMESTAMPTZ, public.time_category, TEXT, TEXT, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.decide_time_correction(UUID, public.correction_status, TEXT, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.create_client(UUID, TEXT, public.client_difficulty, public.client_extra_workload, public.client_state, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.update_client(UUID, TEXT, public.client_difficulty, public.client_extra_workload, public.client_state, UUID, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.void_time_entry(UUID, TEXT, TEXT, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.request_time_correction(UUID, TIMESTAMPTZ, TIMESTAMPTZ, TEXT, public.time_category, TEXT, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.decide_time_correction(UUID, public.correction_status, TEXT, TEXT, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.create_client(UUID, TEXT, UUID, public.client_difficulty, public.client_extra_workload, public.client_state, TEXT, TEXT, TEXT, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.update_client(UUID, UUID, TEXT, UUID, public.client_difficulty, public.client_extra_workload, public.client_state, TEXT, TEXT, TEXT, BOOLEAN, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.archive_client(UUID, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.create_campaign(UUID, UUID, TEXT, TEXT, TEXT, DATE, DATE, public.campaign_status, TEXT[], TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.create_campaign(UUID, UUID, TEXT, TEXT, TEXT, DATE, DATE, public.campaign_status, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.generate_campaign_posts(UUID, UUID, UUID, INT, TEXT, public.task_priority, UUID, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.upsert_member_capacity(UUID, UUID, NUMERIC, NUMERIC, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.manage_leave_day(UUID, UUID, DATE, NUMERIC, public.leave_type, TEXT, UUID, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.update_workspace_settings(UUID, TEXT, INT[], TIME, TIME, INT, TEXT, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.create_roster_person(UUID, TEXT, TEXT, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.update_roster_person(UUID, UUID, TEXT, TEXT, BOOLEAN, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.create_review_routing_rule(UUID, INT, UUID, public.client_difficulty, UUID, UUID, BOOLEAN, TEXT) TO authenticated;
++GRANT EXECUTE ON FUNCTION public.delete_review_routing_rule(UUID, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.update_campaign(UUID, TEXT, TEXT, TEXT, DATE, DATE, public.campaign_status, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.archive_campaign(UUID, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.generate_campaign_posts(UUID, UUID, UUID, INT, TEXT, public.task_priority, UUID, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.add_task_collaborator(UUID, UUID, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.remove_task_collaborator(UUID, UUID, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.create_task_checklist_item(UUID, TEXT, INT, UUID, TEXT) TO authenticated;
+@@ -4659,20 +4749,5 @@
+ GRANT EXECUTE ON FUNCTION public.create_task_attachment(UUID, TEXT, TEXT, BIGINT, TEXT, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.delete_task_attachment(UUID, UUID, TEXT) TO authenticated;
+ GRANT EXECUTE ON FUNCTION public.update_task_priority(UUID, public.task_priority, UUID, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.upsert_member_capacity(UUID, UUID, NUMERIC, NUMERIC, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.manage_leave_day(UUID, UUID, DATE, TEXT, TEXT, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.update_workspace_settings(UUID, TEXT, INT[], TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.create_roster_person(UUID, TEXT, TEXT, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.update_roster_person(UUID, UUID, TEXT, TEXT, BOOLEAN, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.create_review_routing_rule(UUID, TEXT, public.review_round_type, public.client_difficulty, UUID, INT, BOOLEAN, TEXT) TO authenticated;
+-GRANT EXECUTE ON FUNCTION public.delete_review_routing_rule(UUID, UUID, TEXT) TO authenticated;
+-
+--- 4. bootstrap_owner strictly granted to service_role ONLY
+-REVOKE ALL ON FUNCTION public.bootstrap_owner(UUID, UUID, UUID) FROM PUBLIC, anon, authenticated;
+-GRANT EXECUTE ON FUNCTION public.bootstrap_owner(UUID, UUID, UUID) TO service_role;
+-
+--- 5. Full service_role execution on all routines
+-GRANT ALL ON ALL ROUTINES IN SCHEMA public TO service_role;
+-GRANT ALL ON ALL ROUTINES IN SCHEMA private TO service_role;
+-
++GRANT ALL ON ALL ROUTINES IN SCHEMA public, private TO service_role;
+ COMMIT;
+--- original/20260906000003_rls_policies.sql
++++ migrations/20260906000003_rls_policies.sql
+@@ -1,8 +1,13 @@
+--- OMG Creative Workspace: Row Level Security & Storage Policies (V3.5 Clean Baseline)
++-- OMG Creative Workspace: Row Level Security & Storage Policies (V3.5-R1 repaired baseline)
+ -- Migration: 20260906000003_rls_policies.sql
+ -- Strictly Transactional: Everything wrapped in BEGIN; ... COMMIT;
+ 
+ BEGIN;
++-- Required private buckets. Public downloads must never bypass object RLS.
++INSERT INTO storage.buckets(id,name,public,file_size_limit)
++VALUES ('deliverables','deliverables',false,104857600),
++       ('workspace-assets','workspace-assets',false,104857600)
++ON CONFLICT (id) DO NOTHING;
+ 
+ -- -----------------------------------------------------------------------------
+ -- 1. ENABLE RLS ON ALL PUBLIC TABLES
+@@ -278,7 +283,7 @@
+     v_task UUID;
+ BEGIN
+     v_parts := pg_catalog.string_to_array(p_name, '/');
+-    IF array_length(v_parts, 1) <> 3 THEN
++    IF array_length(v_parts, 1) IS DISTINCT FROM 3 OR btrim(COALESCE(v_parts[3],'')) = '' THEN
+         RETURN QUERY SELECT NULL::UUID, NULL::UUID, FALSE;
+         RETURN;
+     END IF;
+@@ -307,7 +312,7 @@
+     v_ws UUID;
+ BEGIN
+     v_parts := pg_catalog.string_to_array(p_name, '/');
+-    IF array_length(v_parts, 1) <> 2 THEN
++    IF array_length(v_parts, 1) IS DISTINCT FROM 2 OR btrim(COALESCE(v_parts[2],'')) = '' THEN
+         RETURN QUERY SELECT NULL::UUID, FALSE;
+         RETURN;
+     END IF;
+--- original/20260906000004_seed_roster_and_clients.sql
++++ migrations/20260906000004_seed_roster_and_clients.sql
+@@ -1,4 +1,4 @@
+--- OMG Creative Workspace: Seed Data (Roster, Configurable Routing & Clients) (V3.5 Clean Baseline)
++-- OMG Creative Workspace: Seed Data (Roster, Configurable Routing & Clients) (V3.5-R1 repaired baseline)
+ -- Migration: 20260906000004_seed_roster_and_clients.sql
+ -- Strictly Transactional: Everything wrapped in BEGIN; ... COMMIT;
+ 
+--- original/20260906000005_monthly_report_functions.sql
++++ migrations/20260906000005_monthly_report_functions.sql
+@@ -1,4 +1,4 @@
+--- OMG Creative Workspace: Monthly Report Functions & Historical Snapshots (V3.5 Clean Baseline)
++-- OMG Creative Workspace: Monthly Report Functions & Historical Snapshots (V3.5-R1 repaired baseline)
+ -- Migration: 20260906000005_monthly_report_functions.sql
+ -- Strictly Transactional: Everything wrapped in BEGIN; ... COMMIT;
+ 
+@@ -268,11 +268,11 @@
+     WITH eligible_roster AS (
+         SELECT rp.id, rp.display_name, rp.job_title, COALESCE(wm.role, 'designer') AS role
+         FROM public.roster_people rp
+-        LEFT JOIN public.workspace_memberships wm ON wm.roster_person_id = rp.id AND wm.workspace_id = p_workspace_id
++        LEFT JOIN public.workspace_memberships wm ON wm.roster_person_id = rp.id AND wm.workspace_id = p_workspace_id AND wm.is_active = TRUE
+         WHERE rp.workspace_id = p_workspace_id
+           AND rp.is_active = TRUE
+           AND rp.created_at < v_interval_end
+-          AND (wm.role IS NULL OR wm.role <> 'owner' OR wm.is_active = FALSE)
++          AND (wm.role IS NULL OR wm.role <> 'owner')
+     ),
+     designer_hours AS (
+         SELECT
+@@ -283,7 +283,7 @@
+                 ))) / 3600.0
+             ), 2) AS logged_hours,
+             ROUND(SUM(
+-                CASE WHEN category = 'design' THEN
++                CASE WHEN category = 'initial_design' THEN
+                     GREATEST(0, EXTRACT(EPOCH FROM (
+                         LEAST(ended_at, v_interval_end) - GREATEST(started_at, v_interval_start)
+                     ))) / 3600.0
+@@ -655,10 +655,14 @@
+         RAISE EXCEPTION 'Permission denied: only Owner or Manager can finalize monthly report snapshots.';
+     END IF;
+ 
++    IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) = '' THEN RAISE EXCEPTION 'Idempotency key cannot be blank.'; END IF;
++
+     -- Validate month key format
+     IF p_month_key IS NULL OR p_month_key !~ '^[0-9]{4}-(0[1-9]|1[0-2])$' THEN
+         RAISE EXCEPTION 'Invalid month key format. Expected YYYY-MM, received: %', p_month_key;
+     END IF;
++
++    PERFORM 1 FROM public.workspaces WHERE id = p_workspace_id FOR UPDATE;
+ 
+     -- Acquire exclusive transaction-level advisory lock for workspace and month
+     PERFORM pg_catalog.pg_advisory_xact_lock(
+@@ -690,24 +694,14 @@
+     v_draft := public.generate_monthly_report_draft(p_workspace_id, p_month_key);
+     v_timezone := v_draft->>'timezone';
+ 
+-    -- Compute SHA-256 integrity hash across canonical draft payload and commentary
+-    v_content_hash := pg_catalog.encode(
+-        extensions.digest(
+-            p_workspace_id::TEXT || ':' ||
+-            p_month_key || ':' ||
+-            v_next_revision::TEXT || ':' ||
+-            v_timezone || ':' ||
+-            (v_draft->'executiveSummary')::TEXT || ':' ||
+-            (v_draft->'timingMetrics')::TEXT || ':' ||
+-            (v_draft->'designerSummary')::TEXT || ':' ||
+-            (v_draft->'clientSummary')::TEXT || ':' ||
+-            (v_draft->'campaignSummary')::TEXT || ':' ||
+-            (v_draft->'warnings')::TEXT || ':' ||
+-            COALESCE(p_management_commentary, '{}'::JSONB)::TEXT,
+-            'sha256'
+-        ),
+-        'hex'
+-    );
++    v_draft := v_draft || jsonb_build_object(
++        'isFinalized', true, 'revisionNumber', v_next_revision,
++        'finalizedAt', v_finalized_at, 'finalizedById', v_caller.roster_person_id,
++        'managementCommentary', COALESCE(p_management_commentary, '{}'::jsonb));
++
++    -- Hash the full payload including the timestamp and commentary.
++
++    v_content_hash := encode(extensions.digest(v_draft::text,'sha256'),'hex');
+ 
+     -- Insert immutable snapshot row using single server timestamp
+     INSERT INTO public.monthly_report_snapshots (
