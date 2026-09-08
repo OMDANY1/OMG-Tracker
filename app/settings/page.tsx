@@ -11,6 +11,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
+  Mail,
+  PauseCircle,
+  PlayCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +23,55 @@ export default function SettingsPage() {
   const [threshold, setThreshold] = useState("240");
   const [diagnostics, setDiagnostics] = useState<any>(null);
   const [testing, setTesting] = useState(false);
+  const [invitationsPaused, setInvitationsPaused] = useState<boolean>(true);
+  const [workspaceId, setWorkspaceId] = useState<string>("");
+  const [updatingPause, setUpdatingPause] = useState<boolean>(false);
+  const [pauseError, setPauseError] = useState<string | null>(null);
+
+  const fetchInvitationStatus = async () => {
+    try {
+      const res = await fetch("/api/workspace/invitations-status");
+      if (res.ok) {
+        const data = await res.json();
+        setInvitationsPaused(data.invitationsPaused ?? true);
+        setWorkspaceId(data.workspaceId || "");
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const toggleInvitationsPause = async () => {
+    if (!workspaceId) return;
+    const targetState = !invitationsPaused;
+    if (!targetState && !confirm("هل أنت متأكد من رغبتك في إعادة فتح الدعوات الآن؟")) {
+      return;
+    }
+
+    setUpdatingPause(true);
+    setPauseError(null);
+    try {
+      const res = await fetch("/api/workspace/invitations-status", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          paused: targetState,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "فشل تحديث حالة الدعوات.");
+      }
+
+      setInvitationsPaused(data.invitationsPaused);
+    } catch (err: any) {
+      setPauseError(err.message || "حدث خطأ أثناء تعديل الإعداد.");
+    } finally {
+      setUpdatingPause(false);
+    }
+  };
 
   const runDiagnostics = async () => {
     setTesting(true);
@@ -36,6 +88,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     runDiagnostics();
+    fetchInvitationStatus();
   }, []);
 
   return (
@@ -162,6 +215,74 @@ export default function SettingsPage() {
               </ol>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Section: Invitations Control (Owner Only) */}
+      <div className="bg-surface rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4 text-xs">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <h2 className="font-bold text-base text-slate-900 flex items-center gap-2">
+            <Mail className="w-4 h-4 text-sky-600" />
+            حالة قبول الدعوات (إدارة المدير العام)
+          </h2>
+          <span
+            className={cn(
+              "px-3 py-1 rounded-full text-xs font-bold border",
+              invitationsPaused
+                ? "bg-amber-50 text-amber-700 border-amber-200"
+                : "bg-emerald-50 text-emerald-700 border-emerald-200"
+            )}
+          >
+            {invitationsPaused ? "متوقفة مؤقتًا" : "مفتوحة ومفعلة"}
+          </span>
+        </div>
+
+        <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div>
+              <div className="font-bold text-slate-800">إيقاف استقبال وقبول الدعوات لجميع الأعضاء:</div>
+              <p className="text-slate-500 text-[11px] mt-0.5">
+                عند التفعيل، يتم حظر قبول أي رابط دعوة قديم أو إرسال دعوات جديدة في مساحة العمل وتظهر رسالة التوقف المؤقت.
+              </p>
+            </div>
+            <button
+              onClick={toggleInvitationsPause}
+              disabled={updatingPause}
+              className={cn(
+                "px-4 py-2 rounded-xl text-xs font-bold text-white transition-colors flex items-center gap-1.5 shadow-xs shrink-0",
+                invitationsPaused
+                  ? "bg-emerald-600 hover:bg-emerald-700"
+                  : "bg-rose-600 hover:bg-rose-700"
+              )}
+            >
+              {updatingPause ? (
+                <span>جاري الحفظ...</span>
+              ) : invitationsPaused ? (
+                <>
+                  <PlayCircle className="w-4 h-4" />
+                  <span>إعادة فتح الدعوات</span>
+                </>
+              ) : (
+                <>
+                  <PauseCircle className="w-4 h-4" />
+                  <span>إيقاف الدعوات مؤقتًا</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {pauseError && (
+            <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-[11px] font-semibold">
+              {pauseError}
+            </div>
+          )}
+
+          <div className="p-3 bg-amber-50/80 border border-amber-200/80 rounded-lg text-amber-900 text-[11px] leading-relaxed">
+            <strong>نص الرسالة التي تظهر للمستخدم عند فتح رابط قديم أثناء التوقف:</strong>
+            <p className="mt-1 font-semibold text-amber-800">
+              «الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. سيصلك رابط جديد عند إعادة فتح الدعوات.»
+            </p>
+          </div>
         </div>
       </div>
 

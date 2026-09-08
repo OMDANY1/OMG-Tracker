@@ -14,7 +14,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
-  backlog: "قائمة الانتظار",
+  backlog: "انتظار",
   ready: "جاهز للتنفيذ",
   in_progress: "قيد التنفيذ",
   internal_review: "مراجعة داخلية",

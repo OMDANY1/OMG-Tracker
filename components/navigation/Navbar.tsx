@@ -6,6 +6,7 @@ import { RoleSwitcher } from "@/components/common/RoleSwitcher";
 import { Clock } from "lucide-react";
 import { formatCairoTime } from "@/lib/timezone";
 import { UserMenu } from "@/components/navigation/UserMenu";
+import { NotificationBell } from "@/components/navigation/NotificationBell";
 
 export function Navbar() {
   const [cairoTime, setCairoTime] = useState<string>("");
@@ -34,6 +35,7 @@ export function Navbar() {
           <span>توقيت القاهرة:</span>
           <span className="font-bold text-slate-700">{cairoTime || "11:00"}</span>
         </div>
+        <NotificationBell />
         <UserMenu />
       </div>
     </header>

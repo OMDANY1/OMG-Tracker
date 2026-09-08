@@ -585,6 +585,131 @@ async function runTestSuite() {
   assert(sanitizeCsvValue("+12345") === "'+12345", "Sanitizes CSV formula +");
   assert(sanitizeCsvValue("@evil") === "'@evil", "Sanitizes CSV formula @");
 
+  // [Scenario 55] Migration 8: Content Calendars & Pause Invitations Structure & Transactional Integrity
+  console.log("\n[Scenario 55] Content Calendars & Pause Invitations (Migration 8)...");
+  const mig8Path = path.join(migrationsDir, "20260908000008_content_calendars_and_pause_invitations.sql");
+  assert(fs.existsSync(mig8Path), "Migration 8 file exists");
+  if (fs.existsSync(mig8Path)) {
+    const mig8Sql = fs.readFileSync(mig8Path, "utf-8");
+    const mig8Begins = (mig8Sql.match(/^BEGIN;/gm) || []).length;
+    const mig8Commits = (mig8Sql.match(/^COMMIT;/gm) || []).length;
+    assert(mig8Begins === 1 && mig8Commits === 1, "Migration 8 has exactly 1 BEGIN and 1 COMMIT");
+    assert(mig8Sql.includes("invitations_paused BOOLEAN NOT NULL DEFAULT TRUE"), "Migration 8 adds invitations_paused default true");
+    assert(mig8Sql.includes("FUNCTION private.is_workspace_owner("), "Migration 8 creates private.is_workspace_owner helper");
+    assert(mig8Sql.includes("FUNCTION public.set_workspace_invitations_paused("), "Migration 8 creates set_workspace_invitations_paused RPC");
+    assert(mig8Sql.includes("INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)"), "Migration 8 configures content-calendars private bucket with 15MB limit");
+    assert(mig8Sql.includes("TABLE IF NOT EXISTS public.content_calendar_items"), "Migration 8 creates content_calendar_items table");
+    assert(mig8Sql.includes("CONSTRAINT uq_cci_composite UNIQUE"), "Migration 8 enforces composite uniqueness on content_calendar_items");
+    assert(mig8Sql.includes("calendar_status IN ('uploaded', 'processing', 'needs_review', 'ready', 'imported', 'failed', 'archived')"), "Migration 8 enforces calendar_status check constraint");
+    assert(mig8Sql.includes("FUNCTION public.import_content_calendar_tasks("), "Migration 8 creates atomic import_content_calendar_tasks RPC");
+    assert(mig8Sql.includes("v_target_assignee_id = v_owner_roster_id THEN"), "Migration 8 includes review bypass logic for Owner in batch task import");
+    assert(mig8Sql.includes("'backlog'"), "Migration 8 imports tasks into backlog status (mapped to انتظار in UI)");
+    assert(mig8Sql.includes("ALTER TABLE public.in_app_notifications"), "Migration 8 extends in_app_notifications table");
+    assert(mig8Sql.includes("ADD COLUMN IF NOT EXISTS action_url TEXT"), "Migration 8 adds action_url to in_app_notifications");
+    assert(mig8Sql.includes("trg_protect_notif_update"), "Migration 8 attaches tamper-protection trigger to in_app_notifications");
+    assert(mig8Sql.includes("REVOKE ALL ON FUNCTION public.import_content_calendar_tasks"), "Migration 8 revokes public execution on import RPC");
+    assert(mig8Sql.includes("GRANT EXECUTE ON FUNCTION public.import_content_calendar_tasks"), "Migration 8 grants execution on import RPC to authenticated");
+  }
+
+  // [Scenario 56] Immediate Invitations Pause Server & Client Guards
+  console.log("\n[Scenario 56] Immediate Invitations Pause Server & Client Guards...");
+  const inviteStatusRoute = path.join(__dirname, "../app/api/workspace/invitations-status/route.ts");
+  assert(fs.existsSync(inviteStatusRoute), "app/api/workspace/invitations-status/route.ts exists");
+  if (fs.existsSync(inviteStatusRoute)) {
+    const routeContent = fs.readFileSync(inviteStatusRoute, "utf-8");
+    assert(routeContent.includes("set_workspace_invitations_paused"), "Route calls set_workspace_invitations_paused RPC");
+    assert(routeContent.includes("export async function GET"), "Route exports GET handler");
+    assert(routeContent.includes("export async function PATCH"), "Route exports PATCH handler");
+  }
+
+  const acceptInviteRoute = path.join(__dirname, "../app/api/auth/accept-invite/route.ts");
+  assert(fs.existsSync(acceptInviteRoute), "app/api/auth/accept-invite/route.ts exists");
+  if (fs.existsSync(acceptInviteRoute)) {
+    const acceptRouteContent = fs.readFileSync(acceptInviteRoute, "utf-8");
+    assert(acceptRouteContent.includes("invitations_paused"), "Accept invite route checks invitations_paused state");
+    assert(acceptRouteContent.includes("status: 403"), "Accept invite route returns HTTP 403 when invitations are paused");
+  }
+
+  const acceptInvitePage = path.join(__dirname, "../app/accept-invite/page.tsx");
+  assert(fs.existsSync(acceptInvitePage), "app/accept-invite/page.tsx exists");
+  if (fs.existsSync(acceptInvitePage)) {
+    const pageContent = fs.readFileSync(acceptInvitePage, "utf-8");
+    const requiredNotice = "الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. سيصلك رابط جديد عند إعادة فتح الدعوات.";
+    assert(pageContent.includes(requiredNotice), "Accept invite page contains the exact required Arabic paused message");
+  }
+
+  const settingsPage = path.join(__dirname, "../app/settings/page.tsx");
+  assert(fs.existsSync(settingsPage), "app/settings/page.tsx exists");
+  if (fs.existsSync(settingsPage)) {
+    const settingsContent = fs.readFileSync(settingsPage, "utf-8");
+    assert(settingsContent.includes("حالة قبول الدعوات"), "Settings page contains Owner toggle for invitations paused status");
+  }
+
+  // [Scenario 57] Monthly Content Calendars PDF Parser & Extractor Pipeline
+  console.log("\n[Scenario 57] Monthly Content Calendars PDF Extractor Pipeline...");
+  const pdfExtractorPath = path.join(__dirname, "../lib/services/pdf-extractor.ts");
+  assert(fs.existsSync(pdfExtractorPath), "lib/services/pdf-extractor.ts exists");
+  const { validatePdfBuffer } = await import("../lib/services/pdf-extractor");
+  
+  // Non-PDF buffer validation
+  const invalidBuffer = Buffer.from("NOT_A_PDF_STREAM");
+  const invalidResult = validatePdfBuffer(invalidBuffer);
+  assert(!invalidResult.valid, "validatePdfBuffer rejects non-PDF buffer");
+
+  // Empty buffer validation
+  const emptyResult = validatePdfBuffer(Buffer.alloc(0));
+  assert(!emptyResult.valid, "validatePdfBuffer rejects empty buffer");
+
+  // Valid PDF header simulation
+  const validHeaderBuffer = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF");
+  const validHeaderResult = validatePdfBuffer(validHeaderBuffer);
+  assert(validHeaderResult.valid, "validatePdfBuffer accepts buffer starting with %PDF-");
+
+  // Buffer exceeding 15MB limit
+  const oversizedBuffer = Buffer.alloc(16 * 1024 * 1024);
+  const oversizedResult = validatePdfBuffer(oversizedBuffer);
+  assert(!oversizedResult.valid, "validatePdfBuffer rejects buffer over 15MB limit");
+
+  // [Scenario 58] Batch Task Generation & Review Bypass Contract
+  console.log("\n[Scenario 58] Batch Task Generation & Review Bypass Contract...");
+  assert(TASK_STATUS_LABELS.backlog === "انتظار", "Initial task status label is 'انتظار' (mapped to backlog enum)");
+  
+  const importRoutePath = path.join(__dirname, "../app/api/campaigns/import-tasks/route.ts");
+  assert(fs.existsSync(importRoutePath), "app/api/campaigns/import-tasks/route.ts exists");
+  if (fs.existsSync(importRoutePath)) {
+    const importRouteContent = fs.readFileSync(importRoutePath, "utf-8");
+    assert(importRouteContent.includes("import_content_calendar_tasks"), "import-tasks route calls import_content_calendar_tasks RPC");
+  }
+
+  // [Scenario 59] In-App Notification System Contracts
+  console.log("\n[Scenario 59] In-App Notification System Contracts...");
+  const notifBell = path.join(__dirname, "../components/navigation/NotificationBell.tsx");
+  assert(fs.existsSync(notifBell), "components/navigation/NotificationBell.tsx exists");
+  if (fs.existsSync(notifBell)) {
+    const notifBellContent = fs.readFileSync(notifBell, "utf-8");
+    assert(notifBellContent.includes("in_app_notifications"), "NotificationBell interacts with in_app_notifications table");
+    assert(notifBellContent.includes("markAsRead"), "NotificationBell implements markAsRead function");
+  }
+
+  const notifRoute = path.join(__dirname, "../app/api/notifications/route.ts");
+  assert(fs.existsSync(notifRoute), "app/api/notifications/route.ts exists");
+  if (fs.existsSync(notifRoute)) {
+    const notifRouteContent = fs.readFileSync(notifRoute, "utf-8");
+    assert(notifRouteContent.includes("export async function GET"), "Notifications API exports GET");
+    assert(notifRouteContent.includes("export async function PATCH"), "Notifications API exports PATCH");
+  }
+
+  // [Scenario 60] Campaigns UI Content Calendar Integration
+  console.log("\n[Scenario 60] Campaigns UI Content Calendar Integration...");
+  const campaignsPage = path.join(__dirname, "../app/campaigns/page.tsx");
+  assert(fs.existsSync(campaignsPage), "app/campaigns/page.tsx exists");
+  if (fs.existsSync(campaignsPage)) {
+    const campaignsContent = fs.readFileSync(campaignsPage, "utf-8");
+    assert(campaignsContent.includes("selectedMonth"), "Campaigns page includes Month Picker");
+    assert(campaignsContent.includes("handleConfirmImport"), "Campaigns page includes task import execution");
+    assert(campaignsContent.includes("handleUploadSubmit"), "Campaigns page includes PDF upload flow");
+  }
+
   console.log("==========================================================");
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");

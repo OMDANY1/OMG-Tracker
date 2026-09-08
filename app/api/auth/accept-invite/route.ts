@@ -2,6 +2,27 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+export async function GET() {
+  try {
+    const admin = createAdminClient();
+    if (!admin) {
+      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
+    }
+
+    const { data: ws } = await admin
+      .from("workspaces")
+      .select("id, invitations_paused")
+      .limit(1)
+      .single();
+
+    return NextResponse.json({
+      invitationsPaused: ws?.invitations_paused ?? true,
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const serverClient = await createServerSupabaseClient().catch(() => null);
@@ -24,6 +45,20 @@ export async function POST(req: NextRequest) {
     const admin = createAdminClient();
     if (!admin) {
       return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
+    }
+
+    // Phase 0: Enforce invitations_paused
+    const { data: ws } = await admin
+      .from("workspaces")
+      .select("id, invitations_paused")
+      .limit(1)
+      .single();
+
+    if (ws?.invitations_paused) {
+      return NextResponse.json(
+        { error: "الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. سيصلك رابط جديد عند إعادة فتح الدعوات." },
+        { status: 403 }
+      );
     }
 
     // 1. Check if user already has an active workspace membership

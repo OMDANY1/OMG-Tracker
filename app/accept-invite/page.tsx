@@ -19,48 +19,62 @@ export default function AcceptInvitePage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isExpired, setIsExpired] = useState(false);
 
   useEffect(() => {
-    const supabase = createClient();
-    if (!supabase) {
-      setErrorMsg("خدمة المصادقة غير مهيأة.");
-      setLoading(false);
-      return;
-    }
+    // Check if invitations are paused across the workspace
+    fetch("/api/auth/accept-invite")
+      .then((res) => res.json())
+      .then((statusData) => {
+        if (statusData.invitationsPaused) {
+          setIsPaused(true);
+          setLoading(false);
+          return;
+        }
 
-    // Check existing auth session
-    supabase.auth.getUser().then(({ data, error }) => {
-      if (error || !data?.user) {
-        // If arrived with hash fragment (#access_token=... or #type=invite)
-        supabase.auth.onAuthStateChange((event, session) => {
-          if (session?.user) {
-            setEmail(session.user.email || "");
-            setLoading(false);
-          } else if (event === "SIGNED_OUT" || !session) {
-            setIsExpired(true);
+        const supabase = createClient();
+        if (!supabase) {
+          setErrorMsg("خدمة المصادقة غير مهيأة.");
+          setLoading(false);
+          return;
+        }
+
+        // Check existing auth session
+        supabase.auth.getUser().then(({ data, error }) => {
+          if (error || !data?.user) {
+            supabase.auth.onAuthStateChange((event, session) => {
+              if (session?.user) {
+                setEmail(session.user.email || "");
+                setLoading(false);
+              } else if (event === "SIGNED_OUT" || !session) {
+                setIsExpired(true);
+                setLoading(false);
+              }
+            });
+
+            setTimeout(() => {
+              setLoading((prev) => {
+                if (prev) {
+                  setIsExpired(true);
+                  return false;
+                }
+                return prev;
+              });
+            }, 3000);
+          } else {
+            setEmail(data.user.email || "");
             setLoading(false);
           }
         });
-
-        // Set a timeout to mark as expired if no session resolves
-        setTimeout(() => {
-          setLoading((prev) => {
-            if (prev) {
-              setIsExpired(true);
-              return false;
-            }
-            return prev;
-          });
-        }, 3000);
-      } else {
-        setEmail(data.user.email || "");
+      })
+      .catch(() => {
+        setIsPaused(true);
         setLoading(false);
-      }
-    });
+      });
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -117,6 +131,32 @@ export default function AcceptInvitePage() {
         <div className="space-y-3">
           <div className="w-10 h-10 border-4 border-sky-600 border-t-transparent rounded-full animate-spin mx-auto" />
           <p className="text-sm font-semibold text-slate-600">جاري التحقق من بيانات الدعوة...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isPaused) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4 text-right">
+        <div className="bg-surface rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 sm:p-8 space-y-5 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center mx-auto shadow-xs">
+            <AlertTriangle className="w-7 h-7" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-xl font-bold text-slate-900">توقف مؤقت للدعوات</h1>
+            <p className="text-sm text-slate-600 leading-relaxed font-medium">
+              الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. سيصلك رابط جديد عند إعادة فتح الدعوات.
+            </p>
+          </div>
+          <div className="pt-4 border-t border-slate-100 flex justify-center">
+            <Link
+              href="/login"
+              className="px-5 py-2.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+            >
+              الذهاب إلى شاشة تسجيل الدخول
+            </Link>
+          </div>
         </div>
       </div>
     );
