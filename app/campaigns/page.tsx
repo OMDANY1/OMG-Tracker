@@ -60,6 +60,8 @@ interface ClientCalendarRow {
     detected_post_count?: number;
     declared_post_count?: number;
     ai_warnings?: string[];
+    processing_error?: string | null;
+    ai_model?: string | null;
   } | null;
   postCount: number;
   tasksCreatedCount: number;
@@ -151,6 +153,8 @@ export default function CampaignsPage() {
   const [reviewItems, setReviewItems] = useState<CalendarPostItem[]>([]);
   const [reviewPreviewUrl, setReviewPreviewUrl] = useState<string | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
+  const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
   const [importingTasks, setImportingTasks] = useState(false);
   const [importSummary, setImportSummary] = useState<any>(null);
   const [showConfirmation, setShowConfirmation] = useState(false);
@@ -376,12 +380,15 @@ export default function CampaignsPage() {
       const processRes = await fetch("/api/campaigns/process-calendar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaignId }),
+        body: JSON.stringify({ campaignId, forceRefresh: true }),
       });
 
       const processData = await processRes.json();
       if (!processRes.ok) {
-        console.warn("AI processing warning:", processData.error);
+        if (processRes.status === 503 || processData.code === "GEMINI_NOT_CONFIGURED") {
+          throw new Error("تحليل Gemini غير مهيأ — لم يتم تحليل الملف");
+        }
+        throw new Error(processData.safeMessageAr || processData.error || "فشل تحليل التقويم بالذكاء الاصطناعي.");
       }
 
       setShowUploadModal(false);
@@ -420,6 +427,35 @@ export default function CampaignsPage() {
       console.error(e);
     } finally {
       setReviewLoading(false);
+    }
+  };
+
+  // Re-run AI Analysis on Campaign
+  const handleReanalyze = async (campaignId: string) => {
+    if (!campaignId) return;
+    setReanalyzing(true);
+    setReanalyzeError(null);
+    try {
+      const res = await fetch("/api/campaigns/process-calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId, forceRefresh: true, forceNewAnalysis: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (res.status === 503 || data.code === "GEMINI_NOT_CONFIGURED") {
+          throw new Error("تحليل Gemini غير مهيأ — لم يتم تحليل الملف");
+        }
+        throw new Error(data.safeMessageAr || data.error || "فشل إعادة تحليل التقويم.");
+      }
+      await fetchData();
+      if (reviewCampaign?.client_id) {
+        await openReviewMatrix(reviewCampaign.client_id);
+      }
+    } catch (err: any) {
+      setReanalyzeError(err.message || "فشل التحليل");
+    } finally {
+      setReanalyzing(false);
     }
   };
 
@@ -850,6 +886,11 @@ export default function CampaignsPage() {
                           <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                           تم الاستيراد
                         </span>
+                      ) : (status === "failed" || row.campaign?.calendar_status === "failed") ? (
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200 flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3 text-rose-600" />
+                          فشل التحليل
+                        </span>
                       ) : status === "needs_review" ? (
                         <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
                           <Sparkles className="w-3 h-3 text-purple-600" />
@@ -867,17 +908,25 @@ export default function CampaignsPage() {
                     </div>
                   </div>
 
-                  {/* AI Metadata Stats if available */}
-                  {hasCampaign && (
+                  {/* Processing Error Notice if failed */}
+                  {hasCampaign && row.campaign?.processing_error && (
+                    <div className="my-2 p-2 bg-rose-50 border border-rose-200 rounded-xl text-[11px] text-rose-800 flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-600 mt-0.5" />
+                      <span className="leading-tight">{row.campaign.processing_error}</span>
+                    </div>
+                  )}
+
+                  {/* AI Metadata Stats if real confidence is present */}
+                  {hasCampaign && row.aiConfidence != null && (
                     <div className="my-3 p-2.5 bg-slate-50 rounded-xl border border-slate-100 grid grid-cols-2 gap-2 text-[11px]">
                       <div>
                         <span className="text-slate-400 block text-[10px]">البوستات المكتشفة:</span>
-                        <strong className="text-slate-800 text-xs">{row.detectedPostCount || row.postCount} بوست</strong>
+                        <strong className="text-slate-800 text-xs">{row.detectedPostCount ?? row.postCount} بوست</strong>
                       </div>
                       <div>
                         <span className="text-slate-400 block text-[10px]">دقة التحليل:</span>
                         <strong className="text-purple-700 text-xs">
-                          {row.aiConfidence ? `${Math.round(row.aiConfidence * 100)}%` : "95% (ذكي)"}
+                          {`${Math.round(row.aiConfidence * 100)}%`}
                         </strong>
                       </div>
                     </div>
@@ -1161,15 +1210,24 @@ export default function CampaignsPage() {
                     إصدار #{reviewCampaign?.revision_number || 1}
                   </span>
                   {/* AI Model & Confidence Badge */}
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3 text-purple-600" />
-                    دقة التحليل: {Math.round((reviewCampaign?.ai_overall_confidence || 0.95) * 100)}%
-                  </span>
+                  {reviewCampaign?.ai_overall_confidence != null && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 text-purple-600" />
+                      دقة التحليل: {Math.round(reviewCampaign.ai_overall_confidence * 100)}%
+                    </span>
+                  )}
+                  {reviewCampaign?.ai_model && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                      {reviewCampaign.ai_model}
+                    </span>
+                  )}
                   {/* Detected vs Declared count badge */}
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
-                    البوستات المكتشفة: {reviewCampaign?.detected_post_count || reviewItems.filter((i) => !i.is_excluded_from_tasks).length}
-                    {reviewCampaign?.declared_post_count ? ` (المعلن: ${reviewCampaign.declared_post_count})` : ""}
-                  </span>
+                  {reviewCampaign?.detected_post_count != null && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                      البوستات المكتشفة: {reviewCampaign.detected_post_count}
+                      {reviewCampaign?.declared_post_count ? ` (المعلن: ${reviewCampaign.declared_post_count})` : ""}
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
                   الشهر: {selectedMonth} • العميل: {reviewCampaign?.client?.name} • المصمم الافتراضي:{" "}
@@ -1180,6 +1238,17 @@ export default function CampaignsPage() {
               </div>
 
               <div className="flex items-center gap-2">
+                {isOwner && reviewCampaign?.id && (
+                  <button
+                    onClick={() => handleReanalyze(reviewCampaign.id)}
+                    disabled={reanalyzing}
+                    className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                  >
+                    <RefreshCw className={cn("w-3.5 h-3.5", reanalyzing && "animate-spin")} />
+                    <span>{reanalyzing ? "جاري التحليل..." : "إعادة التحليل بالذكاء الاصطناعي"}</span>
+                  </button>
+                )}
+
                 {reviewPreviewUrl && (
                   <a
                     href={reviewPreviewUrl}
@@ -1209,12 +1278,23 @@ export default function CampaignsPage() {
             ) : (
               <>
                 {/* Notice / Warning Bar */}
-                {reviewCampaign?.processing_error && (
-                  <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
-                    <div>
-                      <strong>تنبيه الاستخراج:</strong> {reviewCampaign.processing_error}
+                {(reviewCampaign?.processing_error || reanalyzeError) && (
+                  <div className="p-3 bg-rose-50 border border-rose-200 text-rose-900 rounded-xl text-xs flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
+                      <div>
+                        <strong>تنبيه التحليل:</strong> {reanalyzeError || reviewCampaign?.processing_error}
+                      </div>
                     </div>
+                    {isOwner && reviewCampaign?.id && (
+                      <button
+                        onClick={() => handleReanalyze(reviewCampaign.id)}
+                        disabled={reanalyzing}
+                        className="px-3 py-1 bg-white hover:bg-rose-100 text-rose-800 border border-rose-300 rounded-lg font-bold text-[11px] shrink-0"
+                      >
+                        إعادة المحاولة
+                      </button>
+                    )}
                   </div>
                 )}
 

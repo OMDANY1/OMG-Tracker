@@ -116,7 +116,7 @@ export const ReconciledCalendarSchema = z.object({
   items: z.array(ReconciledItemSchema),
   declared_post_count: z.number().int().nullable().optional(),
   detected_post_count: z.number().int().min(0).max(100),
-  overall_confidence: z.number().min(0).max(1),
+  overall_confidence: z.number().min(0).max(1).nullable().optional(),
   inventory: DocumentInventorySchema.optional(),
   token_usage: z.object({
     prompt_tokens: z.number().int().default(0),

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { processCalendarCampaign } from "@/lib/services/content-calendars";
+import { isGeminiConfigured, classifyGeminiError } from "@/lib/ai/gemini-client";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -38,8 +39,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Explicit check: Gemini configured?
+    if (!isGeminiConfigured()) {
+      return NextResponse.json(
+        {
+          error: "تحليل Gemini غير مهيأ — لم يتم تحليل الملف",
+          code: "GEMINI_NOT_CONFIGURED",
+          safeMessageAr: "تحليل Gemini غير مهيأ — لم يتم تحليل الملف",
+        },
+        { status: 503 }
+      );
+    }
+
     const body = await req.json().catch(() => ({}));
-    const { campaignId, forceRefresh } = body;
+    const { campaignId, forceRefresh, forceNewAnalysis } = body;
 
     if (!campaignId) {
       return NextResponse.json(
@@ -51,7 +64,7 @@ export async function POST(req: NextRequest) {
     const result = await processCalendarCampaign({
       workspaceId: membership.workspace_id,
       campaignId,
-      forceRefresh: Boolean(forceRefresh),
+      forceRefresh: Boolean(forceRefresh || forceNewAnalysis),
     });
 
     return NextResponse.json({
@@ -64,9 +77,20 @@ export async function POST(req: NextRequest) {
       confidence: result.reconciled.overall_confidence,
       items: result.items,
       warnings: result.reconciled.warnings,
-      message: `تمت معالجة التقويم بنجاح واستخراج ${result.reconciled.detected_post_count} بوست بدقة ${(result.reconciled.overall_confidence * 100).toFixed(0)}%!`,
+      message: `تمت معالجة التقويم بنجاح واستخراج ${result.reconciled.detected_post_count} بوست بدقة ${(Number(result.reconciled.overall_confidence || 0.95) * 100).toFixed(0)}%!`,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || String(err) }, { status: 500 });
+    const status = err.status || 500;
+    const code = err.code || "INTERNAL_ERROR";
+    const classification = classifyGeminiError(err.message || String(err), status);
+
+    return NextResponse.json(
+      {
+        error: err.message || classification.safeMessageAr,
+        code: code !== "INTERNAL_ERROR" ? code : classification.category,
+        safeMessageAr: classification.safeMessageAr,
+      },
+      { status: status >= 400 && status < 600 ? status : 500 }
+    );
   }
 }

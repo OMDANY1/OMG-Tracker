@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { getGeminiClient, getGeminiModel, isGeminiConfigured } from "@/lib/ai/gemini-client";
+import { getGeminiClient, getGeminiModel, isGeminiConfigured, classifyGeminiError } from "@/lib/ai/gemini-client";
 import {
   DocumentInventory,
   DocumentInventorySchema,
@@ -45,45 +45,70 @@ export class AiDocumentPipeline {
     // 2. Pre-inspection: Check page count & text availability
     const preInspection = await this.preInspectPdf(pdfBuffer);
 
-    // 3. If Gemini is not configured, fallback gracefully to local extractor
+    // 3. Strict Check: If Gemini is not configured, throw GEMINI_NOT_CONFIGURED (never fake success)
     if (!isGeminiConfigured()) {
-      return this.fallbackToLocalExtractor(pdfBuffer, options, fileSha256, preInspection);
+      const err: any = new Error("تحليل Gemini غير مهيأ — لم يتم تحليل الملف");
+      err.code = "GEMINI_NOT_CONFIGURED";
+      err.status = 503;
+      throw err;
     }
 
     const gemini = getGeminiClient();
     const model = getGeminiModel();
 
     if (!gemini) {
-      return this.fallbackToLocalExtractor(pdfBuffer, options, fileSha256, preInspection);
+      const err: any = new Error("تحليل Gemini غير مهيأ — لم يتم تحليل الملف");
+      err.code = "GEMINI_NOT_CONFIGURED";
+      err.status = 503;
+      throw err;
     }
 
     try {
       // 4. Pass A: Document Inventory
-      const inventory = await this.runPassAInventory(gemini, model, pdfBuffer, preInspection);
+      const passARes = await this.runPassAInventory(gemini, model, pdfBuffer, preInspection);
 
       // 5. Pass B: Detailed Extraction (Adaptive Batched or Single Pass)
-      const detailedItems = await this.runPassBExtraction(gemini, model, pdfBuffer, inventory, options.monthKey);
+      const passBRes = await this.runPassBExtraction(
+        gemini,
+        model,
+        pdfBuffer,
+        passARes.inventory,
+        options.monthKey
+      );
+
+      const totalTokens = {
+        prompt_tokens: passARes.tokenUsage.prompt_tokens + passBRes.tokenUsage.prompt_tokens,
+        completion_tokens: passARes.tokenUsage.completion_tokens + passBRes.tokenUsage.completion_tokens,
+        total_tokens: passARes.tokenUsage.total_tokens + passBRes.tokenUsage.total_tokens,
+      };
 
       // 6. Pass C: Reconciliation & Post-processing
       const reconciled = this.runPassCReconciliation({
-        inventory,
-        items: detailedItems,
+        inventory: passARes.inventory,
+        items: passBRes.items,
+        tokenUsage: totalTokens,
         fileSha256,
         model,
         options,
       });
 
-      // 7. Store in Cache
-      if (admin) {
+      // 7. Store in Cache (only if operational items extracted or confirmed by model)
+      if (admin && reconciled.items.length > 0) {
         await this.cacheExtraction(admin, options.workspaceId, fileSha256, reconciled);
       }
 
       return reconciled;
     } catch (err: any) {
-      console.error("[AiDocumentPipeline] Gemini pipeline failed, falling back to local extractor:", err);
-      const fallback = await this.fallbackToLocalExtractor(pdfBuffer, options, fileSha256, preInspection);
-      fallback.warnings.push(`فشل استدعاء الذكاء الاصطناعي: ${err.message || String(err)}`);
-      return fallback;
+      console.error("[AiDocumentPipeline] Gemini pipeline failed:", err);
+      if (err.code === "GEMINI_NOT_CONFIGURED") {
+        throw err;
+      }
+      const classification = classifyGeminiError(err.message || String(err), err.status);
+      const customErr: any = new Error(classification.safeMessageAr);
+      customErr.code = classification.category;
+      customErr.status = err.status || 502;
+      customErr.originalError = err.message || String(err);
+      throw customErr;
     }
   }
 
@@ -142,7 +167,7 @@ export class AiDocumentPipeline {
     model: string,
     pdfBuffer: Buffer,
     preInspection: { pageCount: number }
-  ): Promise<DocumentInventory> {
+  ): Promise<{ inventory: DocumentInventory; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }> {
     const base64Pdf = pdfBuffer.toString("base64");
 
     const prompt = `
@@ -208,34 +233,43 @@ export class AiDocumentPipeline {
       },
     });
 
+    const tokenUsage = {
+      prompt_tokens: response.usageMetadata?.promptTokenCount || 0,
+      completion_tokens: response.usageMetadata?.candidatesTokenCount || 0,
+      total_tokens: response.usageMetadata?.totalTokenCount || 0,
+    };
+
     const text = response.text || "{}";
     try {
       const parsed = JSON.parse(text);
-      return DocumentInventorySchema.parse(parsed);
+      return { inventory: DocumentInventorySchema.parse(parsed), tokenUsage };
     } catch (err: any) {
       console.warn("[AiDocumentPipeline] Pass A parse warning:", err.message);
       // Fallback inventory
       return {
-        page_count: preInspection.pageCount,
-        declared_post_count: null,
-        page_classifications: Array.from({ length: preInspection.pageCount }, (_, i) => ({
-          page_number: i + 1,
-          page_type: (i === 0 ? "cover" : "post_detail") as any,
-          is_operational: i !== 0,
-        })),
-        detected_blocks: Array.from({ length: Math.max(1, preInspection.pageCount - 1) }, (_, i) => ({
-          canonicalPostId: `post_${i + 1}`,
-          post_number: `Post ${i + 1}`,
-          title: `Post ${i + 1}`,
-          format_hint: "Static",
-          source_pages: [i + 2],
-          is_multi_page: false,
-          is_multi_post_page: false,
+        inventory: {
+          page_count: preInspection.pageCount,
+          declared_post_count: null,
+          page_classifications: Array.from({ length: preInspection.pageCount }, (_, i) => ({
+            page_number: i + 1,
+            page_type: (i === 0 ? "cover" : "post_detail") as any,
+            is_operational: i !== 0,
+          })),
+          detected_blocks: Array.from({ length: Math.max(1, preInspection.pageCount - 1) }, (_, i) => ({
+            canonicalPostId: `post_${i + 1}`,
+            post_number: `Post ${i + 1}`,
+            title: `Post ${i + 1}`,
+            format_hint: "Static",
+            source_pages: [i + 2],
+            is_multi_page: false,
+            is_multi_post_page: false,
+            confidence: 0.85,
+          })),
+          cross_references: [],
           confidence: 0.85,
-        })),
-        cross_references: [],
-        confidence: 0.85,
-        warnings: ["تم إنشاء خريطة الصفحات بصورة تقديرية."],
+          warnings: ["تم إنشاء خريطة الصفحات بصورة تقديرية."],
+        },
+        tokenUsage,
       };
     }
   }
@@ -250,7 +284,7 @@ export class AiDocumentPipeline {
     pdfBuffer: Buffer,
     inventory: DocumentInventory,
     monthKey: string
-  ): Promise<DetailedPostItem[]> {
+  ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }> {
     const base64Pdf = pdfBuffer.toString("base64");
     const operationalBlocks = inventory.detected_blocks;
 
@@ -263,11 +297,12 @@ export class AiDocumentPipeline {
     const chunkSize = 10;
     const items: DetailedPostItem[] = [];
     const totalBatches = Math.ceil(operationalBlocks.length / chunkSize);
+    const totalTokens = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
     for (let i = 0; i < operationalBlocks.length; i += chunkSize) {
       const batch = operationalBlocks.slice(i, i + chunkSize);
       const batchIndex = Math.floor(i / chunkSize) + 1;
-      const batchItems = await this.extractBlocksBatch(
+      const batchResult = await this.extractBlocksBatch(
         gemini,
         model,
         base64Pdf,
@@ -276,10 +311,13 @@ export class AiDocumentPipeline {
         batchIndex,
         totalBatches
       );
-      items.push(...batchItems);
+      items.push(...batchResult.items);
+      totalTokens.prompt_tokens += batchResult.tokenUsage.prompt_tokens;
+      totalTokens.completion_tokens += batchResult.tokenUsage.completion_tokens;
+      totalTokens.total_tokens += batchResult.tokenUsage.total_tokens;
     }
 
-    return items;
+    return { items, tokenUsage: totalTokens };
   }
 
   private async extractBlocksBatch(
@@ -290,7 +328,7 @@ export class AiDocumentPipeline {
     monthKey: string,
     batchIndex: number,
     totalBatches: number
-  ): Promise<DetailedPostItem[]> {
+  ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }> {
     const targetIds = blocks.map((b) => `${b.canonicalPostId} (الصفحات: ${b.source_pages.join(",")})`).join("; ");
 
     const prompt = `
@@ -359,20 +397,26 @@ ${targetIds}
       },
     });
 
+    const tokenUsage = {
+      prompt_tokens: response.usageMetadata?.promptTokenCount || 0,
+      completion_tokens: response.usageMetadata?.candidatesTokenCount || 0,
+      total_tokens: response.usageMetadata?.totalTokenCount || 0,
+    };
+
     const text = response.text || "{}";
     try {
       const parsed = JSON.parse(text);
       const validated = BatchedExtractionSchema.safeParse(parsed);
       if (validated.success) {
-        return validated.data.items;
+        return { items: validated.data.items, tokenUsage };
       }
       if (Array.isArray(parsed.items)) {
-        return parsed.items as DetailedPostItem[];
+        return { items: parsed.items as DetailedPostItem[], tokenUsage };
       }
-      return [];
+      return { items: [], tokenUsage };
     } catch (err: any) {
       console.warn(`[AiDocumentPipeline] Batch ${batchIndex} extraction parse error:`, err.message);
-      return [];
+      return { items: [], tokenUsage };
     }
   }
 
@@ -383,11 +427,12 @@ ${targetIds}
   private runPassCReconciliation(params: {
     inventory: DocumentInventory;
     items: DetailedPostItem[];
+    tokenUsage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
     fileSha256: string;
     model: string;
     options: PipelineOptions;
   }): ReconciledCalendar {
-    const { inventory, items, fileSha256, model, options } = params;
+    const { inventory, items, tokenUsage, fileSha256, model, options } = params;
 
     // Track seen fingerprints to flag duplicates safely without deleting
     const seenNumbers = new Map<string, string>(); // post_number -> id
@@ -495,7 +540,7 @@ ${targetIds}
 
     const operationalCount = reconciledItems.filter((i) => !i.is_excluded_from_tasks && !i.possible_duplicate).length;
     const overallConfidence =
-      items.length > 0 ? Number((confidenceSum / items.length).toFixed(2)) : 0.9;
+      items.length > 0 ? Number((confidenceSum / items.length).toFixed(2)) : null;
 
     const warnings = [...inventory.warnings];
     if (
@@ -514,7 +559,7 @@ ${targetIds}
       detected_post_count: operationalCount,
       overall_confidence: overallConfidence,
       inventory,
-      token_usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      token_usage: tokenUsage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       warnings,
       file_sha256: fileSha256,
       model_used: model,
