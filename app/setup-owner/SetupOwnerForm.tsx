@@ -77,7 +77,7 @@ export default function SetupOwnerForm({ initialToken = "" }: { initialToken?: s
             <ShieldCheck className="w-8 h-8" />
           </div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-            تهيئة حساب مالك الوكالة (Agency Owner)
+            تهيئة حساب مالك الايجنسي (Agency Owner)
           </h1>
           <p className="text-sm text-slate-500">
             إعداد أمني محمي لمرة واحدة فقط برمز الإعداد السري المحلي

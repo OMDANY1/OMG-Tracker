@@ -118,6 +118,47 @@ export async function updateClient(params: {
   return data;
 }
 
+export async function updateClientAssignment(params: {
+  clientId: string;
+  workspaceId?: string;
+  newOwnerRosterId?: string | null;
+  reassignOpenTasks?: boolean;
+  idempotencyKey?: string;
+}) {
+  const supabase = await getClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  let workspaceId = params.workspaceId;
+  if (!workspaceId) {
+    const { data: c } = await supabase
+      .from("clients")
+      .select("workspace_id")
+      .eq("id", params.clientId)
+      .maybeSingle();
+    workspaceId = c?.workspace_id;
+  }
+
+  if (!workspaceId) {
+    const { data: ws } = await supabase.from("workspaces").select("id").limit(1).maybeSingle();
+    workspaceId = ws?.id;
+  }
+
+  if (!workspaceId) {
+    throw new Error("Workspace ID could not be determined for updating client assignment.");
+  }
+
+  const { data, error } = await supabase.rpc("update_client_assignment", {
+    p_workspace_id: workspaceId,
+    p_client_id: params.clientId,
+    p_new_owner_roster_id: params.newOwnerRosterId || null,
+    p_reassign_open_tasks: !!params.reassignOpenTasks,
+    p_idempotency_key: params.idempotencyKey || null,
+  });
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 export async function archiveClient(params: {
   workspaceId: string;
   clientId: string;
@@ -135,3 +176,4 @@ export async function archiveClient(params: {
   if (error) throw new Error(error.message);
   return data;
 }
+

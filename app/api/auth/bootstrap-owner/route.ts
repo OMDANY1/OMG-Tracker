@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
     const ownerExists = await hasExistingOwner(admin);
     if (ownerExists) {
       return NextResponse.json(
-        { error: "تم تهيئة حساب المالك للوكالة مسبقاً. هذه العملية مقفلة ومحمية بشكل نهائي." },
+        { error: "تم تهيئة حساب المالك للايجنسي مسبقاً. هذه العملية مقفلة ومحمية بشكل نهائي." },
         { status: 403 }
       );
     }
@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
 
     if (rErr || !rosterOwners || rosterOwners.length === 0) {
       return NextResponse.json(
-        { error: "لم يتم العثور على حساب المدير العام في قائمة أعضاء الوكالة." },
+        { error: "لم يتم العثور على حساب المدير العام في قائمة أعضاء الايجنسي." },
         { status: 500 }
       );
     }

@@ -3,7 +3,7 @@ import "./globals.css";
 import { LayoutShell } from "@/components/navigation/LayoutShell";
 
 export const metadata: Metadata = {
-  title: "OMG Creative Workspace | مساحة عمل الوكالة",
+  title: "OMG Creative Workspace | مساحة عمل الايجنسي",
   description: "نظام إدارة التصاميم والعملاء وتتبع الوقت لفرق العمل الإبداعية",
 };
 

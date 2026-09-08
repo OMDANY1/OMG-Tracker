@@ -80,7 +80,7 @@ export default function LoginPage() {
             OMG Creative Workspace
           </h1>
           <p className="text-sm text-slate-500">
-            بوابة تسجيل الدخول الآمنة لمساحة عمل الوكالة
+            بوابة تسجيل الدخول الآمنة لمساحة عمل الايجنسي
           </p>
         </div>
 
@@ -155,6 +155,14 @@ export default function LoginPage() {
                   autoComplete="current-password"
                   className="w-full pr-10 pl-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 transition-all placeholder:text-slate-400 text-slate-800"
                 />
+              </div>
+              <div className="flex justify-end mt-1.5">
+                <Link
+                  href="/reset-password"
+                  className="text-xs text-sky-600 hover:text-sky-700 font-medium"
+                >
+                  نسيت كلمة المرور؟
+                </Link>
               </div>
             </div>
           </div>

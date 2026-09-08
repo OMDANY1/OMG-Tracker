@@ -177,6 +177,31 @@ export default function MyWorkPage() {
     }
   };
 
+  const handleDirectApprove = async (task: any) => {
+    if (!confirm(`هل تريد نقل المهمة "${task.title}" مباشرة إلى حالة "معتمد / جاهز للتسليم"؟\n(مهام المدير العام تتجاوز المراجعة الداخلية)`)) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toStatus: "approved",
+        }),
+      });
+      if (res.ok) {
+        alert("تم اعتماد المهمة بنجاح وتجاوز المراجعة الداخلية (Review Bypass). أصبحت جاهزة للتسليم النهائي.");
+        fetchData();
+      } else {
+        const err = await res.json();
+        alert(`فشل الانتقال: ${err.error}`);
+      }
+    } catch (e: any) {
+      alert(`خطأ: ${e.message}`);
+    }
+  };
+
+
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -312,16 +337,35 @@ export default function MyWorkPage() {
                         <Play className="w-3.5 h-3.5 fill-white" />
                         تشغيل العداد
                       </button>
-                      <button
-                        onClick={() => {
-                          setReviewTask(task);
-                          setShowReviewModal(true);
-                        }}
-                        className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold flex items-center gap-1.5 transition-colors"
-                      >
-                        <Send className="w-3.5 h-3.5" />
-                        طلب مراجعة
-                      </button>
+                      {(task.primary_assignee_id === "bcfa3baa-7045-4262-abd6-bdb0be8210fd" ||
+                        task.assignee?.display_name?.includes("عماد") ||
+                        activePersona.role === "owner") ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg font-semibold">
+                            لا تتطلب مراجعة داخلية — منفذها Owner
+                          </span>
+                          {task.status === "in_progress" && (
+                            <button
+                              onClick={() => handleDirectApprove(task)}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center gap-1.5 transition-colors shadow-xs"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              جاهز للتسليم
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setReviewTask(task);
+                            setShowReviewModal(true);
+                          }}
+                          className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold flex items-center gap-1.5 transition-colors"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          طلب مراجعة
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -515,31 +559,14 @@ export default function MyWorkPage() {
               <div>
                 <label className="font-semibold text-slate-700 block mb-1">
                   المراجع المحدد{" "}
-                  {reviewTask?.primary_assignee_id === "bcfa3baa-7045-4262-abd6-bdb0be8210fd" ||
-                  reviewTask?.assignee?.display_name?.includes("عماد") ||
-                  activePersona?.displayName?.includes("عماد") ? (
-                    <span className="text-rose-600 font-bold">(إلزامي لمهام المدير الفني)</span>
-                  ) : (
-                    <span className="text-slate-400 font-normal">(اختياري - افتراضي حسب قواعد التوجيه)</span>
-                  )}
+                  <span className="text-slate-400 font-normal">(اختياري - افتراضي حسب قواعد التوجيه)</span>
                 </label>
                 <select
                   value={reviewerId}
                   onChange={(e) => setReviewerId(e.target.value)}
-                  required={
-                    reviewTask?.primary_assignee_id === "bcfa3baa-7045-4262-abd6-bdb0be8210fd" ||
-                    reviewTask?.assignee?.display_name?.includes("عماد") ||
-                    activePersona?.displayName?.includes("عماد")
-                  }
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white text-slate-700 focus:outline-sky-500"
                 >
-                  <option value="">
-                    {reviewTask?.primary_assignee_id === "bcfa3baa-7045-4262-abd6-bdb0be8210fd" ||
-                    reviewTask?.assignee?.display_name?.includes("عماد") ||
-                    activePersona?.displayName?.includes("عماد")
-                      ? "-- اختر مراجعًا من الفريق (لا يمكن الموافقة الذاتية) --"
-                      : "-- التوجيه التلقائي للمراجع الافتراضي --"}
-                  </option>
+                  <option value="">-- التوجيه التلقائي للمراجع الافتراضي --</option>
                   {REVIEWERS_OPTIONS.filter((r) => r.id !== reviewTask?.primary_assignee_id).map((r) => (
                     <option key={r.id} value={r.id}>
                       {r.name}

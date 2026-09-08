@@ -69,7 +69,7 @@ export function Sidebar() {
           </div>
           <div>
             <h1 className="font-bold text-base text-slate-900 leading-tight">OMG Creative</h1>
-            <p className="text-xs text-slate-500">مساحة عمل الوكالة</p>
+            <p className="text-xs text-slate-500">مساحة عمل الايجنسي</p>
           </div>
         </div>
 
@@ -107,7 +107,7 @@ export function Sidebar() {
         {/* Agency Info Footer */}
         <div className="p-4 border-t border-slate-100 text-xs text-slate-400 bg-slate-50/50">
           <div className="flex items-center justify-between">
-            <span>توقيت الوكالة:</span>
+            <span>توقيت الايجنسي:</span>
             <span className="font-semibold text-slate-600">Africa/Cairo</span>
           </div>
         </div>

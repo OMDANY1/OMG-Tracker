@@ -539,7 +539,47 @@ async function runTestSuite() {
     assert(teamServiceCode.includes('supabase.rpc("transfer_workspace_ownership"'), "team.ts uses transfer_workspace_ownership RPC");
   }
 
-// Extra CSV formula sanitization check
+  // [Scenario 53] Migration 7: Owner Client Assignment & Review Bypass
+  console.log("\n[Scenario 53] Owner Client Assignment & Review Bypass (Migration 7)...");
+  const mig7Path = path.join(migrationsDir, "20260908000007_owner_client_assignment_and_review_bypass.sql");
+  assert(fs.existsSync(mig7Path), "Migration 7 file exists");
+  if (fs.existsSync(mig7Path)) {
+    const mig7Sql = fs.readFileSync(mig7Path, "utf-8");
+    const mig7Begins = (mig7Sql.match(/^BEGIN;/gm) || []).length;
+    const mig7Commits = (mig7Sql.match(/^COMMIT;/gm) || []).length;
+    assert(mig7Begins === 1 && mig7Commits === 1, "Migration 7 has exactly 1 BEGIN and 1 COMMIT");
+    assert(mig7Sql.includes("FUNCTION public.update_client_assignment("), "Migration 7 creates update_client_assignment RPC");
+    assert(mig7Sql.includes("REVOKE EXECUTE ON FUNCTION public.update_client_assignment"), "Migration 7 revokes execute on update_client_assignment from public, anon");
+    assert(mig7Sql.includes("GRANT EXECUTE ON FUNCTION public.update_client_assignment"), "Migration 7 grants execute on update_client_assignment to authenticated");
+    assert(mig7Sql.includes("Tasks executed by the Workspace Owner bypass internal review"), "Migration 7 blocks submit_review_round for Owner tasks");
+    assert(mig7Sql.includes("v_is_owner_assignee"), "Migration 7 allows transition to approved for Owner tasks");
+  }
+
+  // [Scenario 54] Complete Terminology Alignment ("وكالة" -> "ايجنسي")
+  console.log("\n[Scenario 54] Complete Terminology Alignment (Zero 'وكال' occurrences in UI)...");
+  function checkDirForOldTerm(dir: string): string[] {
+    const found: string[] = [];
+    if (!fs.existsSync(dir)) return found;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!["node_modules", ".git", ".next", "supabase", "scratch"].includes(e.name)) {
+          found.push(...checkDirForOldTerm(p));
+        }
+      } else if (e.isFile() && !e.name.endsWith(".map") && !e.name.endsWith(".lock")) {
+        const c = fs.readFileSync(p, "utf-8");
+        if (c.includes("وكال")) found.push(p);
+      }
+    }
+    return found;
+  }
+  const oldTermMatches = checkDirForOldTerm(path.join(__dirname, "../app"))
+    .concat(checkDirForOldTerm(path.join(__dirname, "../components")))
+    .concat(checkDirForOldTerm(path.join(__dirname, "../lib")));
+  assert(oldTermMatches.length === 0, `Zero occurrences of 'وكال' in app/components/lib (found ${oldTermMatches.length})`);
+
+  // Extra CSV formula sanitization check
   console.log("\n[Bonus] CSV formula injection sanitization...");
   assert(sanitizeCsvValue("=SUM(A1:A10)") === "'=SUM(A1:A10)", "Sanitizes CSV formula =");
   assert(sanitizeCsvValue("+12345") === "'+12345", "Sanitizes CSV formula +");

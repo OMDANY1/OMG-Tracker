@@ -1,0 +1,12 @@
+project_id = "whzkpuovqllybxlyoikk"
+
+[auth]
+site_url = "https://omg-creative-workspace.vercel.app"
+additional_redirect_urls = [
+  "https://omg-creative-workspace.vercel.app/auth/callback",
+  "https://omg-creative-workspace.vercel.app/accept-invite",
+  "https://omg-creative-workspace.vercel.app/reset-password",
+  "http://localhost:3000/auth/callback",
+  "http://localhost:3000/accept-invite",
+  "http://localhost:3000/reset-password"
+]

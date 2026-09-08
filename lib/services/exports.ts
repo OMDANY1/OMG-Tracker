@@ -162,7 +162,7 @@ export function generateMarkdownReport(report: MonthlyReportData): string {
   const [year, month] = report.monthKey.split("-");
   const arabicMonth = monthNames[month] ? `${monthNames[month]} ${year}` : report.monthKey;
 
-  return `# تقرير الأداء الإداري والتشغيلي لوكالة OMG Creative
+  return `# تقرير الأداء الإداري والتشغيلي لايجنسي OMG Creative
 **الشهر**: ${arabicMonth} (${report.monthKey}) | **المنطقة الزمنية**: ${report.timezone}
 **رقم المراجعة**: ${report.revisionNumber} (${report.isSnapshotFinalized ? "معتمد ومجمد" : "مسودة مباشرة"})
 

@@ -27,7 +27,7 @@ export default function TeamPage() {
       activeClients: 3,
       activeTasks: 4,
       plannedLoadRatio: 85,
-      notes: "مالك الوكالة والمدير الفني (Art Director): إدارة استراتيجية وتوجيه فني ومراجعة الحسابات الصعبة",
+      notes: "مالك الايجنسي والمدير الفني (Art Director): إدارة استراتيجية وتوجيه فني ومراجعة الحسابات الصعبة",
     },
     {
       id: "nada-id",
