@@ -22,6 +22,7 @@ import {
   Building2,
   Clock,
   HelpCircle,
+  Search,
 } from "lucide-react";
 import {
   CLIENT_DIFFICULTY_LABELS,
@@ -85,15 +86,23 @@ export default function CampaignsPage() {
   });
 
   const [calendars, setCalendars] = useState<ClientCalendarRow[]>([]);
+  const [allClients, setAllClients] = useState<any[]>([]);
   const [designers, setDesigners] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState<boolean>(false);
   const [workspaceId, setWorkspaceId] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState<string>("");
 
   // Upload Modal State
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [targetClient, setTargetClient] = useState<any>(null);
+  const [uploadClientId, setUploadClientId] = useState<string>("");
+  const [uploadMonth, setUploadMonth] = useState<string>(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -121,25 +130,100 @@ export default function CampaignsPage() {
 
   const fetchData = async () => {
     setLoading(true);
+    setApiError(null);
     try {
-      const [calRes, clientsRes] = await Promise.all([
-        fetch(`/api/campaigns/calendar?monthKey=${selectedMonth}`),
+      // Parallel fetch: /api/clients (canonical 28 clients) & /api/campaigns/calendar (monthly states)
+      const [clientsRes, calRes] = await Promise.all([
         fetch("/api/clients"),
+        fetch(`/api/campaigns/calendar?monthKey=${selectedMonth}`),
       ]);
 
-      if (calRes.ok) {
-        const calData = await calRes.json();
-        setCalendars(calData.clientCalendars || []);
-        setIsOwner(calData.isOwner ?? false);
-        setWorkspaceId(calData.workspaceId || "");
-      }
+      let rawClientsList: any[] = [];
+      const calendarsMap = new Map<string, any>();
 
+      // 1. Process /api/clients
       if (clientsRes.ok) {
         const clData = await clientsRes.json();
-        setDesigners(clData.designers || []);
+        if (Array.isArray(clData.clients) && clData.clients.length > 0) {
+          rawClientsList = clData.clients;
+          setAllClients(clData.clients);
+        }
+        if (clData.designers) setDesigners(clData.designers);
+        if (typeof clData.isOwner === "boolean") setIsOwner(clData.isOwner);
+        if (clData.workspaceId) setWorkspaceId(clData.workspaceId);
+      } else {
+        console.error("Clients API error status:", clientsRes.status);
       }
-    } catch (e) {
-      console.error(e);
+
+      // 2. Process /api/campaigns/calendar
+      if (calRes.ok) {
+        const calData = await calRes.json();
+        if (calData.workspaceId) setWorkspaceId(calData.workspaceId);
+        if (typeof calData.isOwner === "boolean") setIsOwner(calData.isOwner);
+        if (Array.isArray(calData.clientCalendars)) {
+          calData.clientCalendars.forEach((row: any) => {
+            if (row.client?.id) {
+              calendarsMap.set(row.client.id, row);
+            }
+          });
+        }
+      } else {
+        console.error("Calendar API error status:", calRes.status);
+      }
+
+      // If both completely failed, throw error
+      if (!clientsRes.ok && !calRes.ok) {
+        throw new Error("تعذر الاتصال بالخادم لجلب بيانات العملاء والتقويمات.");
+      }
+
+      // 3. Guaranteed Left Join: every client from rawClientsList is represented
+      if (rawClientsList.length > 0) {
+        const combined: ClientCalendarRow[] = rawClientsList.map((client) => {
+          const calRow = calendarsMap.get(client.id);
+          if (calRow) {
+            return {
+              ...calRow,
+              client: {
+                id: client.id,
+                name: client.name,
+                difficulty: client.difficulty || "Medium",
+                owner_roster_id: client.owner_roster_id,
+                owner: client.owner || calRow.client?.owner || null,
+                state: client.state,
+              },
+            };
+          }
+
+          // Left-join fallback: client has no calendar uploaded yet for this month
+          return {
+            client: {
+              id: client.id,
+              name: client.name,
+              difficulty: client.difficulty || "Medium",
+              owner_roster_id: client.owner_roster_id,
+              owner: client.owner || null,
+              state: client.state,
+            },
+            campaign: null,
+            postCount: 0,
+            tasksCreatedCount: 0,
+            calendarStatus: "not_uploaded",
+            lastUpdated: null,
+          };
+        });
+
+        setCalendars(combined);
+      } else if (calendarsMap.size > 0) {
+        // Fallback in case clients route was empty but calendars was populated
+        const rows = Array.from(calendarsMap.values());
+        setCalendars(rows);
+        setAllClients(rows.map((r) => r.client));
+      } else {
+        throw new Error("لم يتم العثور على أي عملاء مسجلين في مساحة العمل.");
+      }
+    } catch (err: any) {
+      console.error("fetchData error:", err);
+      setApiError(err.message || "تعذر تحميل بيانات العملاء. يرجى التحقق من الاتصال بالخادم.");
     } finally {
       setLoading(false);
     }
@@ -160,12 +244,21 @@ export default function CampaignsPage() {
       month = 12;
       year -= 1;
     }
-    setSelectedMonth(`${year}-${String(month).padStart(2, "0")}`);
+    const newMonth = `${year}-${String(month).padStart(2, "0")}`;
+    setSelectedMonth(newMonth);
+    setUploadMonth(newMonth);
   };
 
-  // Open Upload Modal
-  const handleOpenUpload = (client: any) => {
-    setTargetClient(client);
+  // Open Upload Modal (either with a pre-selected client or empty for standalone button)
+  const handleOpenUpload = (client?: any) => {
+    if (client) {
+      setTargetClient(client);
+      setUploadClientId(client.id);
+    } else {
+      setTargetClient(null);
+      setUploadClientId("");
+    }
+    setUploadMonth(selectedMonth);
     setUploadFile(null);
     setUploadError(null);
     setShowUploadModal(true);
@@ -174,7 +267,10 @@ export default function CampaignsPage() {
   // Submit PDF Upload
   const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!uploadFile || !targetClient) return;
+    if (!uploadFile || !uploadClientId) {
+      setUploadError("يرجى اختيار العميل وتحديد ملف PDF.");
+      return;
+    }
 
     if (!uploadFile.name.toLowerCase().endsWith(".pdf")) {
       setUploadError("نوع الملف غير صالح. يرجى اختيار ملف PDF فقط.");
@@ -191,8 +287,8 @@ export default function CampaignsPage() {
 
     const formData = new FormData();
     formData.append("file", uploadFile);
-    formData.append("clientId", targetClient.id);
-    formData.append("monthKey", selectedMonth);
+    formData.append("clientId", uploadClientId);
+    formData.append("monthKey", uploadMonth || selectedMonth);
 
     try {
       const res = await fetch("/api/campaigns/upload", {
@@ -206,10 +302,15 @@ export default function CampaignsPage() {
       }
 
       setShowUploadModal(false);
-      fetchData();
+      setUploadFile(null);
+      setUploadClientId("");
+      setTargetClient(null);
+
+      // Refresh data to update client card
+      await fetchData();
 
       // Automatically open review matrix
-      openReviewMatrix(targetClient.id);
+      openReviewMatrix(uploadClientId);
     } catch (err: any) {
       setUploadError(err.message || "حدث خطأ أثناء رفع الملف.");
     } finally {
@@ -372,8 +473,14 @@ export default function CampaignsPage() {
   const totalPosts = calendars.reduce((acc, c) => acc + c.postCount, 0);
   const totalTasks = calendars.reduce((acc, c) => acc + c.tasksCreatedCount, 0);
 
-  // Filtered calendars
+  // Filtered calendars by search and status
   const filteredCalendars = calendars.filter((row) => {
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      const matchName = row.client.name.toLowerCase().includes(q);
+      const matchOwner = row.client.owner?.display_name?.toLowerCase().includes(q);
+      if (!matchName && !matchOwner) return false;
+    }
     if (statusFilter === "all") return true;
     if (statusFilter === "not_uploaded") return row.calendarStatus === "not_uploaded";
     if (statusFilter === "ready") return row.calendarStatus === "ready" || row.calendarStatus === "uploaded";
@@ -396,30 +503,47 @@ export default function CampaignsPage() {
           </p>
         </div>
 
-        {/* Month Selector */}
-        <div className="flex items-center gap-2 bg-surface p-1.5 rounded-2xl border border-slate-200 shadow-xs">
-          <button
-            onClick={() => changeMonth(1)}
-            title="الشهر التالي"
-            className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-          >
-            <ChevronRight className="w-5 h-5" />
-          </button>
+        {/* Action Controls: Month Selector & Standalone Upload Button */}
+        <div className="flex items-center flex-wrap gap-2.5">
+          {/* Month Selector */}
+          <div className="flex items-center gap-2 bg-surface p-1.5 rounded-2xl border border-slate-200 shadow-xs">
+            <button
+              onClick={() => changeMonth(1)}
+              title="الشهر التالي"
+              className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
 
-          <input
-            type="month"
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
-            className="px-3 py-1 font-bold text-slate-800 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-sky-500"
-          />
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => {
+                setSelectedMonth(e.target.value);
+                setUploadMonth(e.target.value);
+              }}
+              className="px-3 py-1 font-bold text-slate-800 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-sky-500"
+            />
 
-          <button
-            onClick={() => changeMonth(-1)}
-            title="الشهر السابق"
-            className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
+            <button
+              onClick={() => changeMonth(-1)}
+              title="الشهر السابق"
+              className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Standalone Primary Upload Button for Owner */}
+          {isOwner && (
+            <button
+              onClick={() => handleOpenUpload(null)}
+              className="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white rounded-2xl text-xs font-bold shadow-xs flex items-center gap-2 transition-colors shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>رفع Content Calendar</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -445,66 +569,96 @@ export default function CampaignsPage() {
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-        <button
-          onClick={() => setStatusFilter("all")}
-          className={cn(
-            "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
-            statusFilter === "all" ? "bg-sky-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
-          )}
-        >
-          الكل ({calendars.length})
-        </button>
-        <button
-          onClick={() => setStatusFilter("imported")}
-          className={cn(
-            "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
-            statusFilter === "imported" ? "bg-emerald-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
-          )}
-        >
-          تم استيراد التاسكات ({calendars.filter((c) => c.calendarStatus === "imported").length})
-        </button>
-        <button
-          onClick={() => setStatusFilter("ready")}
-          className={cn(
-            "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
-            statusFilter === "ready" ? "bg-sky-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
-          )}
-        >
-          جاهز للاعتماد ({calendars.filter((c) => c.calendarStatus === "ready" || c.calendarStatus === "uploaded").length})
-        </button>
-        <button
-          onClick={() => setStatusFilter("needs_review")}
-          className={cn(
-            "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
-            statusFilter === "needs_review" ? "bg-amber-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
-          )}
-        >
-          يحتاج مراجعة / مسح ضوئي ({calendars.filter((c) => c.calendarStatus === "needs_review").length})
-        </button>
-        <button
-          onClick={() => setStatusFilter("not_uploaded")}
-          className={cn(
-            "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
-            statusFilter === "not_uploaded" ? "bg-slate-700 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
-          )}
-        >
-          لم يُرفع بعد ({calendars.filter((c) => c.calendarStatus === "not_uploaded").length})
-        </button>
+      {/* Search & Filters */}
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 text-xs">
+        {/* Search Bar */}
+        <div className="relative flex-1 max-w-xs">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="بحث عن عميل أو مصمم..."
+            className="w-full px-3 py-2 pr-8 text-xs bg-surface border border-slate-200 rounded-xl focus:ring-2 focus:ring-sky-500 focus:outline-none"
+          />
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2" />
+        </div>
+
+        {/* Filter Chips */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          <button
+            onClick={() => setStatusFilter("all")}
+            className={cn(
+              "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
+              statusFilter === "all" ? "bg-sky-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
+            )}
+          >
+            الكل ({calendars.length})
+          </button>
+          <button
+            onClick={() => setStatusFilter("imported")}
+            className={cn(
+              "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
+              statusFilter === "imported" ? "bg-emerald-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
+            )}
+          >
+            تم استيراد التاسكات ({calendars.filter((c) => c.calendarStatus === "imported").length})
+          </button>
+          <button
+            onClick={() => setStatusFilter("ready")}
+            className={cn(
+              "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
+              statusFilter === "ready" ? "bg-sky-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
+            )}
+          >
+            جاهز للاعتماد ({calendars.filter((c) => c.calendarStatus === "ready" || c.calendarStatus === "uploaded").length})
+          </button>
+          <button
+            onClick={() => setStatusFilter("needs_review")}
+            className={cn(
+              "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
+              statusFilter === "needs_review" ? "bg-amber-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
+            )}
+          >
+            يحتاج مراجعة / مسح ضوئي ({calendars.filter((c) => c.calendarStatus === "needs_review").length})
+          </button>
+          <button
+            onClick={() => setStatusFilter("not_uploaded")}
+            className={cn(
+              "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
+              statusFilter === "not_uploaded" ? "bg-slate-700 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
+            )}
+          >
+            لم يُرفع بعد ({calendars.filter((c) => c.calendarStatus === "not_uploaded").length})
+          </button>
+        </div>
       </div>
 
-      {/* Client Calendars Grid */}
+      {/* Client Calendars Grid or State Notices */}
       {loading ? (
         <div className="p-12 text-center bg-surface rounded-2xl border border-slate-200">
           <div className="w-8 h-8 border-3 border-sky-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs text-slate-500 font-semibold mt-3">جاري تحميل تقويمات الشهر...</p>
+          <p className="text-xs text-slate-500 font-semibold mt-3">جاري تحميل العملاء والتقويمات...</p>
+        </div>
+      ) : apiError ? (
+        <div className="p-12 text-center bg-surface rounded-2xl border border-rose-200 bg-rose-50/40 space-y-3">
+          <AlertTriangle className="w-10 h-10 text-rose-500 mx-auto" />
+          <h3 className="font-bold text-slate-800 text-sm">تعذر تحميل بيانات العملاء</h3>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">{apiError}</p>
+          <button
+            onClick={fetchData}
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-xs inline-flex items-center gap-2"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>إعادة المحاولة</span>
+          </button>
         </div>
       ) : filteredCalendars.length === 0 ? (
         <div className="p-12 text-center bg-surface rounded-2xl border border-slate-200 space-y-2">
           <Building2 className="w-10 h-10 text-slate-300 mx-auto" />
-          <h3 className="font-bold text-slate-700 text-sm">لا توجد سجلات تطابق الفلتر المحدد</h3>
-          <p className="text-xs text-slate-400">اختر فلتر آخر أو شهراً مختلفاً للاستعراض.</p>
+          <h3 className="font-bold text-slate-700 text-sm">
+            {searchQuery ? "لا يوجد عميل مطابق للبحث" : "لا توجد سجلات تطابق الفلتر المحدد"}
+          </h3>
+          <p className="text-xs text-slate-400">اختر فلتراً آخر أو غيّر عبارة البحث للاستعراض.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -550,8 +704,15 @@ export default function CampaignsPage() {
                 <div>
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <h3 className="font-bold text-base text-slate-900">{client.name}</h3>
-                      <div className="flex items-center gap-2 mt-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-bold text-base text-slate-900">{client.name}</h3>
+                        {client.name === "zanzi" && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                            غير مسند / لم يبدأ
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <span className="text-[11px] text-slate-500 flex items-center gap-1">
                           <User className="w-3 h-3 text-slate-400" />
                           {client.owner?.display_name || (
@@ -561,6 +722,10 @@ export default function CampaignsPage() {
                         <span className="text-slate-300">•</span>
                         <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 font-semibold">
                           صعوبة {CLIENT_DIFFICULTY_LABELS[client.difficulty] || "عادي"}
+                        </span>
+                        <span className="text-slate-300">•</span>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {selectedMonth}
                         </span>
                       </div>
                     </div>
@@ -638,17 +803,17 @@ export default function CampaignsPage() {
         </div>
       )}
 
-      {/* Upload / Replace PDF Modal */}
-      {showUploadModal && targetClient && (
+      {/* Upload / Replace PDF Modal / Wizard */}
+      {showUploadModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
           <form
             onSubmit={handleUploadSubmit}
-            className="bg-surface rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150"
+            className="bg-surface rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs"
           >
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
                 <Upload className="w-4 h-4 text-sky-600" />
-                رفع تقويم المحتوى — {targetClient.name}
+                {targetClient ? `رفع تقويم المحتوى — ${targetClient.name}` : "رفع Content Calendar"}
               </h3>
               <button
                 type="button"
@@ -659,18 +824,56 @@ export default function CampaignsPage() {
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
-              <div className="p-3 bg-sky-50/70 border border-sky-100 rounded-xl text-sky-900 space-y-1 text-[11px]">
-                <div>
-                  <strong>العميل:</strong> {targetClient.name}
-                </div>
-                <div>
-                  <strong>الشهر المستهدف:</strong> {selectedMonth}
-                </div>
-                <div>
-                  <strong>المصمم المسؤول الحالي:</strong> {targetClient.owner?.display_name || "غير مسند"}
-                </div>
+            <div className="space-y-3.5">
+              {/* Client Selection (Mandatory Dropdown of all 28 clients) */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  العميل <span className="text-rose-500">*</span>:
+                </label>
+                <select
+                  value={uploadClientId}
+                  onChange={(e) => {
+                    setUploadClientId(e.target.value);
+                    const found = allClients.find((c) => c.id === e.target.value);
+                    setTargetClient(found || null);
+                  }}
+                  required
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white font-semibold text-xs focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                >
+                  <option value="">-- اختر العميل من القائمة ({allClients.length} عميل) --</option>
+                  {allClients.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} {c.owner?.display_name ? `(${c.owner.display_name})` : "(غير مسند)"} {c.difficulty ? `— صعوبة ${(CLIENT_DIFFICULTY_LABELS as Record<string, string>)[c.difficulty] || c.difficulty}` : ""}
+                    </option>
+                  ))}
+                </select>
               </div>
+
+              {/* Month Selection */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  الشهر والسنة المستهدفة <span className="text-rose-500">*</span>:
+                </label>
+                <input
+                  type="month"
+                  value={uploadMonth}
+                  onChange={(e) => setUploadMonth(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white font-semibold text-xs focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                />
+              </div>
+
+              {/* Assigned Designer Info */}
+              {targetClient && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between text-[11px]">
+                  <span className="text-slate-500">المصمم المسؤول الحالي:</span>
+                  <span className="font-bold text-slate-800">
+                    {targetClient.owner?.display_name || (
+                      <strong className="text-amber-600 font-semibold">غير مسند (سيطلب تحديد مصمم)</strong>
+                    )}
+                  </span>
+                </div>
+              )}
 
               {uploadError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs font-semibold flex items-center gap-2">
@@ -679,11 +882,12 @@ export default function CampaignsPage() {
                 </div>
               )}
 
+              {/* PDF File Input */}
               <div>
                 <label className="font-bold text-slate-700 block mb-1.5">
-                  ملف تقويم المحتوى الشهري (PDF):
+                  ملف تقويم المحتوى الشهري (PDF) <span className="text-rose-500">*</span>:
                 </label>
-                <div className="border-2 border-dashed border-slate-200 hover:border-sky-400 rounded-2xl p-6 text-center transition-colors bg-slate-50/50">
+                <div className="border-2 border-dashed border-slate-200 hover:border-sky-400 rounded-2xl p-5 text-center transition-colors bg-slate-50/50">
                   <input
                     type="file"
                     accept="application/pdf"
@@ -693,9 +897,18 @@ export default function CampaignsPage() {
                     }}
                     className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-sky-100 file:text-sky-700 hover:file:bg-sky-200 cursor-pointer"
                   />
-                  <p className="text-[10px] text-slate-400 mt-2">
-                    الحد الأقصى 15 ميجابايت. يُفضل ملف PDF نصي وليس ممسوحاً ضوئياً للحصول على أفضل استخراج تلقائي.
-                  </p>
+                  {uploadFile ? (
+                    <div className="mt-3 p-2.5 bg-sky-50 border border-sky-200 rounded-xl text-sky-800 text-[11px] font-semibold flex items-center justify-between">
+                      <span className="truncate max-w-[220px] font-bold">{uploadFile.name}</span>
+                      <span className="shrink-0 font-mono text-slate-500">
+                        {(uploadFile.size / (1024 * 1024)).toFixed(2)} MB
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-slate-400 mt-2">
+                      الحد الأقصى 15 ميجابايت. يُفضل ملف PDF نصي للحصول على استخراج تلقائي للبوستات.
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -711,8 +924,8 @@ export default function CampaignsPage() {
               </button>
               <button
                 type="submit"
-                disabled={uploading || !uploadFile}
-                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:bg-sky-400 rounded-xl shadow-xs flex items-center gap-2"
+                disabled={uploading || !uploadClientId || !uploadMonth || !uploadFile}
+                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 rounded-xl shadow-xs flex items-center gap-2"
               >
                 {uploading ? (
                   <>
@@ -722,7 +935,7 @@ export default function CampaignsPage() {
                 ) : (
                   <>
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>رفع واستخراج المحتوى</span>
+                    <span>رفع ومعالجة الملف</span>
                   </>
                 )}
               </button>

@@ -710,6 +710,40 @@ async function runTestSuite() {
     assert(campaignsContent.includes("handleUploadSubmit"), "Campaigns page includes PDF upload flow");
   }
 
+  // [Scenario 61] Campaigns Hotfix: Left Join 28 Clients & Standalone Upload Modal
+  console.log("\n[Scenario 61] Campaigns Hotfix: Left Join 28 Clients & Standalone Upload Modal...");
+  if (fs.existsSync(campaignsPage)) {
+    const campaignsContent = fs.readFileSync(campaignsPage, "utf-8");
+    assert(campaignsContent.includes("رفع Content Calendar"), "Campaigns page includes standalone '+ رفع Content Calendar' button");
+    assert(campaignsContent.includes("uploadClientId"), "Campaigns page manages uploadClientId state in modal");
+    assert(campaignsContent.includes("uploadMonth"), "Campaigns page manages editable uploadMonth state");
+    assert(campaignsContent.includes("allClients.map"), "Upload modal renders mandatory Client dropdown mapping all clients");
+    assert(campaignsContent.includes("not_uploaded"), "Campaigns page maps missing calendars to 'not_uploaded' state");
+    assert(campaignsContent.includes("تعذر تحميل بيانات العملاء"), "Campaigns page implements API error state with friendly Arabic message");
+    assert(campaignsContent.includes("إعادة المحاولة"), "Campaigns page implements retry button for API error");
+    assert(campaignsContent.includes("لا يوجد عميل مطابق للبحث"), "Campaigns page implements empty search state");
+    assert(campaignsContent.includes("غير مسند / لم يبدأ"), "Campaigns page renders unassigned badge for clients like zanzi");
+  }
+
+  const calendarApiRoute = path.join(__dirname, "../app/api/campaigns/calendar/route.ts");
+  assert(fs.existsSync(calendarApiRoute), "app/api/campaigns/calendar/route.ts exists");
+  if (fs.existsSync(calendarApiRoute)) {
+    const calContent = fs.readFileSync(calendarApiRoute, "utf-8");
+    assert(calContent.includes("export async function GET"), "Calendar API route exports GET handler");
+    assert(calContent.includes("clientCalendars"), "Calendar API returns clientCalendars array");
+  }
+
+  const uploadApiRoute = path.join(__dirname, "../app/api/campaigns/upload/route.ts");
+  assert(fs.existsSync(uploadApiRoute), "app/api/campaigns/upload/route.ts exists");
+  if (fs.existsSync(uploadApiRoute)) {
+    const uploadContent = fs.readFileSync(uploadApiRoute, "utf-8");
+    assert(uploadContent.includes("export async function POST"), "Upload API route exports POST handler");
+    assert(uploadContent.includes("uploadContentCalendar"), "Upload API route calls uploadContentCalendar service");
+  }
+
+
+
+
   console.log("==========================================================");
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
