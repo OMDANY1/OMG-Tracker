@@ -1,5 +1,54 @@
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdf = require("pdf-parse");
+// PDF Extractor for OMG Creative Workspace Monthly Content Calendars
+// Uses dynamic loading and safe fallbacks for Vercel serverless compatibility.
+
+async function parsePdfText(buffer: Buffer): Promise<{ text: string; numpages: number; pageTexts: string[] }> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pdfModule = require("pdf-parse");
+    if (typeof pdfModule === "function") {
+      const pageTexts: string[] = [];
+      const data = await pdfModule(buffer, {
+        pagerender: (pageData: any) => {
+          return pageData.getTextContent().then((textContent: any) => {
+            let lastY: number | null = null;
+            let text = "";
+            for (const item of textContent.items) {
+              if (lastY === item.transform[5] || lastY === null) {
+                text += item.str + " ";
+              } else {
+                text += "\n" + item.str + " ";
+              }
+              lastY = item.transform[5];
+            }
+            pageTexts.push(text);
+            return text;
+          });
+        },
+      });
+      return {
+        text: data.text || pageTexts.join("\n\n"),
+        numpages: data.numpages || pageTexts.length || 1,
+        pageTexts,
+      };
+    } else if (pdfModule?.PDFParse) {
+      const parser = new pdfModule.PDFParse({ data: buffer });
+      await parser.load();
+      const text = await parser.getText();
+      const info = await parser.getInfo().catch(() => null);
+      await parser.destroy();
+      const pageTexts = (text || "").split(/\f|\n{3,}/).filter((p: string) => p.trim().length > 0);
+      return {
+        text: text || "",
+        numpages: info?.pages || pageTexts.length || 1,
+        pageTexts,
+      };
+    }
+  } catch (err: any) {
+    console.warn("PDF parsing fallback:", err?.message || err);
+  }
+  return { text: "", numpages: 1, pageTexts: [] };
+}
+
 
 export interface ExtractedPostItem {
   post_order: number;
@@ -92,29 +141,9 @@ export async function extractPostsFromPdf(
   }
 
   try {
-    const pageTexts: string[] = [];
-
-    // Use custom page render to track text per page
-    const data = await pdf(buffer, {
-      pagerender: (pageData: any) => {
-        return pageData.getTextContent().then((textContent: any) => {
-          let lastY: number | null = null;
-          let text = "";
-          for (const item of textContent.items) {
-            if (lastY === item.transform[5] || lastY === null) {
-              text += item.str + " ";
-            } else {
-              text += "\n" + item.str + " ";
-            }
-            lastY = item.transform[5];
-          }
-          pageTexts.push(text);
-          return text;
-        });
-      },
-    });
-
-    const fullText = (data.text || pageTexts.join("\n\n")).trim();
+    const data = await parsePdfText(buffer);
+    const pageTexts = data.pageTexts || [];
+    const fullText = (data.text || "").trim();
     const cleanText = fullText.replace(/\s+/g, " ");
 
     // Check for scanned / non-text PDF (< 50 printable characters)
@@ -130,6 +159,7 @@ export async function extractPostsFromPdf(
         rawText: fullText,
       };
     }
+
 
     // Heuristic Segmentation:
     // Try page-based segmentation first if pages > 1 and each page looks like a post,
