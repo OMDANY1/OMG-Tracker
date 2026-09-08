@@ -12,6 +12,7 @@
     "setup:owner": "node scripts/bootstrap-owner-cli.js"
   },
   "dependencies": {
+    "@google/genai": "^2.21.0",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.49.1",
     "@types/pdf-parse": "^1.1.5",
@@ -22,6 +23,7 @@
     "lucide-react": "^0.475.0",
     "next": "^14.2.24",
     "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^6.3.289",
     "pg": "^8.13.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -35,6 +37,7 @@
     "@types/react-dom": "^18.3.5",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.5.3",
+    "puppeteer-core": "^25.10.0",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3"

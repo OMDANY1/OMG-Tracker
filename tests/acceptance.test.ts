@@ -20,6 +20,22 @@ import {
   TIME_CATEGORY_LABELS,
 } from "../lib/utils";
 import { generateAnalysisPackZip, generateMarkdownReport } from "../lib/services/exports";
+import {
+  DocumentInventorySchema,
+  BatchedExtractionSchema,
+  ReconciledCalendarSchema,
+} from "../lib/ai/schemas";
+import {
+  FIXTURE_A_INVENTORY,
+  FIXTURE_A_ITEMS,
+  FIXTURE_B_INVENTORY,
+  FIXTURE_B_ITEMS,
+  FIXTURE_C_INVENTORY,
+  FIXTURE_C_ITEMS,
+  FIXTURE_D_INVENTORY,
+  FIXTURE_D_ITEMS,
+} from "./fixtures/calendar-fixtures";
+
 
 let passedCount = 0;
 let failedCount = 0;
@@ -741,10 +757,110 @@ async function runTestSuite() {
     assert(uploadContent.includes("uploadContentCalendar"), "Upload API route calls uploadContentCalendar service");
   }
 
+  // [Scenario 62] Migration 9 Schema & Constraints Verification...
+  console.log("\n[Scenario 62] Migration 9 Schema, AI Metadata & Cache Table Verification...");
+  const migration9Path = path.join(migrationsDir, "20260908000009_ai_content_calendar_pipeline.sql");
+  assert(fs.existsSync(migration9Path), "Migration 9 file exists");
+  if (fs.existsSync(migration9Path)) {
+    const mig9Sql = fs.readFileSync(migration9Path, "utf-8");
+    const m9Begins = (mig9Sql.match(/^BEGIN;/gm) || []).length;
+    const m9Commits = (mig9Sql.match(/^COMMIT;/gm) || []).length;
+    assert(m9Begins === 1 && m9Commits === 1, "Migration 9 has exactly 1 BEGIN and 1 COMMIT");
+    assert(mig9Sql.includes("ai_provider TEXT DEFAULT 'google'"), "Migration 9 adds ai_provider");
+    assert(mig9Sql.includes("ai_model TEXT DEFAULT 'gemini-2.5-flash'"), "Migration 9 adds ai_model");
+    assert(mig9Sql.includes("ai_prompt_version TEXT DEFAULT 'v2.0'"), "Migration 9 adds ai_prompt_version");
+    assert(mig9Sql.includes("ai_schema_version TEXT DEFAULT '2026-09-08'"), "Migration 9 adds ai_schema_version");
+    assert(mig9Sql.includes("chk_campaigns_ai_confidence"), "Migration 9 adds confidence check constraint (0 to 1)");
+    assert(mig9Sql.includes("chk_campaigns_declared_post_count"), "Migration 9 adds declared_post_count check constraint (0 to 100)");
+    assert(mig9Sql.includes("chk_campaigns_detected_post_count"), "Migration 9 adds detected_post_count check constraint (0 to 100)");
+    assert(mig9Sql.includes("on_design_text TEXT"), "Migration 9 adds on_design_text to content_calendar_items");
+    assert(mig9Sql.includes("hook TEXT"), "Migration 9 adds hook to content_calendar_items");
+    assert(mig9Sql.includes("cta TEXT"), "Migration 9 adds cta to content_calendar_items");
+    assert(mig9Sql.includes("reel_script TEXT"), "Migration 9 adds reel_script to content_calendar_items");
+    assert(mig9Sql.includes("slides JSONB"), "Migration 9 adds slides JSONB to content_calendar_items");
+    assert(mig9Sql.includes("is_excluded_from_tasks BOOLEAN"), "Migration 9 adds is_excluded_from_tasks to content_calendar_items");
+    assert(mig9Sql.includes("CREATE TABLE IF NOT EXISTS public.ai_extraction_cache"), "Migration 9 creates ai_extraction_cache table");
+    assert(mig9Sql.includes("uq_ai_cache_entry"), "Migration 9 enforces cache uniqueness constraint");
+    assert(mig9Sql.includes("ENABLE ROW LEVEL SECURITY"), "ai_extraction_cache has RLS enabled");
+    assert(mig9Sql.includes("p_select_ai_cache_owner"), "ai_extraction_cache has Owner-only SELECT policy");
+    assert(mig9Sql.includes("CREATE OR REPLACE FUNCTION public.save_ai_calendar_extraction"), "Migration 9 creates save_ai_calendar_extraction RPC");
+  }
 
+  // [Scenario 63] AI Document Pipeline Contract & Decoupled Architecture...
+  console.log("\n[Scenario 63] AI Pipeline Contract & Decoupled Architecture...");
+  const processRoute = path.join(__dirname, "../app/api/campaigns/process-calendar/route.ts");
+  assert(fs.existsSync(processRoute), "app/api/campaigns/process-calendar/route.ts exists");
+  if (fs.existsSync(processRoute)) {
+    const processContent = fs.readFileSync(processRoute, "utf-8");
+    assert(processContent.includes("export const maxDuration = 300"), "Process calendar route exports maxDuration = 300");
+    assert(processContent.includes("export async function POST"), "Process calendar route exports POST handler");
+    assert(processContent.includes("processCalendarCampaign"), "Process route calls processCalendarCampaign service");
+  }
 
+  const geminiClientPath = path.join(__dirname, "../lib/ai/gemini-client.ts");
+  assert(fs.existsSync(geminiClientPath), "lib/ai/gemini-client.ts exists");
+  if (fs.existsSync(geminiClientPath)) {
+    const geminiContent = fs.readFileSync(geminiClientPath, "utf-8");
+    assert(geminiContent.includes("getGeminiClient"), "gemini-client exports getGeminiClient");
+    assert(geminiContent.includes("isGeminiConfigured"), "gemini-client exports isGeminiConfigured");
+    assert(geminiContent.includes("getGeminiModel"), "gemini-client exports getGeminiModel");
+  }
 
-  console.log("==========================================================");
+  const pipelinePath = path.join(__dirname, "../lib/services/ai-document-pipeline.ts");
+  assert(fs.existsSync(pipelinePath), "lib/services/ai-document-pipeline.ts exists");
+  if (fs.existsSync(pipelinePath)) {
+    const pipeContent = fs.readFileSync(pipelinePath, "utf-8");
+    assert(pipeContent.includes("runPassAInventory"), "Pipeline implements Pass A Inventory");
+    assert(pipeContent.includes("runPassBExtraction"), "Pipeline implements Pass B Extraction");
+    assert(pipeContent.includes("runPassCReconciliation"), "Pipeline implements Pass C Reconciliation");
+    assert(pipeContent.includes("ai_extraction_cache"), "Pipeline queries and writes to ai_extraction_cache");
+  }
+
+  // [Scenario 64] Mocked Contract: Fixture A (12 Posts Standard Calendar)...
+  console.log("\n[Scenario 64] Mocked Contract: Fixture A (12 Posts Standard Calendar)...");
+  const parsedAInventory = DocumentInventorySchema.safeParse(FIXTURE_A_INVENTORY);
+  assert(parsedAInventory.success, "Fixture A inventory conforms to DocumentInventorySchema");
+  assert(FIXTURE_A_INVENTORY.page_count === 13, "Fixture A total page count is 13");
+  assert(FIXTURE_A_INVENTORY.declared_post_count === 12, "Fixture A declared post count is 12");
+  assert(FIXTURE_A_ITEMS.length === 12, "Fixture A has exactly 12 extracted post items");
+  const nonOperationalA = FIXTURE_A_INVENTORY.page_classifications.filter((p) => !p.is_operational);
+  assert(nonOperationalA.length === 1 && nonOperationalA[0].page_type === "cover", "Fixture A correctly classifies page 1 as Cover");
+
+  // [Scenario 65] Mocked Contract: Fixture B (20 Posts with Overview Deduplication)...
+  console.log("\n[Scenario 65] Mocked Contract: Fixture B (20 Posts with Overview Grid Deduplication)...");
+  const parsedBInventory = DocumentInventorySchema.safeParse(FIXTURE_B_INVENTORY);
+  assert(parsedBInventory.success, "Fixture B inventory conforms to DocumentInventorySchema");
+  assert(FIXTURE_B_INVENTORY.cross_references.length === 20, "Fixture B maps 20 overview items to detail pages");
+  const overviewBlocks = FIXTURE_B_ITEMS.filter((i) => i.source_pages.includes(2));
+  const detailBlocks = FIXTURE_B_ITEMS.filter((i) => !i.source_pages.includes(2));
+  assert(overviewBlocks.length === 20, "Fixture B identifies 20 overview items on page 2");
+  assert(detailBlocks.length === 20, "Fixture B identifies 20 detailed post items on pages 3-22");
+  assert(overviewBlocks.every((b) => b.canonicalPostId.startsWith("fixture_b_post_")), "Overview items share canonicalPostId with detail pages");
+
+  // [Scenario 66] Mocked Contract: Fixture C (25 Posts with Carousel & Reel)...
+  console.log("\n[Scenario 66] Mocked Contract: Fixture C (25 Posts with Carousel & Reel)...");
+  const carouselItem = FIXTURE_C_ITEMS.find((i) => i.content_format === "Carousel");
+  assert(Boolean(carouselItem), "Fixture C contains a Carousel post");
+  assert(carouselItem?.slides.length === 5, "Carousel post has exactly 5 slides inside 1 single task");
+  const reelItem = FIXTURE_C_ITEMS.find((i) => i.content_format === "Reel");
+  assert(Boolean(reelItem), "Fixture C contains a Reel post");
+  assert(Boolean(reelItem?.hook && reelItem?.reel_script && reelItem?.cta), "Reel post has hook, scene script, and CTA preserved");
+  assert(FIXTURE_C_ITEMS.length === 25, "Fixture C contains exactly 25 post items total");
+
+  // [Scenario 67] Mocked Contract: Fixture D (Scanned / Mixed Layout with Non-Content Sections)...
+  console.log("\n[Scenario 67] Mocked Contract: Fixture D (Scanned / Mixed Layout with Non-Content Sections)...");
+  const parsedDInventory = DocumentInventorySchema.safeParse(FIXTURE_D_INVENTORY);
+  assert(parsedDInventory.success, "Fixture D inventory conforms to DocumentInventorySchema");
+  const nonOperationalD = FIXTURE_D_INVENTORY.page_classifications.filter((p) => !p.is_operational);
+  assert(nonOperationalD.length === 5, "Fixture D identifies exactly 5 non-operational sections (Cover, Strategy, Pillars, References, Thank You)");
+  assert(FIXTURE_D_ITEMS.length === 12, "Fixture D extracts exactly 12 operational posts out of 17 pages");
+
+  // [Scenario 68] Agency Terminology & Honesty in Reporting...
+  console.log("\n[Scenario 68] Agency Terminology Verification...");
+  const campaignsPageSql = fs.readFileSync(path.join(__dirname, "../app/campaigns/page.tsx"), "utf-8");
+  assert(!campaignsPageSql.includes("وكالة"), "Zero occurrences of 'وكالة' in campaigns page (strictly 'ايجنسي')");
+  assert(!campaignsPageSql.includes("وكالات"), "Zero occurrences of 'وكالات' in campaigns page (strictly 'ايجنسي')");
+
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
 

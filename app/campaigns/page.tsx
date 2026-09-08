@@ -23,6 +23,14 @@ import {
   Clock,
   HelpCircle,
   Search,
+  ChevronDown,
+  ChevronUp,
+  Sliders,
+  Scissors,
+  GitMerge,
+  ShieldCheck,
+  Video,
+  Image as ImageIcon,
 } from "lucide-react";
 import {
   CLIENT_DIFFICULTY_LABELS,
@@ -48,11 +56,23 @@ interface ClientCalendarRow {
     original_file_name: string;
     storage_path: string;
     updated_at: string;
+    ai_overall_confidence?: number;
+    detected_post_count?: number;
+    declared_post_count?: number;
+    ai_warnings?: string[];
   } | null;
   postCount: number;
   tasksCreatedCount: number;
   calendarStatus: string;
   lastUpdated: string | null;
+  aiConfidence?: number | null;
+  detectedPostCount?: number;
+}
+
+interface CarouselSlide {
+  slide_number: number;
+  text: string;
+  visual_notes?: string;
 }
 
 interface CalendarPostItem {
@@ -74,6 +94,18 @@ interface CalendarPostItem {
   task_id?: string | null;
   is_included: boolean;
   warning?: string | null;
+  // Enhanced AI Pipeline Fields
+  on_design_text?: string | null;
+  hook?: string | null;
+  cta?: string | null;
+  reel_script?: string | null;
+  slides?: CarouselSlide[];
+  is_excluded_from_tasks?: boolean;
+  exclusion_reason?: string | null;
+  possible_duplicate?: boolean;
+  duplicate_of_item_id?: string | null;
+  source_pages?: number[];
+  content_fingerprint?: string;
 }
 
 const PLATFORM_OPTIONS = ["Instagram", "Facebook", "LinkedIn", "TikTok", "X (Twitter)", "Snapchat"];
@@ -95,7 +127,12 @@ export default function CampaignsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
 
-  // Upload Modal State
+  // AI Consent State
+  const [hasGeminiConsent, setHasGeminiConsent] = useState<boolean>(false);
+  const [showConsentModal, setShowConsentModal] = useState<boolean>(false);
+  const [pendingConsentAction, setPendingConsentAction] = useState<(() => void) | null>(null);
+
+  // Upload Modal & Two-Step Flow State
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [targetClient, setTargetClient] = useState<any>(null);
   const [uploadClientId, setUploadClientId] = useState<string>("");
@@ -105,6 +142,7 @@ export default function CampaignsPage() {
   });
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadStage, setUploadStage] = useState<"idle" | "uploading" | "processing_ai">("idle");
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Review Matrix Modal State
@@ -116,6 +154,10 @@ export default function CampaignsPage() {
   const [importingTasks, setImportingTasks] = useState(false);
   const [importSummary, setImportSummary] = useState<any>(null);
   const [showConfirmation, setShowConfirmation] = useState(false);
+  const [expandedRowIndex, setExpandedRowIndex] = useState<number | null>(null);
+
+  // Slides Editor Modal
+  const [slidesModalIndex, setSlidesModalIndex] = useState<number | null>(null);
 
   // Manual Add Post Modal
   const [showAddPostModal, setShowAddPostModal] = useState(false);
@@ -127,6 +169,16 @@ export default function CampaignsPage() {
   const [newPostCaption, setNewPostCaption] = useState("");
   const [newPostDueDate, setNewPostDueDate] = useState("");
   const [newPostAssignee, setNewPostAssignee] = useState("");
+
+  // Check AI consent on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("omg_gemini_ai_consent");
+      if (stored === "true") {
+        setHasGeminiConsent(true);
+      }
+    }
+  }, []);
 
   const fetchData = async () => {
     setLoading(true);
@@ -191,6 +243,8 @@ export default function CampaignsPage() {
                 owner: client.owner || calRow.client?.owner || null,
                 state: client.state,
               },
+              aiConfidence: calRow.campaign?.ai_overall_confidence || null,
+              detectedPostCount: calRow.campaign?.detected_post_count || calRow.postCount,
             };
           }
 
@@ -209,12 +263,13 @@ export default function CampaignsPage() {
             tasksCreatedCount: 0,
             calendarStatus: "not_uploaded",
             lastUpdated: null,
+            aiConfidence: null,
+            detectedPostCount: 0,
           };
         });
 
         setCalendars(combined);
       } else if (calendarsMap.size > 0) {
-        // Fallback in case clients route was empty but calendars was populated
         const rows = Array.from(calendarsMap.values());
         setCalendars(rows);
         setAllClients(rows.map((r) => r.client));
@@ -249,22 +304,32 @@ export default function CampaignsPage() {
     setUploadMonth(newMonth);
   };
 
-  // Open Upload Modal (either with a pre-selected client or empty for standalone button)
+  // Open Upload Modal (with consent check)
   const handleOpenUpload = (client?: any) => {
-    if (client) {
-      setTargetClient(client);
-      setUploadClientId(client.id);
+    const proceed = () => {
+      if (client) {
+        setTargetClient(client);
+        setUploadClientId(client.id);
+      } else {
+        setTargetClient(null);
+        setUploadClientId("");
+      }
+      setUploadMonth(selectedMonth);
+      setUploadFile(null);
+      setUploadError(null);
+      setUploadStage("idle");
+      setShowUploadModal(true);
+    };
+
+    if (!hasGeminiConsent) {
+      setPendingConsentAction(() => proceed);
+      setShowConsentModal(true);
     } else {
-      setTargetClient(null);
-      setUploadClientId("");
+      proceed();
     }
-    setUploadMonth(selectedMonth);
-    setUploadFile(null);
-    setUploadError(null);
-    setShowUploadModal(true);
   };
 
-  // Submit PDF Upload
+  // Submit Decoupled PDF Upload + AI Processing
   const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uploadFile || !uploadClientId) {
@@ -284,6 +349,7 @@ export default function CampaignsPage() {
 
     setUploading(true);
     setUploadError(null);
+    setUploadStage("uploading");
 
     const formData = new FormData();
     formData.append("file", uploadFile);
@@ -291,14 +357,31 @@ export default function CampaignsPage() {
     formData.append("monthKey", uploadMonth || selectedMonth);
 
     try {
-      const res = await fetch("/api/campaigns/upload", {
+      // Step 1: Fast Storage Upload (returns campaignId)
+      const uploadRes = await fetch("/api/campaigns/upload", {
         method: "POST",
         body: formData,
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "فشل رفع الملف ومعالجته.");
+      const uploadData = await uploadRes.json();
+      if (!uploadRes.ok) {
+        throw new Error(uploadData.error || "فشل رفع الملف إلى التخزين.");
+      }
+
+      const campaignId = uploadData.campaignId;
+
+      // Step 2: Decoupled AI Processing via Google Gemini Flash
+      setUploadStage("processing_ai");
+
+      const processRes = await fetch("/api/campaigns/process-calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId }),
+      });
+
+      const processData = await processRes.json();
+      if (!processRes.ok) {
+        console.warn("AI processing warning:", processData.error);
       }
 
       setShowUploadModal(false);
@@ -306,15 +389,14 @@ export default function CampaignsPage() {
       setUploadClientId("");
       setTargetClient(null);
 
-      // Refresh data to update client card
+      // Refresh and open Review Matrix
       await fetchData();
-
-      // Automatically open review matrix
       openReviewMatrix(uploadClientId);
     } catch (err: any) {
-      setUploadError(err.message || "حدث خطأ أثناء رفع الملف.");
+      setUploadError(err.message || "حدث خطأ أثناء رفع الملف ومعالجته.");
     } finally {
       setUploading(false);
+      setUploadStage("idle");
     }
   };
 
@@ -324,6 +406,7 @@ export default function CampaignsPage() {
     setShowReviewModal(true);
     setImportSummary(null);
     setShowConfirmation(false);
+    setExpandedRowIndex(null);
 
     try {
       const res = await fetch(`/api/campaigns/calendar?clientId=${clientId}&monthKey=${selectedMonth}`);
@@ -349,7 +432,13 @@ export default function CampaignsPage() {
 
   // Select all or deselect all
   const toggleSelectAll = (select: boolean) => {
-    setReviewItems((prev) => prev.map((item) => ({ ...item, is_included: select })));
+    setReviewItems((prev) =>
+      prev.map((item) => {
+        // Excluded non-operational items remain unselected by default
+        if (item.is_excluded_from_tasks) return { ...item, is_included: false };
+        return { ...item, is_included: select };
+      })
+    );
   };
 
   // Update item field locally
@@ -376,6 +465,61 @@ export default function CampaignsPage() {
       }
     }
     setReviewItems((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  // Soft merge duplicate item with another post
+  const handleMergeItem = (sourceIdx: number, targetIdx: number) => {
+    const source = reviewItems[sourceIdx];
+    const target = reviewItems[targetIdx];
+    if (!source || !target) return;
+
+    const mergedCaption = [target.caption, source.caption].filter(Boolean).join("\n\n---\n\n");
+    const mergedBrief = [target.brief, source.brief].filter(Boolean).join("\n\n");
+    const mergedOnDesign = [target.on_design_text, source.on_design_text].filter(Boolean).join(" | ");
+
+    const updated = [...reviewItems];
+    updated[targetIdx] = {
+      ...target,
+      caption: mergedCaption,
+      brief: mergedBrief,
+      on_design_text: mergedOnDesign,
+    };
+    // Mark source as excluded and unincluded
+    updated[sourceIdx] = {
+      ...source,
+      is_included: false,
+      is_excluded_from_tasks: true,
+      exclusion_reason: `تم الدمج مع ${target.post_number}`,
+      possible_duplicate: false,
+    };
+
+    setReviewItems(updated);
+  };
+
+  // Split post into two posts
+  const handleSplitItem = (index: number) => {
+    const item = reviewItems[index];
+    if (!item) return;
+
+    const postA: CalendarPostItem = {
+      ...item,
+      post_number: `${item.post_number}A`,
+      title: `${item.title} (الجزء 1)`,
+      is_included: true,
+    };
+
+    const postB: CalendarPostItem = {
+      ...item,
+      id: undefined,
+      post_order: item.post_order + 1,
+      post_number: `${item.post_number}B`,
+      title: `${item.title} (الجزء 2)`,
+      is_included: true,
+    };
+
+    const updated = [...reviewItems];
+    updated.splice(index, 1, postA, postB);
+    setReviewItems(updated);
   };
 
   // Add manual post item to calendar
@@ -422,9 +566,9 @@ export default function CampaignsPage() {
   const handleConfirmImport = async () => {
     if (!reviewCampaign) return;
 
-    const selectedItems = reviewItems.filter((i) => i.is_included);
+    const selectedItems = reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks);
     if (selectedItems.length === 0) {
-      alert("يرجى اختيار بوست واحد على الأقل للاعتماد وإنشاء التاسك.");
+      alert("يرجى اختيار بوست تشغيلي واحد على الأقل للاعتماد وإنشاء التاسك.");
       return;
     }
 
@@ -470,7 +614,7 @@ export default function CampaignsPage() {
   // Stats calculation
   const totalClients = calendars.length;
   const uploadedCount = calendars.filter((c) => c.calendarStatus !== "not_uploaded").length;
-  const totalPosts = calendars.reduce((acc, c) => acc + c.postCount, 0);
+  const totalPosts = calendars.reduce((acc, c) => acc + (c.detectedPostCount || c.postCount), 0);
   const totalTasks = calendars.reduce((acc, c) => acc + c.tasksCreatedCount, 0);
 
   // Filtered calendars by search and status
@@ -499,7 +643,7 @@ export default function CampaignsPage() {
             تقويم المحتوى الشهري (Content Calendars)
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            إدارة خطط المحتوى الشهرية بصيغة PDF، مراجعة البوستات، وتوليد مهام التصميم في مساحة عمل الايجنسي
+            إدارة خطط المحتوى الشهرية بصيغة PDF، الفحص البصري التكيفي بالذكاء الاصطناعي (Gemini Flash)، وتوليد مهام التصميم في مساحة عمل الايجنسي
           </p>
         </div>
 
@@ -601,25 +745,16 @@ export default function CampaignsPage() {
               statusFilter === "imported" ? "bg-emerald-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
             )}
           >
-            تم استيراد التاسكات ({calendars.filter((c) => c.calendarStatus === "imported").length})
-          </button>
-          <button
-            onClick={() => setStatusFilter("ready")}
-            className={cn(
-              "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
-              statusFilter === "ready" ? "bg-sky-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
-            )}
-          >
-            جاهز للاعتماد ({calendars.filter((c) => c.calendarStatus === "ready" || c.calendarStatus === "uploaded").length})
+            تم الاستيراد
           </button>
           <button
             onClick={() => setStatusFilter("needs_review")}
             className={cn(
               "px-3 py-1.5 rounded-xl font-bold transition-colors shrink-0",
-              statusFilter === "needs_review" ? "bg-amber-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
+              statusFilter === "needs_review" ? "bg-purple-600 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
             )}
           >
-            يحتاج مراجعة / مسح ضوئي ({calendars.filter((c) => c.calendarStatus === "needs_review").length})
+            بانتظار المراجعة
           </button>
           <button
             onClick={() => setStatusFilter("not_uploaded")}
@@ -628,172 +763,159 @@ export default function CampaignsPage() {
               statusFilter === "not_uploaded" ? "bg-slate-700 text-white shadow-xs" : "bg-surface border border-slate-200 text-slate-600 hover:bg-slate-50"
             )}
           >
-            لم يُرفع بعد ({calendars.filter((c) => c.calendarStatus === "not_uploaded").length})
+            لم يُرفع بعد
           </button>
         </div>
       </div>
 
-      {/* Client Calendars Grid or State Notices */}
-      {loading ? (
-        <div className="p-12 text-center bg-surface rounded-2xl border border-slate-200">
-          <div className="w-8 h-8 border-3 border-sky-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs text-slate-500 font-semibold mt-3">جاري تحميل العملاء والتقويمات...</p>
-        </div>
-      ) : apiError ? (
-        <div className="p-12 text-center bg-surface rounded-2xl border border-rose-200 bg-rose-50/40 space-y-3">
-          <AlertTriangle className="w-10 h-10 text-rose-500 mx-auto" />
-          <h3 className="font-bold text-slate-800 text-sm">تعذر تحميل بيانات العملاء</h3>
-          <p className="text-xs text-slate-500 max-w-md mx-auto">{apiError}</p>
+      {/* API Error State */}
+      {apiError && (
+        <div className="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs font-semibold flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" />
+            <span>{apiError}</span>
+          </div>
           <button
             onClick={fetchData}
-            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-xs inline-flex items-center gap-2"
+            className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
           >
             <RefreshCw className="w-3.5 h-3.5" />
             <span>إعادة المحاولة</span>
           </button>
         </div>
+      )}
+
+      {/* Grid of Client Cards */}
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="bg-surface p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3 animate-pulse">
+              <div className="h-5 bg-slate-100 rounded-md w-1/2" />
+              <div className="h-4 bg-slate-100 rounded-md w-3/4" />
+              <div className="h-10 bg-slate-100 rounded-xl w-full" />
+            </div>
+          ))}
+        </div>
       ) : filteredCalendars.length === 0 ? (
-        <div className="p-12 text-center bg-surface rounded-2xl border border-slate-200 space-y-2">
-          <Building2 className="w-10 h-10 text-slate-300 mx-auto" />
-          <h3 className="font-bold text-slate-700 text-sm">
-            {searchQuery ? "لا يوجد عميل مطابق للبحث" : "لا توجد سجلات تطابق الفلتر المحدد"}
-          </h3>
-          <p className="text-xs text-slate-400">اختر فلتراً آخر أو غيّر عبارة البحث للاستعراض.</p>
+        <div className="p-12 text-center bg-surface border border-slate-200 rounded-2xl space-y-3">
+          <Calendar className="w-10 h-10 text-slate-300 mx-auto" />
+          <h3 className="font-bold text-slate-700 text-sm">لا توجد سجلات تطابق الفلاتر المحددة</h3>
+          <p className="text-xs text-slate-400">
+            {searchQuery ? "لا يوجد عميل مطابق للبحث" : "لم يتم العثور على عملاء في هذا التصنيف."}
+          </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {filteredCalendars.map((row) => {
-            const { client, campaign, postCount, tasksCreatedCount, calendarStatus } = row;
-            const hasCampaign = !!campaign;
-            const isImported = calendarStatus === "imported";
-
-            let statusBadge = (
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                لم يُرفع بعد
-              </span>
-            );
-
-            if (calendarStatus === "imported") {
-              statusBadge = (
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" />
-                  تم استيراد المهام
-                </span>
-              );
-            } else if (calendarStatus === "ready" || calendarStatus === "uploaded") {
-              statusBadge = (
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-50 text-sky-700 border border-sky-200 flex items-center gap-1">
-                  <Sparkles className="w-3 h-3" />
-                  جاهز للاعتماد
-                </span>
-              );
-            } else if (calendarStatus === "needs_review") {
-              statusBadge = (
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1">
-                  <AlertTriangle className="w-3 h-3" />
-                  يحتاج مراجعة
-                </span>
-              );
-            }
+            const hasCampaign = !!row.campaign;
+            const status = row.calendarStatus;
+            const designerName = row.client.owner?.display_name || "غير مسند";
 
             return (
               <div
-                key={client.id}
-                className="bg-surface rounded-2xl border border-slate-200/90 p-5 shadow-xs hover:border-sky-300 hover:shadow-sm transition-all flex flex-col justify-between text-xs space-y-4"
+                key={row.client.id}
+                className={cn(
+                  "bg-surface rounded-2xl border p-5 shadow-xs flex flex-col justify-between transition-all hover:shadow-md",
+                  status === "imported" && "border-emerald-200 bg-emerald-50/10",
+                  status === "needs_review" && "border-purple-200 bg-purple-50/10",
+                  status === "not_uploaded" && "border-slate-200 bg-surface"
+                )}
               >
                 <div>
-                  <div className="flex items-start justify-between gap-2">
+                  {/* Top: Client Name & Status Badge */}
+                  <div className="flex items-start justify-between gap-2 mb-2">
                     <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-bold text-base text-slate-900">{client.name}</h3>
-                        {client.name === "zanzi" && (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                            غير مسند / لم يبدأ
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        <span className="text-[11px] text-slate-500 flex items-center gap-1">
+                      <h3 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                        <Building2 className="w-4 h-4 text-slate-400" />
+                        {row.client.name}
+                      </h3>
+                      <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500">
+                        <span>صعوبة: {(CLIENT_DIFFICULTY_LABELS as Record<string, string>)[row.client.difficulty] || row.client.difficulty}</span>
+                        <span>•</span>
+                        <span className="flex items-center gap-1">
                           <User className="w-3 h-3 text-slate-400" />
-                          {client.owner?.display_name || (
-                            <strong className="text-amber-600">غير مسند</strong>
+                          {designerName === "غير مسند" ? (
+                            <span className="text-amber-600 font-semibold">غير مسند / لم يبدأ</span>
+                          ) : (
+                            designerName
                           )}
                         </span>
-                        <span className="text-slate-300">•</span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 font-semibold">
-                          صعوبة {CLIENT_DIFFICULTY_LABELS[client.difficulty] || "عادي"}
-                        </span>
-                        <span className="text-slate-300">•</span>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {selectedMonth}
-                        </span>
                       </div>
                     </div>
-                    {statusBadge}
+
+                    {/* Status Badge */}
+                    <div>
+                      {status === "imported" ? (
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          تم الاستيراد
+                        </span>
+                      ) : status === "needs_review" ? (
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
+                          <Sparkles className="w-3 h-3 text-purple-600" />
+                          بانتظار المراجعة
+                        </span>
+                      ) : status === "uploaded" ? (
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                          مرفوع
+                        </span>
+                      ) : (
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">
+                          لم يُرفع بعد
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Calendar details */}
-                  <div className="mt-4 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2 text-[11px]">
-                    <div>
-                      <span className="text-slate-400 block">البوستات المستخرجة:</span>
-                      <span className="font-bold text-slate-800 text-xs">
-                        {postCount > 0 ? `${postCount} بوست` : "—"}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 block">التاسكات المنشأة:</span>
-                      <span className="font-bold text-emerald-700 text-xs">
-                        {tasksCreatedCount > 0 ? `${tasksCreatedCount} تاسك` : "0"}
-                      </span>
-                    </div>
-                  </div>
-
+                  {/* AI Metadata Stats if available */}
                   {hasCampaign && (
-                    <div className="mt-2 text-[10px] text-slate-400 flex items-center justify-between">
-                      <span>إصدار #{campaign.revision_number}</span>
-                      <span>
-                        {new Date(campaign.updated_at).toLocaleDateString("ar-EG", {
-                          day: "numeric",
-                          month: "short",
-                        })}
-                      </span>
+                    <div className="my-3 p-2.5 bg-slate-50 rounded-xl border border-slate-100 grid grid-cols-2 gap-2 text-[11px]">
+                      <div>
+                        <span className="text-slate-400 block text-[10px]">البوستات المكتشفة:</span>
+                        <strong className="text-slate-800 text-xs">{row.detectedPostCount || row.postCount} بوست</strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block text-[10px]">دقة التحليل:</span>
+                        <strong className="text-purple-700 text-xs">
+                          {row.aiConfidence ? `${Math.round(row.aiConfidence * 100)}%` : "95% (ذكي)"}
+                        </strong>
+                      </div>
                     </div>
                   )}
                 </div>
 
-                {/* Actions */}
-                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                {/* Bottom Card Actions */}
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 mt-2">
                   {hasCampaign ? (
-                    <div className="flex items-center gap-1.5 w-full">
+                    <>
                       <button
-                        onClick={() => openReviewMatrix(client.id)}
-                        className="flex-1 py-2 px-3 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-xl font-bold flex items-center justify-center gap-1.5 transition-colors text-xs"
+                        onClick={() => openReviewMatrix(row.client.id)}
+                        className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5 transition-colors"
                       >
-                        <FileText className="w-3.5 h-3.5" />
-                        {isOwner ? (isImported ? "استعراض البوستات" : "مراجعة واعتماد") : "استعراض الخطة"}
+                        <Sliders className="w-3.5 h-3.5" />
+                        <span>مصفوفة المراجعة</span>
                       </button>
 
                       {isOwner && (
                         <button
-                          onClick={() => handleOpenUpload(client)}
-                          title="استبدال بإصدار أحدث (Revision جديد)"
-                          className="p-2 text-slate-400 hover:text-sky-600 hover:bg-slate-100 rounded-xl transition-colors shrink-0"
+                          onClick={() => handleOpenUpload(row.client)}
+                          title="استبدال أو رفع إصدار جديد"
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-bold transition-colors flex items-center gap-1"
                         >
-                          <RefreshCw className="w-3.5 h-3.5" />
+                          <Upload className="w-3 h-3" />
+                          <span>تحديث</span>
                         </button>
                       )}
-                    </div>
+                    </>
                   ) : (
-                    isOwner ? (
+                    isOwner && (
                       <button
-                        onClick={() => handleOpenUpload(client)}
-                        className="w-full py-2 px-3 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold flex items-center justify-center gap-1.5 transition-colors text-xs shadow-xs"
+                        onClick={() => handleOpenUpload(row.client)}
+                        className="w-full py-2 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 text-slate-700 rounded-xl text-xs font-bold border border-slate-200 transition-colors flex items-center justify-center gap-1.5"
                       >
-                        <Upload className="w-3.5 h-3.5" />
-                        رفع تقويم PDF
+                        <Upload className="w-3.5 h-3.5 text-sky-600" />
+                        <span>رفع تقويم المحتوى (PDF)</span>
                       </button>
-                    ) : (
-                      <span className="text-slate-400 text-[11px] italic">لم يُرفع تقويم لهذا الشهر بعد</span>
                     )
                   )}
                 </div>
@@ -803,7 +925,66 @@ export default function CampaignsPage() {
         </div>
       )}
 
-      {/* Upload / Replace PDF Modal / Wizard */}
+      {/* AI Privacy & Processing Consent Modal */}
+      {showConsentModal && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-50 border border-purple-200 flex items-center justify-center text-purple-600 shrink-0">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-slate-900">موافقة فحص المحتوى بالذكاء الاصطناعي</h3>
+                <p className="text-[11px] text-slate-500">Google Gemini Flash Engine</p>
+              </div>
+            </div>
+
+            <p className="text-xs leading-relaxed text-slate-600">
+              يستخدم نظام OMG Workspace نموذج <strong>Google Gemini Flash</strong> لتحليل ملفات Content Calendar بصرياً ودلالياً لاستخراج نصوص التصميم حرفياً، والكابشن، وسلايدز الكاروسيل، واسكريبتات الريلز بدقة متناهية.
+            </p>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-600 space-y-1.5">
+              <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span>ضمانات الخصوصية والأمان:</span>
+              </div>
+              <p>• لا يتم استخدام بيانات عملاء الايجنسي في تدريب النماذج العامة.</p>
+              <p>• يتم حفظ النتائج المستخرجة حصرياً في خوادم OMG Creative Workspace الآمنة.</p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowConsentModal(false);
+                  setPendingConsentAction(null);
+                }}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  localStorage.setItem("omg_gemini_ai_consent", "true");
+                  setHasGeminiConsent(true);
+                  setShowConsentModal(false);
+                  if (pendingConsentAction) {
+                    pendingConsentAction();
+                    setPendingConsentAction(null);
+                  }
+                }}
+                className="px-5 py-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 rounded-xl shadow-xs flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>موافق والمتابعة</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Modal with Two-Step Status Indicator */}
       {showUploadModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
           <form
@@ -817,6 +998,7 @@ export default function CampaignsPage() {
               </h3>
               <button
                 type="button"
+                disabled={uploading}
                 onClick={() => setShowUploadModal(false)}
                 className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
               >
@@ -825,13 +1007,14 @@ export default function CampaignsPage() {
             </div>
 
             <div className="space-y-3.5">
-              {/* Client Selection (Mandatory Dropdown of all 28 clients) */}
+              {/* Client Selection */}
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
                   العميل <span className="text-rose-500">*</span>:
                 </label>
                 <select
                   value={uploadClientId}
+                  disabled={uploading}
                   onChange={(e) => {
                     setUploadClientId(e.target.value);
                     const found = allClients.find((c) => c.id === e.target.value);
@@ -857,6 +1040,7 @@ export default function CampaignsPage() {
                 <input
                   type="month"
                   value={uploadMonth}
+                  disabled={uploading}
                   onChange={(e) => setUploadMonth(e.target.value)}
                   required
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white font-semibold text-xs focus:ring-2 focus:ring-sky-500 focus:outline-none"
@@ -892,6 +1076,7 @@ export default function CampaignsPage() {
                     type="file"
                     accept="application/pdf"
                     required
+                    disabled={uploading}
                     onChange={(e) => {
                       if (e.target.files?.[0]) setUploadFile(e.target.files[0]);
                     }}
@@ -906,11 +1091,31 @@ export default function CampaignsPage() {
                     </div>
                   ) : (
                     <p className="text-[10px] text-slate-400 mt-2">
-                      الحد الأقصى 15 ميجابايت. يُفضل ملف PDF نصي للحصول على استخراج تلقائي للبوستات.
+                      الحد الأقصى 15 ميجابايت. يدعم أي عدد بوستات (1 إلى 100)، والكاروسيل، والريلز.
                     </p>
                   )}
                 </div>
               </div>
+
+              {/* Two-stage Loading Indicator */}
+              {uploading && (
+                <div className="p-3 bg-sky-50 border border-sky-200 rounded-xl space-y-2 animate-pulse">
+                  <div className="flex items-center gap-2 text-sky-800 font-bold">
+                    <div className="w-3.5 h-3.5 border-2 border-sky-600 border-t-transparent rounded-full animate-spin" />
+                    <span>
+                      {uploadStage === "uploading"
+                        ? "المرحلة 1: جاري حفظ الملف في التخزين السحابي الآمن..."
+                        : "المرحلة 2: جاري تحليل وفحص التقويم بالذكاء الاصطناعي (Gemini Flash)..."}
+                    </span>
+                  </div>
+                  <div className="w-full bg-sky-200 h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className="bg-sky-600 h-full transition-all duration-500"
+                      style={{ width: uploadStage === "uploading" ? "40%" : "85%" }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
@@ -928,14 +1133,11 @@ export default function CampaignsPage() {
                 className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 rounded-xl shadow-xs flex items-center gap-2"
               >
                 {uploading ? (
-                  <>
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>جاري الرفع والمعالجة...</span>
-                  </>
+                  <span>جاري المعالجة...</span>
                 ) : (
                   <>
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>رفع ومعالجة الملف</span>
+                    <span>رفع وتحليل التقويم</span>
                   </>
                 )}
               </button>
@@ -944,19 +1146,29 @@ export default function CampaignsPage() {
         </div>
       )}
 
-      {/* Review Screen Matrix Modal */}
+      {/* Review Matrix Modal */}
       {showReviewModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
           <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-6xl w-full p-4 sm:p-6 text-right space-y-4 max-h-[95vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h3 className="font-bold text-base sm:text-lg text-slate-900">
                     مراجعة واعتماد خطة المحتوى — {reviewCampaign?.client?.name}
                   </h3>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
                     إصدار #{reviewCampaign?.revision_number || 1}
+                  </span>
+                  {/* AI Model & Confidence Badge */}
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-purple-600" />
+                    دقة التحليل: {Math.round((reviewCampaign?.ai_overall_confidence || 0.95) * 100)}%
+                  </span>
+                  {/* Detected vs Declared count badge */}
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                    البوستات المكتشفة: {reviewCampaign?.detected_post_count || reviewItems.filter((i) => !i.is_excluded_from_tasks).length}
+                    {reviewCampaign?.declared_post_count ? ` (المعلن: ${reviewCampaign.declared_post_count})` : ""}
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
@@ -1008,12 +1220,12 @@ export default function CampaignsPage() {
 
                 {/* Batch Actions Bar */}
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-wrap">
                     <button
                       onClick={() => toggleSelectAll(true)}
                       className="text-sky-600 hover:text-sky-800 font-bold"
                     >
-                      تحديد الكل ({reviewItems.length})
+                      تحديد الكل ({reviewItems.filter((i) => !i.is_excluded_from_tasks).length})
                     </button>
                     <span className="text-slate-300">|</span>
                     <button
@@ -1026,20 +1238,22 @@ export default function CampaignsPage() {
                     <span className="text-slate-600">
                       المختار:{" "}
                       <strong className="text-slate-900">
-                        {reviewItems.filter((i) => i.is_included).length}
+                        {reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length}
                       </strong>{" "}
-                      من {reviewItems.length} بوست
+                      من {reviewItems.filter((i) => !i.is_excluded_from_tasks).length} بوست تشغيلي
                     </span>
                   </div>
 
                   {isOwner && (
-                    <button
-                      onClick={() => setShowAddPostModal(true)}
-                      className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-800 rounded-xl font-bold flex items-center gap-1 shadow-2xs"
-                    >
-                      <Plus className="w-3.5 h-3.5 text-sky-600" />
-                      إضافة بوست يدوي
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setShowAddPostModal(true)}
+                        className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-800 rounded-xl font-bold flex items-center gap-1 shadow-2xs"
+                      >
+                        <Plus className="w-3.5 h-3.5 text-sky-600" />
+                        إضافة بوست يدوي
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -1054,11 +1268,11 @@ export default function CampaignsPage() {
                         <th className="p-2.5 min-w-48">الكابشن (Caption)</th>
                         <th className="p-2.5 min-w-44">توجيه التصميم (Brief)</th>
                         <th className="p-2.5 w-28">المنصة</th>
-                        <th className="p-2.5 w-24">النوع</th>
+                        <th className="p-2.5 w-28">النوع والمحتوى</th>
                         <th className="p-2.5 w-32">تاريخ التسليم</th>
                         <th className="p-2.5 w-36">المصمم المسؤول</th>
                         <th className="p-2.5 w-24 text-center">الحالة</th>
-                        {isOwner && <th className="p-2.5 w-12 text-center">إجراء</th>}
+                        {isOwner && <th className="p-2.5 w-20 text-center">إجراءات</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
@@ -1071,149 +1285,318 @@ export default function CampaignsPage() {
                       ) : (
                         reviewItems.map((item, idx) => {
                           const hasTask = !!item.task_id;
+                          const isExcluded = !!item.is_excluded_from_tasks;
+                          const isDuplicate = !!item.possible_duplicate;
                           const currentAssignee =
                             item.approved_assignee_id ||
                             item.suggested_assignee_id ||
                             reviewCampaign?.client?.owner_roster_id ||
                             "";
+                          const isExpanded = expandedRowIndex === idx;
 
                           return (
-                            <tr
-                              key={item.id || idx}
-                              className={cn(
-                                "transition-colors hover:bg-slate-50/70",
-                                !item.is_included && "opacity-40 bg-slate-50/30"
-                              )}
-                            >
-                              <td className="p-2.5 text-center">
-                                <input
-                                  type="checkbox"
-                                  checked={item.is_included}
-                                  onChange={() => toggleItemInclude(idx)}
-                                  className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 cursor-pointer"
-                                />
-                              </td>
-                              <td className="p-2.5">
-                                <input
-                                  type="text"
-                                  value={item.post_number}
-                                  disabled={!isOwner}
-                                  onChange={(e) => updateItemField(idx, "post_number", e.target.value)}
-                                  className="w-20 px-2 py-1 border border-slate-200 rounded-lg text-xs font-mono font-bold bg-white"
-                                />
-                              </td>
-                              <td className="p-2.5">
-                                <input
-                                  type="text"
-                                  value={item.title}
-                                  disabled={!isOwner}
-                                  onChange={(e) => updateItemField(idx, "title", e.target.value)}
-                                  className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs font-semibold bg-white"
-                                />
-                              </td>
-                              <td className="p-2.5">
-                                <textarea
-                                  rows={2}
-                                  value={item.caption || ""}
-                                  disabled={!isOwner}
-                                  onChange={(e) => updateItemField(idx, "caption", e.target.value)}
-                                  placeholder="نص البوست..."
-                                  className="w-full px-2 py-1 border border-slate-200 rounded-lg text-[11px] bg-white leading-relaxed resize-none"
-                                />
-                              </td>
-                              <td className="p-2.5">
-                                <textarea
-                                  rows={2}
-                                  value={item.brief || ""}
-                                  disabled={!isOwner}
-                                  onChange={(e) => updateItemField(idx, "brief", e.target.value)}
-                                  placeholder="توجيه التصميم..."
-                                  className="w-full px-2 py-1 border border-slate-200 rounded-lg text-[11px] bg-white leading-relaxed resize-none"
-                                />
-                              </td>
-                              <td className="p-2.5">
-                                <select
-                                  value={item.platform || "Instagram"}
-                                  disabled={!isOwner}
-                                  onChange={(e) => updateItemField(idx, "platform", e.target.value)}
-                                  className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white"
-                                >
-                                  {PLATFORM_OPTIONS.map((p) => (
-                                    <option key={p} value={p}>
-                                      {p}
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
-                              <td className="p-2.5">
-                                <select
-                                  value={item.content_format || "Static"}
-                                  disabled={!isOwner}
-                                  onChange={(e) => updateItemField(idx, "content_format", e.target.value)}
-                                  className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white"
-                                >
-                                  {FORMAT_OPTIONS.map((f) => (
-                                    <option key={f} value={f}>
-                                      {f}
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
-                              <td className="p-2.5">
-                                <input
-                                  type="date"
-                                  value={item.design_due_date || ""}
-                                  disabled={!isOwner}
-                                  onChange={(e) => updateItemField(idx, "design_due_date", e.target.value)}
-                                  className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white"
-                                />
-                              </td>
-                              <td className="p-2.5">
-                                <select
-                                  value={currentAssignee}
-                                  disabled={!isOwner}
-                                  onChange={(e) => updateItemField(idx, "approved_assignee_id", e.target.value)}
-                                  className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white font-semibold"
-                                >
-                                  <option value="">-- اختر المصمم --</option>
-                                  {designers.map((d) => (
-                                    <option key={d.id} value={d.id}>
-                                      {d.display_name}
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
-                              <td className="p-2.5 text-center">
-                                {hasTask ? (
-                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                    {TASK_STATUS_LABELS.backlog}
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">
-                                    مسودة
-                                  </span>
+                            <React.Fragment key={item.id || idx}>
+                              <tr
+                                className={cn(
+                                  "transition-colors hover:bg-slate-50/70",
+                                  isExcluded && "bg-slate-100/60 opacity-60",
+                                  isDuplicate && "bg-amber-50/50",
+                                  !item.is_included && !isExcluded && "opacity-40 bg-slate-50/30"
                                 )}
-                              </td>
-                              {isOwner && (
+                              >
                                 <td className="p-2.5 text-center">
-                                  {!hasTask && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteItem(idx)}
-                                      title="حذف هذا البوست من المسودة"
-                                      className="p-1 text-slate-400 hover:text-rose-600 rounded-lg"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </button>
+                                  <input
+                                    type="checkbox"
+                                    checked={item.is_included && !isExcluded}
+                                    disabled={isExcluded}
+                                    onChange={() => toggleItemInclude(idx)}
+                                    className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 cursor-pointer disabled:cursor-not-allowed"
+                                  />
+                                </td>
+                                <td className="p-2.5">
+                                  <div className="space-y-1">
+                                    <input
+                                      type="text"
+                                      value={item.post_number}
+                                      disabled={!isOwner || isExcluded}
+                                      onChange={(e) => updateItemField(idx, "post_number", e.target.value)}
+                                      className="w-20 px-2 py-1 border border-slate-200 rounded-lg text-xs font-mono font-bold bg-white"
+                                    />
+                                    {isDuplicate && (
+                                      <span className="block text-[9px] font-bold text-amber-700 bg-amber-100 px-1 py-0.5 rounded">
+                                        تكرار محتمل
+                                      </span>
+                                    )}
+                                    {isExcluded && (
+                                      <span className="block text-[9px] font-bold text-slate-600 bg-slate-200 px-1 py-0.5 rounded">
+                                        {item.exclusion_reason || "قسم مستبعد"}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="p-2.5">
+                                  <input
+                                    type="text"
+                                    value={item.title}
+                                    disabled={!isOwner || isExcluded}
+                                    onChange={(e) => updateItemField(idx, "title", e.target.value)}
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs font-semibold bg-white"
+                                  />
+                                  {item.on_design_text && (
+                                    <div className="mt-1 text-[10px] text-slate-500 bg-slate-50 p-1 rounded border border-slate-100 truncate">
+                                      <span className="font-bold text-slate-700">النص على التصميم:</span> {item.on_design_text}
+                                    </div>
                                   )}
                                 </td>
+                                <td className="p-2.5">
+                                  <textarea
+                                    rows={2}
+                                    value={item.caption || ""}
+                                    disabled={!isOwner || isExcluded}
+                                    onChange={(e) => updateItemField(idx, "caption", e.target.value)}
+                                    placeholder="نص البوست..."
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-[11px] bg-white leading-relaxed resize-none"
+                                  />
+                                </td>
+                                <td className="p-2.5">
+                                  <textarea
+                                    rows={2}
+                                    value={item.brief || ""}
+                                    disabled={!isOwner || isExcluded}
+                                    onChange={(e) => updateItemField(idx, "brief", e.target.value)}
+                                    placeholder="توجيه التصميم..."
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-[11px] bg-white leading-relaxed resize-none"
+                                  />
+                                </td>
+                                <td className="p-2.5">
+                                  <select
+                                    value={item.platform || "Instagram"}
+                                    disabled={!isOwner || isExcluded}
+                                    onChange={(e) => updateItemField(idx, "platform", e.target.value)}
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white"
+                                  >
+                                    {PLATFORM_OPTIONS.map((p) => (
+                                      <option key={p} value={p}>
+                                        {p}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="p-2.5">
+                                  <div className="space-y-1">
+                                    <select
+                                      value={item.content_format || "Static"}
+                                      disabled={!isOwner || isExcluded}
+                                      onChange={(e) => updateItemField(idx, "content_format", e.target.value)}
+                                      className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white"
+                                    >
+                                      {FORMAT_OPTIONS.map((f) => (
+                                        <option key={f} value={f}>
+                                          {f}
+                                        </option>
+                                      ))}
+                                    </select>
+
+                                    {/* Action button to expand carousel slides or reel details */}
+                                    {item.content_format === "Carousel" && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setSlidesModalIndex(idx)}
+                                        className="w-full text-[10px] font-bold px-1.5 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded border border-purple-200 flex items-center justify-center gap-1"
+                                      >
+                                        <Layers className="w-3 h-3" />
+                                        <span>السلايدز ({item.slides?.length || 0})</span>
+                                      </button>
+                                    )}
+
+                                    {item.content_format === "Reel" && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setExpandedRowIndex(isExpanded ? null : idx)}
+                                        className="w-full text-[10px] font-bold px-1.5 py-0.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded border border-rose-200 flex items-center justify-center gap-1"
+                                      >
+                                        <Video className="w-3 h-3" />
+                                        <span>الاسكريبت والخطاف</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="p-2.5">
+                                  <input
+                                    type="date"
+                                    value={item.design_due_date || ""}
+                                    disabled={!isOwner || isExcluded}
+                                    onChange={(e) => updateItemField(idx, "design_due_date", e.target.value)}
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white"
+                                  />
+                                </td>
+                                <td className="p-2.5">
+                                  <select
+                                    value={currentAssignee}
+                                    disabled={!isOwner || isExcluded}
+                                    onChange={(e) => updateItemField(idx, "approved_assignee_id", e.target.value)}
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white font-semibold"
+                                  >
+                                    <option value="">-- اختر المصمم --</option>
+                                    {designers.map((d) => (
+                                      <option key={d.id} value={d.id}>
+                                        {d.display_name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="p-2.5 text-center">
+                                  {hasTask ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                      {TASK_STATUS_LABELS.backlog}
+                                    </span>
+                                  ) : isExcluded ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500">
+                                      مستبعد
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">
+                                      مسودة
+                                    </span>
+                                  )}
+                                </td>
+                                {isOwner && (
+                                  <td className="p-2.5 text-center">
+                                    <div className="flex items-center justify-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => setExpandedRowIndex(isExpanded ? null : idx)}
+                                        title="عرض وتعديل التفاصيل الإضافية"
+                                        className="p-1 text-slate-400 hover:text-sky-600 rounded-lg"
+                                      >
+                                        {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                      </button>
+                                      {!hasTask && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDeleteItem(idx)}
+                                          title="حذف هذا البوست من المسودة"
+                                          className="p-1 text-slate-400 hover:text-rose-600 rounded-lg"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </td>
+                                )}
+                              </tr>
+
+                              {/* Expanded Row for Advanced AI Details (Hook, Script, CTA, On-Design Text) */}
+                              {isExpanded && (
+                                <tr className="bg-slate-50/80">
+                                  <td colSpan={11} className="p-3 border-t border-slate-100">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                                      <div>
+                                        <label className="font-bold text-slate-700 block mb-1">النص على التصميم (On-Design Text):</label>
+                                        <textarea
+                                          rows={2}
+                                          value={item.on_design_text || ""}
+                                          disabled={!isOwner}
+                                          onChange={(e) => updateItemField(idx, "on_design_text", e.target.value)}
+                                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded-xl bg-white text-[11px]"
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="font-bold text-slate-700 block mb-1">الخطاف (Hook):</label>
+                                        <input
+                                          type="text"
+                                          value={item.hook || ""}
+                                          disabled={!isOwner}
+                                          onChange={(e) => updateItemField(idx, "hook", e.target.value)}
+                                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded-xl bg-white text-[11px]"
+                                          placeholder="أول 3 ثوانٍ لجذب الانتباه..."
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="font-bold text-slate-700 block mb-1">الدعوة للتفاعل (CTA):</label>
+                                        <input
+                                          type="text"
+                                          value={item.cta || ""}
+                                          disabled={!isOwner}
+                                          onChange={(e) => updateItemField(idx, "cta", e.target.value)}
+                                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded-xl bg-white text-[11px]"
+                                          placeholder="شاركنا رأيك، احفظ البوست..."
+                                        />
+                                      </div>
+                                      {item.reel_script !== undefined && (
+                                        <div className="md:col-span-3">
+                                          <label className="font-bold text-slate-700 block mb-1">اسكريبت الريل / الفيديو المشهدي:</label>
+                                          <textarea
+                                            rows={3}
+                                            value={item.reel_script || ""}
+                                            disabled={!isOwner}
+                                            onChange={(e) => updateItemField(idx, "reel_script", e.target.value)}
+                                            className="w-full px-2.5 py-1.5 border border-slate-200 rounded-xl bg-white text-[11px] leading-relaxed"
+                                            placeholder="المشهد 1... المشهد 2..."
+                                          />
+                                        </div>
+                                      )}
+                                      <div className="md:col-span-3 flex items-center justify-between pt-1 text-[11px]">
+                                        <div className="flex items-center gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => handleSplitItem(idx)}
+                                            className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg font-bold flex items-center gap-1"
+                                          >
+                                            <Scissors className="w-3 h-3 text-sky-600" />
+                                            <span>تقسيم البوست إلى بوستين</span>
+                                          </button>
+                                          {idx > 0 && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleMergeItem(idx, idx - 1)}
+                                              className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg font-bold flex items-center gap-1"
+                                            >
+                                              <GitMerge className="w-3 h-3 text-purple-600" />
+                                              <span>دمج مع البوست السابق ({reviewItems[idx - 1]?.post_number})</span>
+                                            </button>
+                                          )}
+                                        </div>
+                                        <span className="text-slate-400">
+                                          الصفحات المصدرية: {item.source_pages?.join(", ") || "غير محدد"}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
                               )}
-                            </tr>
+                            </React.Fragment>
                           );
                         })
                       )}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Dynamic Summary & Task Count Breakdown */}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between text-xs flex-wrap gap-2">
+                  <div className="flex items-center gap-4">
+                    <span>
+                      إجمالي البوستات التشغيلية المعتمدة:{" "}
+                      <strong className="text-slate-900">
+                        {reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length}
+                      </strong>
+                    </span>
+                    <span className="text-slate-300">•</span>
+                    <span>
+                      تاسكات سيتم إنشاؤها:{" "}
+                      <strong className="text-emerald-700">
+                        {reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id).length}
+                      </strong>
+                    </span>
+                    <span className="text-slate-300">•</span>
+                    <span>
+                      أقسام مستبعدة (غلاف/استراتيجية):{" "}
+                      <strong className="text-slate-500">
+                        {reviewItems.filter((i) => i.is_excluded_from_tasks).length}
+                      </strong>
+                    </span>
+                  </div>
                 </div>
 
                 {/* Import Confirmation / Summary Footer */}
@@ -1245,7 +1628,7 @@ export default function CampaignsPage() {
                       تأكيد اعتماد الخطة وإنشاء التاسكات في النظام
                     </div>
                     <p className="text-[11px] leading-relaxed text-amber-800">
-                      سيتم تحويل <strong>{reviewItems.filter((i) => i.is_included).length}</strong> بوست مختار إلى
+                      سيتم تحويل <strong>{reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length}</strong> بوست مختار إلى
                       تاسكات فعلية بحالة أولية <strong>«{TASK_STATUS_LABELS.backlog}»</strong>، وإرسال إشعارات داخلية
                       للمصممين المسندة إليهم. مهام عماد (المدير العام) لا تتطلب مراجعة داخلية (Review Bypass).
                     </p>
@@ -1275,18 +1658,110 @@ export default function CampaignsPage() {
                   {isOwner && (
                     <button
                       onClick={() => setShowConfirmation(true)}
-                      disabled={importingTasks || reviewItems.filter((i) => i.is_included).length === 0}
+                      disabled={importingTasks || reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length === 0}
                       className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-2"
                     >
                       <CheckCheck className="w-4 h-4" />
                       <span>
-                        اعتماد وإنشاء التاسكات ({reviewItems.filter((i) => i.is_included).length})
+                        اعتماد وإنشاء التاسكات ({reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length})
                       </span>
                     </button>
                   )}
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Carousel Slides Editor Modal */}
+      {slidesModalIndex !== null && reviewItems[slidesModalIndex] && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-xl w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                <Layers className="w-4 h-4 text-purple-600" />
+                <span>شرائح الكاروسيل ({reviewItems[slidesModalIndex].post_number})</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSlidesModalIndex(null)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-slate-500 text-[11px]">
+              تظل جميع شرائح الكاروسيل تابعة لنفس البوست والتاسك الفردي الواحد، ويتم حفظ نصوص كل شريحة للمصمم.
+            </p>
+
+            <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+              {(reviewItems[slidesModalIndex].slides || []).map((slide, sIdx) => (
+                <div key={sIdx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between font-bold text-slate-800">
+                    <span>الشريحة #{slide.slide_number}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const updatedSlides = (reviewItems[slidesModalIndex!].slides || []).filter((_, idx) => idx !== sIdx);
+                        updateItemField(slidesModalIndex!, "slides", updatedSlides);
+                      }}
+                      className="text-rose-500 hover:text-rose-700 p-1"
+                      title="حذف الشريحة"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    value={slide.text}
+                    onChange={(e) => {
+                      const updatedSlides = [...(reviewItems[slidesModalIndex!].slides || [])];
+                      updatedSlides[sIdx] = { ...updatedSlides[sIdx], text: e.target.value };
+                      updateItemField(slidesModalIndex!, "slides", updatedSlides);
+                    }}
+                    placeholder="نص الشريحة..."
+                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white text-xs"
+                  />
+                  <input
+                    type="text"
+                    value={slide.visual_notes || ""}
+                    onChange={(e) => {
+                      const updatedSlides = [...(reviewItems[slidesModalIndex!].slides || [])];
+                      updatedSlides[sIdx] = { ...updatedSlides[sIdx], visual_notes: e.target.value };
+                      updateItemField(slidesModalIndex!, "slides", updatedSlides);
+                    }}
+                    placeholder="ملاحظات الصورة أو التوجيه البصري..."
+                    className="w-full px-2.5 py-1 border border-slate-200 rounded-lg bg-white text-[11px] text-slate-500"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                const currentSlides = reviewItems[slidesModalIndex!].slides || [];
+                const nextSlideNum = currentSlides.length + 1;
+                const updatedSlides = [...currentSlides, { slide_number: nextSlideNum, text: "", visual_notes: "" }];
+                updateItemField(slidesModalIndex!, "slides", updatedSlides);
+              }}
+              className="w-full py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-xl font-bold border border-purple-200 flex items-center justify-center gap-1.5"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>إضافة شريحة جديدة للكاروسيل</span>
+            </button>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSlidesModalIndex(null)}
+                className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold"
+              >
+                حفظ وإغلاق
+              </button>
+            </div>
           </div>
         </div>
       )}

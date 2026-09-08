@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { uploadContentCalendar, uploadCalendarFileOnly } from "@/lib/services/content-calendars";
+import { processCalendarCampaign } from "@/lib/services/content-calendars";
 
+export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
@@ -32,50 +33,40 @@ export async function POST(req: NextRequest) {
 
     if (!membership || membership.role !== "owner") {
       return NextResponse.json(
-        { error: "صلاحية غير كافية: رفع تقويم المحتوى مسموح فقط للمدير العام (Owner)." },
+        { error: "صلاحية غير كافية: معالجة تقويم المحتوى مسموح فقط للمدير العام (Owner)." },
         { status: 403 }
       );
     }
 
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
-    const clientId = formData.get("clientId") as string | null;
-    const monthKey = formData.get("monthKey") as string | null;
+    const body = await req.json().catch(() => ({}));
+    const { campaignId, forceRefresh } = body;
 
-    if (!file || !clientId || !monthKey) {
+    if (!campaignId) {
       return NextResponse.json(
-        { error: "الملف والعميل والشهر مطلوبون لإتمام عملية الرفع." },
+        { error: "معرف الكامبين (campaignId) مطلوب لبدء المعالجة." },
         { status: 400 }
       );
     }
 
-    if (!/^\d{4}-\d{2}$/.test(monthKey)) {
-      return NextResponse.json(
-        { error: "تنسيق الشهر غير صالح. يرجى استخدام تنسيق YYYY-MM." },
-        { status: 400 }
-      );
-    }
-
-    const buffer = Buffer.from(await file.arrayBuffer());
-
-    const result = await uploadCalendarFileOnly({
+    const result = await processCalendarCampaign({
       workspaceId: membership.workspace_id,
-      clientId,
-      monthKey,
-      fileName: file.name,
-      fileBuffer: buffer,
-      uploaderRosterId: membership.roster_person_id,
+      campaignId,
+      forceRefresh: Boolean(forceRefresh),
     });
 
     return NextResponse.json({
       success: true,
       campaignId: result.campaign.id,
       campaign: result.campaign,
-      previewUrl: result.previewUrl,
-      storagePath: result.storagePath,
-      message: "تم رفع الملف بنجاح إلى التخزين الآمن، وجاري تجهيز المعالجة الذكية.",
+      itemsCount: result.items.length,
+      detectedPostCount: result.reconciled.detected_post_count,
+      declaredPostCount: result.reconciled.declared_post_count,
+      confidence: result.reconciled.overall_confidence,
+      items: result.items,
+      warnings: result.reconciled.warnings,
+      message: `تمت معالجة التقويم بنجاح واستخراج ${result.reconciled.detected_post_count} بوست بدقة ${(result.reconciled.overall_confidence * 100).toFixed(0)}%!`,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message || String(err) }, { status: 500 });
   }
 }

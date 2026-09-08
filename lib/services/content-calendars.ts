@@ -1,9 +1,10 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { extractPostsFromPdf, validatePdfBuffer, ExtractedPostItem } from "./pdf-extractor";
+import { validatePdfBuffer } from "./pdf-extractor";
+import { aiDocumentPipeline } from "./ai-document-pipeline";
 import crypto from "crypto";
 
-export async function uploadContentCalendar(params: {
+export async function uploadCalendarFileOnly(params: {
   workspaceId: string;
   clientId: string;
   monthKey: string; // 'YYYY-MM'
@@ -77,20 +78,9 @@ export async function uploadContentCalendar(params: {
     throw new Error(`فشل رفع الملف إلى التخزين: ${uploadErr.message}`);
   }
 
-  // 8. Extract text and posts
-  const extraction = await extractPostsFromPdf(params.fileBuffer, {
-    targetYearMonth: params.monthKey,
-  });
-
-  const calendarStatus = extraction.isScannedOrNoText
-    ? "needs_review"
-    : extraction.success && extraction.items.length > 0
-    ? "ready"
-    : "needs_review";
-
   const campaignTitle = `Content Calendar — ${client.name} (${params.monthKey}) (Rev ${nextRevision})`;
 
-  // 9. Insert Campaign
+  // 8. Insert Campaign with status 'uploaded'
   const { data: campaign, error: campErr } = await admin
     .from("campaigns")
     .insert({
@@ -98,18 +88,16 @@ export async function uploadContentCalendar(params: {
       workspace_id: params.workspaceId,
       client_id: params.clientId,
       title: campaignTitle,
-      brief: extraction.rawText ? extraction.rawText.substring(0, 1000) : null,
+      brief: null,
       month_key: params.monthKey,
       revision_number: nextRevision,
-      calendar_status: calendarStatus,
+      calendar_status: "uploaded",
       original_file_name: params.fileName,
       storage_path: storagePath,
       file_hash: fileHash,
+      file_sha256: fileHash,
       uploaded_by_roster_id: params.uploaderRosterId,
       uploaded_at: new Date().toISOString(),
-      processed_at: new Date().toISOString(),
-      parser_version: "v1.0",
-      processing_error: extraction.error || null,
       is_current_revision: true,
       status: "Draft",
     })
@@ -120,57 +108,168 @@ export async function uploadContentCalendar(params: {
     throw new Error(`فشل إنشاء سجل الكامبين: ${campErr.message}`);
   }
 
-  // 10. Insert extracted items
-  const insertedItems: any[] = [];
-  if (extraction.items.length > 0) {
-    const defaultAssignee = client.owner_roster_id;
-
-    const itemsToInsert = extraction.items.map((item) => ({
-      workspace_id: params.workspaceId,
-      campaign_id: campaignId,
-      client_id: params.clientId,
-      post_order: item.post_order,
-      post_number: item.post_number,
-      title: item.title,
-      caption: item.caption,
-      brief: item.brief,
-      platform: item.platform,
-      content_format: item.content_format,
-      publish_date: item.publish_date,
-      design_due_date: item.design_due_date,
-      notes: item.warning || item.notes,
-      reference_urls: item.reference_urls,
-      raw_text: item.raw_text,
-      source_page: item.source_page,
-      confidence: item.confidence,
-      needs_manual_review: item.needs_manual_review,
-      suggested_assignee_id: defaultAssignee,
-      approved_assignee_id: defaultAssignee,
-      is_included: true,
-    }));
-
-    const { data: dbItems, error: itemsErr } = await admin
-      .from("content_calendar_items")
-      .insert(itemsToInsert)
-      .select();
-
-    if (itemsErr) {
-      console.error("Error inserting items:", itemsErr);
-    } else {
-      insertedItems.push(...(dbItems || []));
-    }
-  }
-
-  // 11. Generate short-lived signed preview URL (15 minutes)
+  // 9. Generate short-lived signed preview URL (15 minutes)
   const { data: signedData } = await admin.storage
     .from("content-calendars")
     .createSignedUrl(storagePath, 900);
 
   return {
     campaign,
-    items: insertedItems,
-    extraction,
+    storagePath,
+    fileHash,
     previewUrl: signedData?.signedUrl || null,
+  };
+}
+
+export async function processCalendarCampaign(params: {
+  workspaceId: string;
+  campaignId: string;
+  forceRefresh?: boolean;
+}) {
+  const admin = createAdminClient();
+  if (!admin) throw new Error("تعذر الاتصال بقاعدة البيانات.");
+
+  // 1. Fetch campaign
+  const { data: campaign, error: campErr } = await admin
+    .from("campaigns")
+    .select("*, client:clients(id, name, owner_roster_id)")
+    .eq("workspace_id", params.workspaceId)
+    .eq("id", params.campaignId)
+    .single();
+
+  if (campErr || !campaign) {
+    throw new Error("سجل التقويم غير موجود في مساحة العمل.");
+  }
+
+  // 2. Update status to 'processing'
+  await admin
+    .from("campaigns")
+    .update({
+      calendar_status: "processing",
+      processing_error: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", campaign.id);
+
+  try {
+    // 3. Download PDF buffer from storage
+    if (!campaign.storage_path) {
+      throw new Error("مسار تخزين الملف مفقود من سجل الكامبين.");
+    }
+
+    const { data: fileBlob, error: downloadErr } = await admin.storage
+      .from("content-calendars")
+      .download(campaign.storage_path);
+
+    if (downloadErr || !fileBlob) {
+      throw new Error(`تعذر تحميل الملف من التخزين: ${downloadErr?.message}`);
+    }
+
+    const buffer = Buffer.from(await fileBlob.arrayBuffer());
+
+    // 4. Run AI Document Pipeline
+    const reconciled = await aiDocumentPipeline.processCalendar(buffer, {
+      workspaceId: params.workspaceId,
+      clientId: campaign.client_id,
+      monthKey: campaign.month_key,
+      fileName: campaign.original_file_name || "calendar.pdf",
+      forceRefresh: params.forceRefresh,
+    });
+
+    // 5. Default assignee is client's assigned designer
+    const defaultAssignee = campaign.client?.owner_roster_id || null;
+    const itemsToSave = reconciled.items.map((it) => ({
+      ...it,
+      suggested_assignee_id: it.suggested_assignee_id || defaultAssignee,
+      approved_assignee_id: it.approved_assignee_id || defaultAssignee,
+    }));
+
+    // 6. Save extraction atomically via RPC
+    const aiMetadata = {
+      provider: reconciled.provider,
+      model: reconciled.model_used,
+      prompt_version: reconciled.prompt_version,
+      schema_version: reconciled.schema_version,
+      confidence: reconciled.overall_confidence,
+      declared_post_count: reconciled.declared_post_count,
+      detected_post_count: reconciled.detected_post_count,
+      token_usage: reconciled.token_usage,
+      warnings: reconciled.warnings,
+    };
+
+    const { data: saveRes, error: saveErr } = await admin.rpc("save_ai_calendar_extraction", {
+      p_workspace_id: params.workspaceId,
+      p_campaign_id: campaign.id,
+      p_file_sha256: reconciled.file_sha256,
+      p_ai_metadata: aiMetadata,
+      p_inventory: reconciled.inventory || {},
+      p_items: itemsToSave,
+    });
+
+    if (saveErr) {
+      console.error("RPC save_ai_calendar_extraction error:", saveErr);
+      throw new Error(`فشل حفظ استخراج الذكاء الاصطناعي: ${saveErr.message}`);
+    }
+
+    // 7. Re-fetch updated campaign and items
+    const { data: updatedCampaign } = await admin
+      .from("campaigns")
+      .select("*")
+      .eq("id", campaign.id)
+      .single();
+
+    const { data: updatedItems } = await admin
+      .from("content_calendar_items")
+      .select(`
+        *,
+        suggested_assignee:roster_people!fk_cci_suggested_assignee(id, display_name),
+        approved_assignee:roster_people!fk_cci_approved_assignee(id, display_name)
+      `)
+      .eq("campaign_id", campaign.id)
+      .order("post_order", { ascending: true });
+
+    return {
+      campaign: updatedCampaign,
+      items: updatedItems || [],
+      reconciled,
+    };
+  } catch (err: any) {
+    // Record error on campaign
+    await admin
+      .from("campaigns")
+      .update({
+        calendar_status: "failed",
+        processing_error: err.message || String(err),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", campaign.id);
+
+    throw err;
+  }
+}
+
+export async function uploadContentCalendar(params: {
+  workspaceId: string;
+  clientId: string;
+  monthKey: string; // 'YYYY-MM'
+  fileName: string;
+  fileBuffer: Buffer;
+  uploaderRosterId: string;
+}) {
+  // 1. Upload file and create campaign
+  const uploadResult = await uploadCalendarFileOnly(params);
+
+  // 2. Process calendar via AI pipeline
+  const processResult = await processCalendarCampaign({
+    workspaceId: params.workspaceId,
+    campaignId: uploadResult.campaign.id,
+  });
+
+  return {
+    campaign: processResult.campaign,
+    items: processResult.items,
+    extraction: processResult.reconciled,
+    previewUrl: uploadResult.previewUrl,
   };
 }
 
@@ -240,7 +339,7 @@ export async function getContentCalendarDetails(params: {
   // Get revision history for this client & month
   const { data: revisions } = await admin
     .from("campaigns")
-    .select("id, revision_number, calendar_status, original_file_name, created_at, is_current_revision")
+    .select("id, revision_number, calendar_status, original_file_name, created_at, is_current_revision, ai_overall_confidence, detected_post_count")
     .eq("workspace_id", params.workspaceId)
     .eq("client_id", params.clientId)
     .eq("month_key", params.monthKey)
@@ -297,6 +396,9 @@ export async function listClientCalendars(params: {
       status,
       original_file_name,
       storage_path,
+      ai_overall_confidence,
+      detected_post_count,
+      declared_post_count,
       created_at,
       updated_at
     `)
@@ -316,12 +418,14 @@ export async function listClientCalendars(params: {
   if (campaignIds.length > 0) {
     const { data: items } = await admin
       .from("content_calendar_items")
-      .select("campaign_id, task_id")
+      .select("campaign_id, task_id, is_excluded_from_tasks")
       .in("campaign_id", campaignIds);
 
     (items || []).forEach((it) => {
       const current = itemCountsMap.get(it.campaign_id) || { total: 0, tasks: 0 };
-      current.total += 1;
+      if (!it.is_excluded_from_tasks) {
+        current.total += 1;
+      }
       if (it.task_id) current.tasks += 1;
       itemCountsMap.set(it.campaign_id, current);
     });
@@ -338,6 +442,8 @@ export async function listClientCalendars(params: {
       tasksCreatedCount: counts.tasks,
       calendarStatus: campaign ? campaign.calendar_status : "not_uploaded",
       lastUpdated: campaign ? campaign.updated_at : null,
+      aiConfidence: campaign?.ai_overall_confidence || null,
+      detectedPostCount: campaign?.detected_post_count || counts.total,
     };
   });
 }
