@@ -40,37 +40,30 @@ export async function GET(req: NextRequest) {
     const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
     const model = process.env.GEMINI_DOCUMENT_MODEL?.trim() || "gemini-3.8-flash";
 
-    let availableModels: string[] = [];
-    let probeError: string | null = null;
-    let successfulModel: string | null = null;
+    const probeResults: Record<string, any> = {};
 
     if (apiKey) {
-      try {
-        const gemini = getGeminiClient();
-        if (gemini) {
-          const listRes = await gemini.models.list();
-          for await (const m of listRes) {
-            if (m.name) availableModels.push(m.name);
-          }
-
-          const probeCandidates = [model, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
-          for (const cand of probeCandidates) {
-            try {
-              const res = await gemini.models.generateContent({
-                model: cand,
-                contents: "test",
-              });
-              if (res.text) {
-                successfulModel = cand;
-                break;
-              }
-            } catch (ce: any) {
-              probeError = `${cand}: ${ce.message}`;
-            }
+      const gemini = getGeminiClient();
+      if (gemini) {
+        const testList = [
+          "gemini-2.5-flash",
+          "models/gemini-2.5-flash",
+          "gemini-flash-latest",
+          "models/gemini-flash-latest",
+          "gemini-2.5-flash-lite",
+          "models/gemini-2.5-flash-lite"
+        ];
+        for (const m of testList) {
+          try {
+            const res = await gemini.models.generateContent({
+              model: m,
+              contents: "hello",
+            });
+            probeResults[m] = { success: true, text: (res.text || "").trim().substring(0, 50) };
+          } catch (e: any) {
+            probeResults[m] = { success: false, status: e.status, message: e.message };
           }
         }
-      } catch (e: any) {
-        probeError = e.message;
       }
     }
 
@@ -79,10 +72,7 @@ export async function GET(req: NextRequest) {
       resolvedModel: model,
       runtime: "nodejs",
       vercelEnvironment: process.env.VERCEL_ENV || "production",
-      successfulModel,
-      probeError,
-      availableModelsCount: availableModels.length,
-      availableModelsSample: availableModels.slice(0, 10),
+      probeResults,
     });
   } catch (err: any) {
     return NextResponse.json(
