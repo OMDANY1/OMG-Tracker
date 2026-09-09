@@ -916,8 +916,8 @@ export default function CampaignsPage() {
                     </div>
                   )}
 
-                  {/* AI Metadata Stats if real confidence is present */}
-                  {hasCampaign && row.aiConfidence != null && (
+                  {/* AI Metadata Stats if real confidence is present and posts detected */}
+                  {hasCampaign && row.aiConfidence != null && (row.detectedPostCount ?? row.postCount) > 0 && (
                     <div className="my-3 p-2.5 bg-slate-50 rounded-xl border border-slate-100 grid grid-cols-2 gap-2 text-[11px]">
                       <div>
                         <span className="text-slate-400 block text-[10px]">البوستات المكتشفة:</span>
@@ -1210,19 +1210,23 @@ export default function CampaignsPage() {
                     إصدار #{reviewCampaign?.revision_number || 1}
                   </span>
                   {/* AI Model & Confidence Badge */}
-                  {reviewCampaign?.ai_overall_confidence != null && (
+                  {reviewCampaign?.ai_overall_confidence != null && (reviewCampaign?.detected_post_count ?? 0) > 0 && (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
                       <Sparkles className="w-3 h-3 text-purple-600" />
                       دقة التحليل: {Math.round(reviewCampaign.ai_overall_confidence * 100)}%
                     </span>
                   )}
-                  {reviewCampaign?.ai_model && (
+                  {reviewCampaign?.detected_post_count && reviewCampaign.detected_post_count > 0 && reviewCampaign?.ai_model ? (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
                       {reviewCampaign.ai_model}
                     </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                      لم يتم التحليل بعد
+                    </span>
                   )}
                   {/* Detected vs Declared count badge */}
-                  {reviewCampaign?.detected_post_count != null && (
+                  {reviewCampaign?.detected_post_count != null && reviewCampaign.detected_post_count > 0 && (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
                       البوستات المكتشفة: {reviewCampaign.detected_post_count}
                       {reviewCampaign?.declared_post_count ? ` (المعلن: ${reviewCampaign.declared_post_count})` : ""}

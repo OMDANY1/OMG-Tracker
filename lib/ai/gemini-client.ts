@@ -1,10 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 
-let clientInstance: GoogleGenAI | null = null;
-let cachedKey: string | null = null;
-
 /**
- * Returns the Gemini API Key from environment.
+ * Returns the Gemini API Key directly from process.env at execution time.
  * Strictly prioritizes GEMINI_API_KEY over GOOGLE_API_KEY.
  */
 export function getGeminiApiKey(): string | null {
@@ -26,28 +23,67 @@ export function isGeminiConfigured(): boolean {
 
 /**
  * Returns the Gemini document analysis model.
- * Defaults to 'gemini-2.0-flash' (verified stable multimodal Flash model).
+ * Defaults centrally to 'gemini-3.8-flash'.
  */
 export function getGeminiModel(): string {
-  const envModel = process.env.GEMINI_DOCUMENT_MODEL?.trim();
-  if (envModel && envModel.length > 0) {
-    return envModel;
-  }
-  return "gemini-2.0-flash";
+  return process.env.GEMINI_DOCUMENT_MODEL?.trim() || "gemini-3.8-flash";
 }
 
+/**
+ * Creates a fresh Gemini client lazily on demand during request execution.
+ * Never caches a null instance or static build-time value.
+ */
 export function getGeminiClient(): GoogleGenAI | null {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     return null;
   }
+  return new GoogleGenAI({ apiKey });
+}
 
-  if (!clientInstance || cachedKey !== apiKey) {
-    clientInstance = new GoogleGenAI({ apiKey });
-    cachedKey = apiKey;
+/**
+ * Handles transient Gemini API errors (503, 429) with exponential backoff & jitter.
+ * Attempts: max 3 (waits 2s, 5s, 10s + jitter). Never enters infinite loops.
+ */
+export async function callGeminiWithRetry<T>(
+  fn: () => Promise<T>,
+  options?: { maxRetries?: number }
+): Promise<T> {
+  const maxRetries = options?.maxRetries ?? 3;
+  const baseDelays = [2000, 5000, 10000];
+
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const status = err?.status;
+      const msg = (err?.message || "").toLowerCase();
+      const isTransient =
+        status === 503 ||
+        status === 429 ||
+        msg.includes("503") ||
+        msg.includes("429") ||
+        msg.includes("resource_exhausted") ||
+        msg.includes("rate limit") ||
+        msg.includes("overloaded") ||
+        msg.includes("service unavailable");
+
+      if (!isTransient || attempt >= maxRetries) {
+        throw err;
+      }
+
+      const baseDelay = baseDelays[attempt - 1] || 10000;
+      const jitter = Math.floor(Math.random() * 800);
+      const totalDelay = baseDelay + jitter;
+      console.warn(
+        `[Gemini Retry] Transient error (${status || msg}). Retrying attempt ${attempt + 1}/${maxRetries} after ${totalDelay}ms...`
+      );
+      await new Promise((resolve) => setTimeout(resolve, totalDelay));
+    }
   }
-
-  return clientInstance;
+  throw lastError;
 }
 
 export type GeminiErrorCategory =

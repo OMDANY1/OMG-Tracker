@@ -9,7 +9,7 @@ BEGIN;
 -- -----------------------------------------------------------------------------
 ALTER TABLE public.campaigns
     ADD COLUMN IF NOT EXISTS ai_provider TEXT DEFAULT 'google',
-    ADD COLUMN IF NOT EXISTS ai_model TEXT DEFAULT 'gemini-2.5-flash',
+    ADD COLUMN IF NOT EXISTS ai_model TEXT DEFAULT 'gemini-3.8-flash',
     ADD COLUMN IF NOT EXISTS ai_prompt_version TEXT DEFAULT 'v2.0',
     ADD COLUMN IF NOT EXISTS ai_schema_version TEXT DEFAULT '2026-09-08',
     ADD COLUMN IF NOT EXISTS ai_overall_confidence NUMERIC(4,2),
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS public.ai_extraction_cache (
     parser_version TEXT NOT NULL,
     schema_version TEXT NOT NULL,
     provider TEXT NOT NULL DEFAULT 'google',
-    model TEXT NOT NULL DEFAULT 'gemini-2.5-flash',
+    model TEXT NOT NULL DEFAULT 'gemini-3.8-flash',
     extracted_payload JSONB NOT NULL,
     token_usage JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.now(),
@@ -221,7 +221,7 @@ BEGIN
 
     -- Extract metadata safely
     v_provider := COALESCE(p_ai_metadata->>'provider', 'google');
-    v_model := COALESCE(p_ai_metadata->>'model', 'gemini-2.5-flash');
+    v_model := COALESCE(p_ai_metadata->>'model', 'gemini-3.8-flash');
     v_prompt_ver := COALESCE(p_ai_metadata->>'prompt_version', 'v2.0');
     v_schema_ver := COALESCE(p_ai_metadata->>'schema_version', '2026-09-08');
     v_overall_confidence := (p_ai_metadata->>'confidence')::NUMERIC;

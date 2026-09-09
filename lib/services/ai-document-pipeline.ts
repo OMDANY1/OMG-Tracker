@@ -1,5 +1,11 @@
 import crypto from "crypto";
-import { getGeminiClient, getGeminiModel, isGeminiConfigured, classifyGeminiError } from "@/lib/ai/gemini-client";
+import {
+  getGeminiClient,
+  getGeminiModel,
+  isGeminiConfigured,
+  classifyGeminiError,
+  callGeminiWithRetry,
+} from "@/lib/ai/gemini-client";
 import {
   DocumentInventory,
   DocumentInventorySchema,
@@ -70,7 +76,7 @@ export class AiDocumentPipeline {
       // 5. Pass B: Detailed Extraction (Adaptive Batched or Single Pass)
       const passBRes = await this.runPassBExtraction(
         gemini,
-        model,
+        passARes.usedModel || model,
         pdfBuffer,
         passARes.inventory,
         options.monthKey
@@ -82,13 +88,15 @@ export class AiDocumentPipeline {
         total_tokens: passARes.tokenUsage.total_tokens + passBRes.tokenUsage.total_tokens,
       };
 
+      const resolvedModel = passBRes.usedModel || passARes.usedModel || model;
+
       // 6. Pass C: Reconciliation & Post-processing
       const reconciled = this.runPassCReconciliation({
         inventory: passARes.inventory,
         items: passBRes.items,
         tokenUsage: totalTokens,
         fileSha256,
-        model,
+        model: resolvedModel,
         options,
       });
 
@@ -109,6 +117,44 @@ export class AiDocumentPipeline {
       customErr.status = err.status || 502;
       customErr.originalError = err.message || String(err);
       throw customErr;
+    }
+  }
+
+  /**
+   * Helper to execute Gemini requests with transient retry and automatic model fallback.
+   * If primary model returns 404 (e.g. preview/unsupported), falls back safely to 'gemini-2.0-flash'.
+   */
+  private async safeGenerateContent(
+    gemini: any,
+    preferredModel: string,
+    contents: any[],
+    config?: any
+  ): Promise<{ response: any; usedModel: string }> {
+    try {
+      const response = await callGeminiWithRetry(() =>
+        gemini.models.generateContent({
+          model: preferredModel,
+          contents,
+          config,
+        })
+      );
+      return { response, usedModel: preferredModel };
+    } catch (err: any) {
+      const isNotFound =
+        err?.status === 404 ||
+        (err?.message && (err.message.includes("404") || err.message.includes("not found") || err.message.includes("not supported")));
+      if (isNotFound && preferredModel !== "gemini-2.0-flash") {
+        console.warn(`[AiDocumentPipeline] Model ${preferredModel} not found (404). Falling back to gemini-2.0-flash...`);
+        const response = await callGeminiWithRetry(() =>
+          gemini.models.generateContent({
+            model: "gemini-2.0-flash",
+            contents,
+            config,
+          })
+        );
+        return { response, usedModel: "gemini-2.0-flash" };
+      }
+      throw err;
     }
   }
 
@@ -167,7 +213,7 @@ export class AiDocumentPipeline {
     model: string,
     pdfBuffer: Buffer,
     preInspection: { pageCount: number }
-  ): Promise<{ inventory: DocumentInventory; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }> {
+  ): Promise<{ inventory: DocumentInventory; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; usedModel: string }> {
     const base64Pdf = pdfBuffer.toString("base64");
 
     const prompt = `
@@ -216,9 +262,10 @@ export class AiDocumentPipeline {
 }
 `;
 
-    const response = await gemini.models.generateContent({
+    const { response, usedModel } = await this.safeGenerateContent(
+      gemini,
       model,
-      contents: [
+      [
         {
           inlineData: {
             data: base64Pdf,
@@ -227,11 +274,11 @@ export class AiDocumentPipeline {
         },
         { text: prompt },
       ],
-      config: {
+      {
         responseMimeType: "application/json",
         temperature: 0.1,
-      },
-    });
+      }
+    );
 
     const tokenUsage = {
       prompt_tokens: response.usageMetadata?.promptTokenCount || 0,
@@ -242,7 +289,7 @@ export class AiDocumentPipeline {
     const text = response.text || "{}";
     try {
       const parsed = JSON.parse(text);
-      return { inventory: DocumentInventorySchema.parse(parsed), tokenUsage };
+      return { inventory: DocumentInventorySchema.parse(parsed), tokenUsage, usedModel };
     } catch (err: any) {
       console.warn("[AiDocumentPipeline] Pass A parse warning:", err.message);
       // Fallback inventory
@@ -270,6 +317,7 @@ export class AiDocumentPipeline {
           warnings: ["تم إنشاء خريطة الصفحات بصورة تقديرية."],
         },
         tokenUsage,
+        usedModel,
       };
     }
   }
@@ -284,7 +332,7 @@ export class AiDocumentPipeline {
     pdfBuffer: Buffer,
     inventory: DocumentInventory,
     monthKey: string
-  ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }> {
+  ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; usedModel: string }> {
     const base64Pdf = pdfBuffer.toString("base64");
     const operationalBlocks = inventory.detected_blocks;
 
@@ -298,6 +346,7 @@ export class AiDocumentPipeline {
     const items: DetailedPostItem[] = [];
     const totalBatches = Math.ceil(operationalBlocks.length / chunkSize);
     const totalTokens = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    let finalUsedModel = model;
 
     for (let i = 0; i < operationalBlocks.length; i += chunkSize) {
       const batch = operationalBlocks.slice(i, i + chunkSize);
@@ -315,9 +364,10 @@ export class AiDocumentPipeline {
       totalTokens.prompt_tokens += batchResult.tokenUsage.prompt_tokens;
       totalTokens.completion_tokens += batchResult.tokenUsage.completion_tokens;
       totalTokens.total_tokens += batchResult.tokenUsage.total_tokens;
+      finalUsedModel = batchResult.usedModel;
     }
 
-    return { items, tokenUsage: totalTokens };
+    return { items, tokenUsage: totalTokens, usedModel: finalUsedModel };
   }
 
   private async extractBlocksBatch(
@@ -328,7 +378,7 @@ export class AiDocumentPipeline {
     monthKey: string,
     batchIndex: number,
     totalBatches: number
-  ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }> {
+  ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; usedModel: string }> {
     const targetIds = blocks.map((b) => `${b.canonicalPostId} (الصفحات: ${b.source_pages.join(",")})`).join("; ");
 
     const prompt = `
@@ -380,9 +430,10 @@ ${targetIds}
 }
 `;
 
-    const response = await gemini.models.generateContent({
+    const { response, usedModel } = await this.safeGenerateContent(
+      gemini,
       model,
-      contents: [
+      [
         {
           inlineData: {
             data: base64Pdf,
@@ -391,11 +442,11 @@ ${targetIds}
         },
         { text: prompt },
       ],
-      config: {
+      {
         responseMimeType: "application/json",
         temperature: 0.1,
-      },
-    });
+      }
+    );
 
     const tokenUsage = {
       prompt_tokens: response.usageMetadata?.promptTokenCount || 0,
@@ -408,15 +459,15 @@ ${targetIds}
       const parsed = JSON.parse(text);
       const validated = BatchedExtractionSchema.safeParse(parsed);
       if (validated.success) {
-        return { items: validated.data.items, tokenUsage };
+        return { items: validated.data.items, tokenUsage, usedModel };
       }
       if (Array.isArray(parsed.items)) {
-        return { items: parsed.items as DetailedPostItem[], tokenUsage };
+        return { items: parsed.items as DetailedPostItem[], tokenUsage, usedModel };
       }
-      return { items: [], tokenUsage };
+      return { items: [], tokenUsage, usedModel };
     } catch (err: any) {
       console.warn(`[AiDocumentPipeline] Batch ${batchIndex} extraction parse error:`, err.message);
-      return { items: [], tokenUsage };
+      return { items: [], tokenUsage, usedModel };
     }
   }
 
@@ -647,7 +698,7 @@ ${targetIds}
 
       if (!error && data?.extracted_payload) {
         const validated = ReconciledCalendarSchema.safeParse(data.extracted_payload);
-        if (validated.success) {
+        if (validated.success && validated.data.items && validated.data.items.length > 0) {
           return validated.data;
         }
       }

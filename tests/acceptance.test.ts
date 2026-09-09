@@ -767,7 +767,7 @@ async function runTestSuite() {
     const m9Commits = (mig9Sql.match(/^COMMIT;/gm) || []).length;
     assert(m9Begins === 1 && m9Commits === 1, "Migration 9 has exactly 1 BEGIN and 1 COMMIT");
     assert(mig9Sql.includes("ai_provider TEXT DEFAULT 'google'"), "Migration 9 adds ai_provider");
-    assert(mig9Sql.includes("ai_model TEXT DEFAULT 'gemini-2.5-flash'"), "Migration 9 adds ai_model");
+    assert(mig9Sql.includes("ai_model TEXT DEFAULT 'gemini-3.8-flash'"), "Migration 9 adds ai_model");
     assert(mig9Sql.includes("ai_prompt_version TEXT DEFAULT 'v2.0'"), "Migration 9 adds ai_prompt_version");
     assert(mig9Sql.includes("ai_schema_version TEXT DEFAULT '2026-09-08'"), "Migration 9 adds ai_schema_version");
     assert(mig9Sql.includes("chk_campaigns_ai_confidence"), "Migration 9 adds confidence check constraint (0 to 1)");
