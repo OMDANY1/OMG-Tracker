@@ -149,7 +149,7 @@ export class AiDocumentPipeline {
               contents,
               config,
             }),
-          { maxRetries: 2 }
+          { maxRetries: modelToTry === preferredModel ? 1 : 2 }
         );
         return { response, usedModel: modelToTry };
       } catch (err: any) {
@@ -158,8 +158,13 @@ export class AiDocumentPipeline {
         const isUnavailableOrNotFound =
           err?.status === 404 ||
           err?.status === 503 ||
+          err?.status === 429 ||
           msg.includes("503") ||
           msg.includes("404") ||
+          msg.includes("429") ||
+          msg.includes("quota") ||
+          msg.includes("rate limit") ||
+          msg.includes("resource_exhausted") ||
           msg.includes("high demand") ||
           msg.includes("unavailable") ||
           msg.includes("not found") ||
