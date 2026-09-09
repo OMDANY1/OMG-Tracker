@@ -1,6 +1,7 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getGeminiClient } from "@/lib/ai/gemini-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,11 +40,49 @@ export async function GET(req: NextRequest) {
     const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
     const model = process.env.GEMINI_DOCUMENT_MODEL?.trim() || "gemini-3.8-flash";
 
+    let availableModels: string[] = [];
+    let probeError: string | null = null;
+    let successfulModel: string | null = null;
+
+    if (apiKey) {
+      try {
+        const gemini = getGeminiClient();
+        if (gemini) {
+          const listRes = await gemini.models.list();
+          for await (const m of listRes) {
+            if (m.name) availableModels.push(m.name);
+          }
+
+          const probeCandidates = [model, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+          for (const cand of probeCandidates) {
+            try {
+              const res = await gemini.models.generateContent({
+                model: cand,
+                contents: "test",
+              });
+              if (res.text) {
+                successfulModel = cand;
+                break;
+              }
+            } catch (ce: any) {
+              probeError = `${cand}: ${ce.message}`;
+            }
+          }
+        }
+      } catch (e: any) {
+        probeError = e.message;
+      }
+    }
+
     return NextResponse.json({
       geminiKeyConfigured: Boolean(apiKey),
       resolvedModel: model,
       runtime: "nodejs",
       vercelEnvironment: process.env.VERCEL_ENV || "production",
+      successfulModel,
+      probeError,
+      availableModelsCount: availableModels.length,
+      availableModelsSample: availableModels.slice(0, 10),
     });
   } catch (err: any) {
     return NextResponse.json(
