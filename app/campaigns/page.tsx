@@ -10,6 +10,7 @@ import {
   ExternalLink,
   CheckCircle2,
   AlertTriangle,
+  AlertCircle,
   RefreshCw,
   X,
   Layers,
@@ -157,6 +158,7 @@ export default function CampaignsPage() {
   const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
   const [importingTasks, setImportingTasks] = useState(false);
   const [importSummary, setImportSummary] = useState<any>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [expandedRowIndex, setExpandedRowIndex] = useState<number | null>(null);
 
@@ -412,6 +414,7 @@ export default function CampaignsPage() {
     setReviewLoading(true);
     setShowReviewModal(true);
     setImportSummary(null);
+    setImportError(null);
     setShowConfirmation(false);
     setExpandedRowIndex(null);
 
@@ -604,7 +607,7 @@ export default function CampaignsPage() {
 
     const selectedItems = reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks);
     if (selectedItems.length === 0) {
-      alert("يرجى اختيار بوست تشغيلي واحد على الأقل للاعتماد وإنشاء التاسك.");
+      setImportError("يرجى اختيار بوست تشغيلي واحد على الأقل للاعتماد وإنشاء التاسك.");
       return;
     }
 
@@ -614,11 +617,12 @@ export default function CampaignsPage() {
     );
 
     if (unassignedPost) {
-      alert(`البوست (${unassignedPost.post_number}) ليس له مصمم محدد والعميل غير مسند لمصمم. يرجى اختيار مصمم للبوست قبل المتابعة.`);
+      setImportError(`البوست (${unassignedPost.post_number}) ليس له مصمم محدد والعميل غير مسند لمصمم. يرجى اختيار مصمم للبوست قبل المتابعة.`);
       return;
     }
 
     setImportingTasks(true);
+    setImportError(null);
     try {
       const res = await fetch("/api/campaigns/import-tasks", {
         method: "POST",
@@ -638,10 +642,11 @@ export default function CampaignsPage() {
 
       setImportSummary(data.result);
       setShowConfirmation(false);
+      setImportError(null);
       fetchData();
       openReviewMatrix(reviewCampaign.client_id);
     } catch (err: any) {
-      alert(`خطأ: ${err.message}`);
+      setImportError(`خطأ أثناء اعتماد التاسكات: ${err.message}`);
     } finally {
       setImportingTasks(false);
     }
@@ -1716,9 +1721,20 @@ export default function CampaignsPage() {
                       تاسكات فعلية بحالة أولية <strong>«{TASK_STATUS_LABELS.backlog}»</strong>، وإرسال إشعارات داخلية
                       للمصممين المسندة إليهم. مهام عماد (المدير العام) لا تتطلب مراجعة داخلية (Review Bypass).
                     </p>
+
+                    {importError && (
+                      <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-center gap-2 animate-in fade-in-50">
+                        <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                        <span>{importError}</span>
+                      </div>
+                    )}
+
                     <div className="flex items-center gap-2 justify-end">
                       <button
-                        onClick={() => setShowConfirmation(false)}
+                        onClick={() => {
+                          setShowConfirmation(false);
+                          setImportError(null);
+                        }}
                         className="px-4 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100"
                       >
                         إلغاء
@@ -1726,11 +1742,18 @@ export default function CampaignsPage() {
                       <button
                         onClick={handleConfirmImport}
                         disabled={importingTasks}
-                        className="px-5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5"
+                        className="px-5 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5"
                       >
                         {importingTasks ? "جاري الإنشاء..." : "تأكيد وإنشاء التاسكات"}
                       </button>
                     </div>
+                  </div>
+                )}
+
+                {importError && !showConfirmation && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-center gap-2 animate-in fade-in-50">
+                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                    <span>{importError}</span>
                   </div>
                 )}
 
@@ -1741,7 +1764,10 @@ export default function CampaignsPage() {
 
                   {isOwner && (
                     <button
-                      onClick={() => setShowConfirmation(true)}
+                      onClick={() => {
+                        setShowConfirmation(true);
+                        setImportError(null);
+                      }}
                       disabled={importingTasks || reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length === 0}
                       className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-2"
                     >

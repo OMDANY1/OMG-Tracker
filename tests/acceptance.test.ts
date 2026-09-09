@@ -861,6 +861,19 @@ async function runTestSuite() {
   assert(!campaignsPageSql.includes("وكالة"), "Zero occurrences of 'وكالة' in campaigns page (strictly 'ايجنسي')");
   assert(!campaignsPageSql.includes("وكالات"), "Zero occurrences of 'وكالات' in campaigns page (strictly 'ايجنسي')");
 
+  // [Scenario 69] Task Assignment Events Schema Alignment (Migration 11)...
+  console.log("\n[Scenario 69] Task Assignment Events Schema Alignment (Migration 11)...");
+  const migration11Path = path.join(__dirname, "../supabase/migrations/20260909000011_fix_calendar_task_assignment_events.sql");
+  assert(fs.existsSync(migration11Path), "Migration 11 file exists");
+  const m11Sql = fs.readFileSync(migration11Path, "utf-8");
+  const m11Begins = (m11Sql.match(/^BEGIN;/gm) || []).length;
+  const m11Commits = (m11Sql.match(/^COMMIT;/gm) || []).length;
+  assert(m11Begins === 1 && m11Commits === 1, "Migration 11 has exactly 1 BEGIN and 1 COMMIT");
+  assert(m11Sql.includes("previous_assignee_id") && m11Sql.includes("new_assignee_id"), "Migration 11 uses previous_assignee_id and new_assignee_id");
+  assert(!m11Sql.includes("from_assignee_id"), "Migration 11 contains zero occurrences of from_assignee_id");
+  assert(!m11Sql.includes("to_assignee_id"), "Migration 11 contains zero occurrences of to_assignee_id");
+  assert(!campaignsPageSql.includes("alert(`خطأ: ${err.message}`"), "Campaigns page replaces browser alert on import failure with inline state");
+
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
 
