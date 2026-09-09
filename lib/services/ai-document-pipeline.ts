@@ -121,8 +121,9 @@ export class AiDocumentPipeline {
   }
 
   /**
-   * Helper to execute Gemini requests with transient retry and automatic model fallback.
-   * If primary model returns 404 (e.g. preview/unsupported), falls back safely to 'gemini-2.0-flash'.
+   * Helper to execute Gemini requests with transient retry and automatic candidate model fallback.
+   * Tries preferredModel first, and if 503 (high demand) or 404 (not found) occurs,
+   * falls back safely to 'gemini-2.0-flash' and 'gemini-1.5-flash'.
    */
   private async safeGenerateContent(
     gemini: any,
@@ -130,32 +131,49 @@ export class AiDocumentPipeline {
     contents: any[],
     config?: any
   ): Promise<{ response: any; usedModel: string }> {
-    try {
-      const response = await callGeminiWithRetry(() =>
-        gemini.models.generateContent({
-          model: preferredModel,
-          contents,
-          config,
-        })
-      );
-      return { response, usedModel: preferredModel };
-    } catch (err: any) {
-      const isNotFound =
-        err?.status === 404 ||
-        (err?.message && (err.message.includes("404") || err.message.includes("not found") || err.message.includes("not supported")));
-      if (isNotFound && preferredModel !== "gemini-2.0-flash") {
-        console.warn(`[AiDocumentPipeline] Model ${preferredModel} not found (404). Falling back to gemini-2.0-flash...`);
-        const response = await callGeminiWithRetry(() =>
-          gemini.models.generateContent({
-            model: "gemini-2.0-flash",
-            contents,
-            config,
-          })
+    const candidateModels = [
+      preferredModel,
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
+    ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
+
+    let lastError: any = null;
+
+    for (const modelToTry of candidateModels) {
+      try {
+        const response = await callGeminiWithRetry(
+          () =>
+            gemini.models.generateContent({
+              model: modelToTry,
+              contents,
+              config,
+            }),
+          { maxRetries: 2 }
         );
-        return { response, usedModel: "gemini-2.0-flash" };
+        return { response, usedModel: modelToTry };
+      } catch (err: any) {
+        lastError = err;
+        const msg = (err?.message || "").toLowerCase();
+        const isUnavailableOrNotFound =
+          err?.status === 404 ||
+          err?.status === 503 ||
+          msg.includes("503") ||
+          msg.includes("404") ||
+          msg.includes("high demand") ||
+          msg.includes("unavailable") ||
+          msg.includes("not found") ||
+          msg.includes("not supported");
+
+        if (isUnavailableOrNotFound && modelToTry !== candidateModels[candidateModels.length - 1]) {
+          console.warn(
+            `[AiDocumentPipeline] Model ${modelToTry} returned ${err?.status || "error"} (${msg}). Falling back to next candidate model...`
+          );
+          continue;
+        }
+        throw err;
       }
-      throw err;
     }
+    throw lastError;
   }
 
   /**
