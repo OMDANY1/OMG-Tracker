@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { User, SupabaseClient } from "@supabase/supabase-js";
+import { createClient, type User, type SupabaseClient } from "@supabase/supabase-js";
 
 export interface ActiveMembershipContext {
   id: string;
@@ -61,19 +61,37 @@ export async function requireAuthenticatedUser(
   req: NextRequest
 ): Promise<AuthResult<{ user: User; serverClient: SupabaseClient }>> {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (!serverClient) {
-      return {
-        success: false,
-        errorResponse: NextResponse.json(
-          { error: "جلسة المستخدم غير متوفرة." },
-          { status: 401 }
-        ),
-      };
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const authHeader = req.headers.get("authorization");
+
+    let serverClient = await createServerSupabaseClient().catch(() => null);
+    let user: User | null = null;
+    let clientToUse: SupabaseClient | null = serverClient;
+
+    if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+      const token = authHeader.replace(/^bearer\s+/i, "").trim();
+      if (supabaseUrl && supabaseAnonKey && token) {
+        const tokenClient = createClient(supabaseUrl, supabaseAnonKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+          global: { headers: { Authorization: `Bearer ${token}` } },
+        });
+        const { data: tokenUser, error: tokenErr } = await tokenClient.auth.getUser(token);
+        if (!tokenErr && tokenUser?.user) {
+          user = tokenUser.user;
+          clientToUse = tokenClient;
+        }
+      }
     }
 
-    const { data: authData, error: authErr } = await serverClient.auth.getUser();
-    if (authErr || !authData?.user) {
+    if (!user && serverClient) {
+      const { data: authData, error: authErr } = await serverClient.auth.getUser();
+      if (!authErr && authData?.user) {
+        user = authData.user;
+      }
+    }
+
+    if (!user || !clientToUse) {
       return {
         success: false,
         errorResponse: NextResponse.json(
@@ -85,7 +103,7 @@ export async function requireAuthenticatedUser(
 
     return {
       success: true,
-      data: { user: authData.user, serverClient },
+      data: { user, serverClient: clientToUse },
     };
   } catch (err: any) {
     return {
@@ -112,6 +130,7 @@ export async function requireWorkspaceMembership(
     user: User;
     membership: ActiveMembershipContext;
     admin: SupabaseClient;
+    serverClient: SupabaseClient;
   }>
 > {
   const authRes = await requireAuthenticatedUser(req);
@@ -119,7 +138,7 @@ export async function requireWorkspaceMembership(
     return { success: false, errorResponse: authRes.errorResponse };
   }
 
-  const { user } = authRes.data;
+  const { user, serverClient } = authRes.data;
 
   // Safe to create admin client AFTER auth verification has succeeded
   const admin = createAdminClient();
@@ -189,6 +208,7 @@ export async function requireWorkspaceMembership(
         displayName: rosterObj?.display_name,
       },
       admin,
+      serverClient,
     },
   };
 }
@@ -203,6 +223,7 @@ export async function requireOwner(
     user: User;
     membership: ActiveMembershipContext;
     admin: SupabaseClient;
+    serverClient: SupabaseClient;
   }>
 > {
   const result = await requireWorkspaceMembership(req, { allowedRoles: ["owner"] });
@@ -226,6 +247,7 @@ export async function requireTaskAccess(
     membership: ActiveMembershipContext;
     task: any;
     admin: SupabaseClient;
+    serverClient: SupabaseClient;
   }>
 > {
   const memRes = await requireWorkspaceMembership(req);
@@ -233,7 +255,7 @@ export async function requireTaskAccess(
     return { success: false, errorResponse: memRes.errorResponse };
   }
 
-  const { user, membership, admin } = memRes.data;
+  const { user, membership, admin, serverClient } = memRes.data;
 
   // Retrieve task strictly scoped by caller's workspace_id
   const { data: task, error: taskErr } = await admin
@@ -257,7 +279,7 @@ export async function requireTaskAccess(
   if (membership.role === "owner") {
     return {
       success: true,
-      data: { user, membership, task, admin },
+      data: { user, membership, task, admin, serverClient },
     };
   }
 
@@ -268,7 +290,7 @@ export async function requireTaskAccess(
   ) {
     return {
       success: true,
-      data: { user, membership, task, admin },
+      data: { user, membership, task, admin, serverClient },
     };
   }
 
@@ -285,7 +307,7 @@ export async function requireTaskAccess(
   if (collab) {
     return {
       success: true,
-      data: { user, membership, task, admin },
+      data: { user, membership, task, admin, serverClient },
     };
   }
 
@@ -302,7 +324,7 @@ export async function requireTaskAccess(
   if (round) {
     return {
       success: true,
-      data: { user, membership, task, admin },
+      data: { user, membership, task, admin, serverClient },
     };
   }
 

@@ -23,6 +23,10 @@ import {
   HelpCircle,
   Video,
   Image as ImageIcon,
+  UploadCloud,
+  ArrowRight,
+  ShieldCheck,
+  RotateCcw,
 } from "lucide-react";
 import {
   TASK_STATUS_LABELS,
@@ -53,6 +57,27 @@ export default function TaskDetailsDrawer({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
+  // Deliverable link state
+  const [deliverableUrl, setDeliverableUrl] = useState<string>("");
+  const [savingDeliverable, setSavingDeliverable] = useState(false);
+
+  // Review submission state
+  const [showSubmitModal, setShowSubmitModal] = useState(false);
+  const [reviewNote, setReviewNote] = useState("");
+  const [submittingReview, setSubmittingReview] = useState(false);
+
+  // Review decision state
+  const [showDecisionModal, setShowDecisionModal] = useState<"approve" | "changes" | null>(null);
+  const [decisionFeedback, setDecisionFeedback] = useState("");
+  const [submittingDecision, setSubmittingDecision] = useState(false);
+
+  // Current authenticated user
+  const [currentUser, setCurrentUser] = useState<{
+    rosterPersonId: string;
+    role: string;
+    displayName?: string;
+  } | null>(null);
+
   // Comments state
   const [comments, setComments] = useState<any[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -64,6 +89,28 @@ export default function TaskDetailsDrawer({
   const cci = Array.isArray(task?.content_calendar_item)
     ? task?.content_calendar_item[0]
     : task?.content_calendar_item || null;
+
+  // Initialize deliverable and current user
+  useEffect(() => {
+    if (task?.id) {
+      setDeliverableUrl(task.final_deliverable_url || "");
+    }
+  }, [task?.id, task?.final_deliverable_url]);
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (data?.membership) {
+          setCurrentUser({
+            rosterPersonId: data.membership.rosterPersonId,
+            role: data.membership.role,
+            displayName: data.membership.displayName,
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Fetch comments when task changes
   useEffect(() => {
@@ -126,6 +173,186 @@ export default function TaskDetailsDrawer({
       alert(e.message || "حدث خطأ أثناء تحميل المعاينة");
     } finally {
       setPreviewLoading(false);
+    }
+  };
+
+  const handleSaveDeliverable = async () => {
+    if (!deliverableUrl.trim()) {
+      alert("يرجى إدخال رابط التسليم أولاً.");
+      return;
+    }
+    setSavingDeliverable(true);
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toStatus: task.status,
+          deliverableUrl: deliverableUrl.trim(),
+        }),
+      });
+      if (res.ok) {
+        alert("تم حفظ رابط التسليم بنجاح.");
+        onTaskUpdated?.();
+      } else {
+        const err = await res.json();
+        alert(err.error || "فشل حفظ رابط التسليم");
+      }
+    } catch (e: any) {
+      alert(e.message || "حدث خطأ أثناء حفظ رابط التسليم");
+    } finally {
+      setSavingDeliverable(false);
+    }
+  };
+
+  const handleStartWork = async () => {
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toStatus: "in_progress" }),
+      });
+      if (res.ok) {
+        // Start timer
+        await fetch("/api/timer/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ taskId: task.id, category: "initial_design" }),
+        });
+        window.dispatchEvent(new CustomEvent("timer_state_changed"));
+        onTaskUpdated?.();
+        if (onStatusTransition) onStatusTransition(task.id, "in_progress");
+      } else {
+        const err = await res.json();
+        alert(err.error || "فشل بدء العمل");
+      }
+    } catch (e: any) {
+      alert(e.message || "حدث خطأ أثناء بدء العمل");
+    }
+  };
+
+  const handleSubmitForReview = async () => {
+    const url = deliverableUrl.trim() || task.final_deliverable_url;
+    if (!url) {
+      alert("يرجى إدخال رابط المعاينة أو التصميم قبل التسليم للمراجعة.");
+      return;
+    }
+    setSubmittingReview(true);
+    try {
+      const res = await fetch("/api/reviews/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId: task.id,
+          previewUrl: url,
+          note: reviewNote.trim() || null,
+        }),
+      });
+      if (res.ok) {
+        setShowSubmitModal(false);
+        setReviewNote("");
+        alert("تم تسليم المهمة للمراجعة الداخلية بنجاح.");
+        onTaskUpdated?.();
+        if (onStatusTransition) onStatusTransition(task.id, "internal_review");
+      } else {
+        const err = await res.json();
+        alert(err.error || "فشل تسليم المهمة للمراجعة");
+      }
+    } catch (e: any) {
+      alert(e.message || "حدث خطأ أثناء تسليم المهمة للمراجعة");
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  const handleDecideReview = async (decision: "approved" | "changes_requested") => {
+    if (decision === "changes_requested" && !decisionFeedback.trim()) {
+      alert("يرجى كتابة ملاحظات وتوجيهات التعديل للمصمم.");
+      return;
+    }
+
+    const pendingRound = Array.isArray(task.review_rounds)
+      ? task.review_rounds.find((r: any) => r.decision === "pending")
+      : null;
+
+    if (!pendingRound) {
+      alert("لم يتم العثور على جولة مراجعة نشطة.");
+      return;
+    }
+
+    setSubmittingDecision(true);
+    try {
+      const res = await fetch("/api/reviews/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roundId: pendingRound.id,
+          decision,
+          feedback: decisionFeedback.trim() || null,
+        }),
+      });
+      if (res.ok) {
+        setShowDecisionModal(null);
+        setDecisionFeedback("");
+        alert(decision === "approved" ? "تم اعتماد التصميم بنجاح ✓" : "تم إرسال طلب التعديلات للمصمم.");
+        onTaskUpdated?.();
+        if (onStatusTransition) onStatusTransition(task.id, decision === "approved" ? "approved" : "changes_requested");
+      } else {
+        const err = await res.json();
+        alert(err.error || "فشل تسجيل قرار المراجعة");
+      }
+    } catch (e: any) {
+      alert(e.message || "حدث خطأ أثناء تسجيل قرار المراجعة");
+    } finally {
+      setSubmittingDecision(false);
+    }
+  };
+
+  const handleOwnerDirectApprove = async () => {
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toStatus: "approved" }),
+      });
+      if (res.ok) {
+        alert("تم اعتماد المهمة مباشرةً (تجاوز المراجعة للمالك).");
+        onTaskUpdated?.();
+        if (onStatusTransition) onStatusTransition(task.id, "approved");
+      } else {
+        const err = await res.json();
+        alert(err.error || "فشل اعتماد المهمة");
+      }
+    } catch (e: any) {
+      alert(e.message || "حدث خطأ");
+    }
+  };
+
+  const handleMarkDelivered = async () => {
+    const url = deliverableUrl.trim() || task.final_deliverable_url;
+    if (!url) {
+      alert("رابط التسليم النهائي إلزامي لتحديد المهمة كـ تم التسليم.");
+      return;
+    }
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toStatus: "delivered",
+          deliverableUrl: url,
+        }),
+      });
+      if (res.ok) {
+        alert("تم تسليم المهمة نهائياً بنجاح ✓");
+        onTaskUpdated?.();
+        if (onStatusTransition) onStatusTransition(task.id, "delivered");
+      } else {
+        const err = await res.json();
+        alert(err.error || "فشل تسليم المهمة");
+      }
+    } catch (e: any) {
+      alert(e.message || "حدث خطأ أثناء التسليم");
     }
   };
 
@@ -195,6 +422,14 @@ export default function TaskDetailsDrawer({
     text: "text-slate-800",
     border: "border-slate-200",
   };
+
+  const isOwner = currentUser?.role === "owner";
+  const isAssignee = currentUser?.rosterPersonId === task.primary_assignee_id;
+  const isReviewer = currentUser?.rosterPersonId === task.reviewer_id;
+  const isPendingReview = task.status === "internal_review";
+  const reviewRounds = Array.isArray(task.review_rounds)
+    ? [...task.review_rounds].sort((a: any, b: any) => (a.round_number || 0) - (b.round_number || 0))
+    : [];
 
   return (
     <>
@@ -316,7 +551,114 @@ export default function TaskDetailsDrawer({
             </div>
           </div>
 
-          {/* Section 2: Creative Deliverable Blueprint */}
+          {/* Section 2: Deliverable & Submission Handoff */}
+          <div className="bg-slate-50/90 border border-slate-200/90 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
+                <UploadCloud className="w-4 h-4 text-sky-600" />
+                رابط التصميم والتسليم (Deliverable)
+              </h3>
+              {task.final_deliverable_url && (
+                <a
+                  href={task.final_deliverable_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-sky-600 hover:text-sky-800 font-bold inline-flex items-center gap-1"
+                >
+                  <span>معاينة الرابط المعتمد</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={deliverableUrl}
+                onChange={(e) => setDeliverableUrl(e.target.value)}
+                placeholder="https://figma.com/file/... أو رابط Google Drive"
+                className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white focus:outline-sky-500 font-mono text-left"
+                dir="ltr"
+              />
+              <button
+                type="button"
+                onClick={handleSaveDeliverable}
+                disabled={savingDeliverable}
+                className="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold transition-colors shrink-0"
+              >
+                {savingDeliverable ? "جاري الحفظ..." : "حفظ الرابط"}
+              </button>
+            </div>
+          </div>
+
+          {/* Section 3: Review Rounds History */}
+          {reviewRounds.length > 0 && (
+            <div className="space-y-2.5">
+              <h3 className="font-bold text-slate-900 text-xs flex items-center gap-1.5 border-b border-slate-100 pb-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                سجل جولات المراجعة الداخلية ({reviewRounds.length} جولة)
+              </h3>
+              <div className="space-y-2">
+                {reviewRounds.map((round: any, idx: number) => (
+                  <div
+                    key={round.id || idx}
+                    className={cn(
+                      "p-3 rounded-xl border text-xs space-y-1.5",
+                      round.decision === "approved"
+                        ? "bg-emerald-50/70 border-emerald-200"
+                        : round.decision === "changes_requested"
+                        ? "bg-amber-50/70 border-amber-200"
+                        : "bg-sky-50/70 border-sky-200"
+                    )}
+                  >
+                    <div className="flex items-center justify-between font-bold text-[11px]">
+                      <span>جولة #{round.round_number || idx + 1}</span>
+                      <span
+                        className={cn(
+                          "px-2 py-0.5 rounded font-bold text-[10px]",
+                          round.decision === "approved"
+                            ? "bg-emerald-200 text-emerald-900"
+                            : round.decision === "changes_requested"
+                            ? "bg-amber-200 text-amber-900"
+                            : "bg-sky-200 text-sky-900"
+                        )}
+                      >
+                        {round.decision === "approved"
+                          ? "معتمد ✓"
+                          : round.decision === "changes_requested"
+                          ? "مطلوب تعديلات"
+                          : "بانتظار المراجعة"}
+                      </span>
+                    </div>
+                    {round.preview_url && (
+                      <div className="text-[11px] text-slate-600">
+                        <span>رابط المعاينة: </span>
+                        <a
+                          href={round.preview_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-sky-600 hover:underline font-mono"
+                          dir="ltr"
+                        >
+                          {round.preview_url}
+                        </a>
+                      </div>
+                    )}
+                    {round.notes && (
+                      <p className="text-slate-700 text-[11px]">ملاحظة المصمم: {round.notes}</p>
+                    )}
+                    {round.feedback && (
+                      <div className="p-2 bg-white rounded-lg border border-amber-200 text-amber-900 text-xs font-medium">
+                        توجيهات المراجع: {round.feedback}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Section 4: Creative Deliverable Blueprint */}
           <div className="space-y-4">
             <h3 className="font-bold text-slate-900 text-xs border-b border-slate-100 pb-2 flex items-center gap-1.5">
               <Layers className="w-4 h-4 text-indigo-600" />
@@ -475,7 +817,7 @@ export default function TaskDetailsDrawer({
             )}
           </div>
 
-          {/* Section 3: Comments & Internal Reviews (Phase 6) */}
+          {/* Section 5: Comments & Internal Discussion */}
           <div className="space-y-3 pt-2">
             <h3 className="font-bold text-slate-900 text-xs border-b border-slate-100 pb-2 flex items-center gap-1.5">
               <MessageSquare className="w-4 h-4 text-sky-600" />
@@ -535,7 +877,6 @@ export default function TaskDetailsDrawer({
 
                     <p className="text-slate-800 leading-relaxed whitespace-pre-wrap">{comment.content}</p>
 
-                    {/* Resolve Toggle for review notes */}
                     {comment.comment_type === "internal_review" && (
                       <div className="pt-1.5 border-t border-amber-200/60 flex items-center justify-between text-[11px]">
                         <span
@@ -603,6 +944,244 @@ export default function TaskDetailsDrawer({
             </form>
           </div>
         </div>
+
+        {/* Footer Lifecycle Actions */}
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            {/* Start Work (from backlog, ready, or changes_requested) */}
+            {(task.status === "backlog" || task.status === "ready") && (
+              <button
+                type="button"
+                onClick={handleStartWork}
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+              >
+                <Clock className="w-4 h-4" />
+                <span>بدء العمل والمؤقت</span>
+              </button>
+            )}
+
+            {task.status === "changes_requested" && (
+              <button
+                type="button"
+                onClick={handleStartWork}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>بدء العمل على التعديلات</span>
+              </button>
+            )}
+
+            {/* Submit for Review (from in_progress or changes_requested) */}
+            {(task.status === "in_progress" || task.status === "changes_requested") && (
+              <button
+                type="button"
+                onClick={() => setShowSubmitModal(true)}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+              >
+                <Send className="w-4 h-4" />
+                <span>تسليم للمراجعة الداخلية</span>
+              </button>
+            )}
+
+            {/* Owner Review Bypass (from in_progress if assigned to Owner) */}
+            {task.status === "in_progress" && (isOwner || task.primary_assignee_id === currentUser?.rosterPersonId) && (
+              <button
+                type="button"
+                onClick={handleOwnerDirectApprove}
+                className="px-3 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 border border-emerald-300 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-colors"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>اعتماد مباشر (تجاوز المراجعة للمالك)</span>
+              </button>
+            )}
+
+            {/* Review Decision Buttons (when internal_review) */}
+            {isPendingReview && (isReviewer || isOwner) && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDecisionModal("approve")}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>اعتماد التصميم ✓</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDecisionModal("changes")}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+                >
+                  <AlertTriangle className="w-4 h-4" />
+                  <span>طلب تعديلات ⚠️</span>
+                </button>
+              </div>
+            )}
+
+            {/* Mark as Delivered (when approved) */}
+            {task.status === "approved" && (isOwner || currentUser?.role === "manager") && (
+              <button
+                type="button"
+                onClick={handleMarkDelivered}
+                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>تسليم نهائي للعميل</span>
+              </button>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-semibold text-xs transition-colors"
+          >
+            إغلاق
+          </button>
+        </div>
+
+        {/* Modal: Submit for Review */}
+        {showSubmitModal && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-60 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl text-right animate-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                  <Send className="w-4 h-4 text-purple-600" />
+                  تسليم المهمة للمراجعة الداخلية
+                </h3>
+                <button
+                  onClick={() => setShowSubmitModal(false)}
+                  className="text-slate-400 hover:text-slate-600 p-1"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-slate-700 text-xs font-semibold mb-1">
+                    رابط المعاينة / التصميم *
+                  </label>
+                  <input
+                    type="url"
+                    value={deliverableUrl}
+                    onChange={(e) => setDeliverableUrl(e.target.value)}
+                    placeholder="https://figma.com/file/... أو رابط Drive"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs bg-slate-50 focus:bg-white focus:outline-sky-500 font-mono text-left"
+                    dir="ltr"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 text-xs font-semibold mb-1">
+                    ملاحظات للمراجع (اختياري)
+                  </label>
+                  <textarea
+                    value={reviewNote}
+                    onChange={(e) => setReviewNote(e.target.value)}
+                    placeholder="تم الانتهاء من التصميم وتطبيق الخطاف البصري..."
+                    rows={3}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs focus:outline-sky-500 resize-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowSubmitModal(false)}
+                  className="px-3 py-1.5 text-slate-600 hover:bg-slate-100 rounded-xl text-xs font-semibold"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSubmitForReview}
+                  disabled={submittingReview}
+                  className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-colors"
+                >
+                  {submittingReview ? "جاري الإرسال..." : "تأكيد التسليم للمراجعة"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: Review Decision */}
+        {showDecisionModal && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-60 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl text-right animate-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                  {showDecisionModal === "approve" ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-600" />
+                      <span>اعتماد تصميم المهمة</span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle className="w-4 h-4 text-amber-600" />
+                      <span>طلب تعديلات على التصميم</span>
+                    </>
+                  )}
+                </h3>
+                <button
+                  onClick={() => setShowDecisionModal(null)}
+                  className="text-slate-400 hover:text-slate-600 p-1"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {showDecisionModal === "changes" ? (
+                  <div>
+                    <label className="block text-slate-700 text-xs font-semibold mb-1">
+                      ملاحظات وتوجيهات التعديل للمصمم * (إلزامي)
+                    </label>
+                    <textarea
+                      value={decisionFeedback}
+                      onChange={(e) => setDecisionFeedback(e.target.value)}
+                      placeholder="يرجى تعديل تباين النص في الشريحة 2، وتكبير الشعار..."
+                      rows={4}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs focus:outline-amber-500 resize-none"
+                    />
+                  </div>
+                ) : (
+                  <p className="text-slate-600 text-xs leading-relaxed">
+                    هل أنت متأكد من اعتماد التصميم؟ ستتحول حالة المهمة إلى <strong>معتمد</strong> وسيتم إشعار المصمم.
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowDecisionModal(null)}
+                  className="px-3 py-1.5 text-slate-600 hover:bg-slate-100 rounded-xl text-xs font-semibold"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDecideReview(showDecisionModal === "approve" ? "approved" : "changes_requested")}
+                  disabled={submittingDecision}
+                  className={cn(
+                    "px-4 py-1.5 text-white rounded-xl text-xs font-bold transition-colors",
+                    showDecisionModal === "approve"
+                      ? "bg-emerald-600 hover:bg-emerald-700"
+                      : "bg-amber-600 hover:bg-amber-700"
+                  )}
+                >
+                  {submittingDecision
+                    ? "جاري الحفظ..."
+                    : showDecisionModal === "approve"
+                    ? "تأكيد الاعتماد ✓"
+                    : "إرسال طلب التعديلات"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

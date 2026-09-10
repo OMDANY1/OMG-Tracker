@@ -1095,6 +1095,50 @@ async function runTestSuite() {
   const importRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/import-tasks/route.ts"), "utf-8");
   assert(importRouteContent.includes("import_content_calendar_tasks"), "7b. Tasks are created strictly and exclusively upon manual Owner approval via import-tasks route");
 
+  console.log("\n[Scenario 80] Designer Full-Cycle Production Hardening & Operating Invariants...");
+  // 1. Migration 25 database engine hardening
+  const mig25Path = path.join(__dirname, "../supabase/migrations/20260910000025_designer_full_cycle_hardening.sql");
+  assert(fs.existsSync(mig25Path), "1. Migration 25 file exists");
+  const mig25Content = fs.readFileSync(mig25Path, "utf-8");
+  assert(mig25Content.includes("transition_task_status") && mig25Content.includes("backlog") && mig25Content.includes("in_progress"), "1a. transition_task_status allows canonical backlog -> in_progress transition");
+  assert(mig25Content.includes("v_is_owner_assignee") && mig25Content.includes("Tasks assigned to designers must pass review rounds"), "1b. Owner review bypass preserved exclusively for tasks assigned to owner");
+  assert(mig25Content.includes("submit_review_round") && mig25Content.includes("INSERT INTO public.in_app_notifications") && mig25Content.includes("review_requested"), "1c. submit_review_round emits in-app notification to reviewer");
+  assert(mig25Content.includes("decide_review_round") && mig25Content.includes("task_approved") && mig25Content.includes("changes_requested"), "1d. decide_review_round emits in-app notification to primary assignee");
+  assert(mig25Content.includes("Self-approval denied"), "1e. Zero self-approval strictly enforced");
+
+  // 2. API Security and Role Isolation
+  const tasksRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/tasks/route.ts"), "utf-8");
+  assert(tasksRouteContent.includes("requireWorkspaceMembership") && tasksRouteContent.includes("requireOwner"), "2a. /api/tasks enforces requireWorkspaceMembership on GET and requireOwner on POST");
+  assert(tasksRouteContent.includes("membership.role === \"designer\"") && tasksRouteContent.includes("membership.role === \"senior_reviewer\""), "2b. /api/tasks implements role-scoped task isolation");
+
+  const taskStatusRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/tasks/[id]/status/route.ts"), "utf-8");
+  assert(taskStatusRouteContent.includes("validateSameOrigin") && taskStatusRouteContent.includes("requireTaskAccess"), "2c. /api/tasks/[id]/status enforces validateSameOrigin and requireTaskAccess");
+
+  const reviewSubmitRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/reviews/submit/route.ts"), "utf-8");
+  assert(reviewSubmitRouteContent.includes("validateSameOrigin") && reviewSubmitRouteContent.includes("requireTaskAccess"), "2d. /api/reviews/submit enforces validateSameOrigin and requireTaskAccess");
+
+  const reviewDecideRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/reviews/decide/route.ts"), "utf-8");
+  assert(reviewDecideRouteContent.includes("validateSameOrigin") && reviewDecideRouteContent.includes("requireWorkspaceMembership"), "2e. /api/reviews/decide enforces validateSameOrigin and requireWorkspaceMembership");
+
+  const timerStartRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/timer/start/route.ts"), "utf-8");
+  assert(timerStartRouteContent.includes("validateSameOrigin") && timerStartRouteContent.includes("requireTaskAccess") && timerStartRouteContent.includes("membership.role !== \"owner\""), "2f. /api/timer/start enforces validateSameOrigin, requireTaskAccess, and Owner-only delegation");
+
+  const exportCsvContent = fs.readFileSync(path.join(__dirname, "../app/api/reports/export-csv/route.ts"), "utf-8");
+  assert(exportCsvContent.includes("/^[=+\\-@\\t\\r]/"), "2g. /api/reports/export-csv sanitizes spreadsheet formula injection");
+
+  const authMeRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/auth/me/route.ts"), "utf-8");
+  assert(authMeRouteContent.includes("requireWorkspaceMembership"), "2h. /api/auth/me returns authenticated user and membership context");
+
+  // 3. Designer "My Work" & Task Details Drawer
+  const myWorkPageContent = fs.readFileSync(path.join(__dirname, "../app/my-work/page.tsx"), "utf-8");
+  assert(!myWorkPageContent.includes("activePersona = \"سارة\"") && !myWorkPageContent.includes("sarah-id"), "3a. /my-work page eliminated mocked persona and hardcoded IDs");
+  assert(myWorkPageContent.includes("قيد التنفيذ") && myWorkPageContent.includes("مطلوب تعديلات") && myWorkPageContent.includes("بانتظار المراجعة الداخلية") && myWorkPageContent.includes("انتظار") && myWorkPageContent.includes("معتمد") && myWorkPageContent.includes("تم التسليم") && myWorkPageContent.includes("مهام متأخرة"), "3b. /my-work renders canonical Arabic sections including Cairo overdue");
+
+  const drawerContentUpdated = fs.readFileSync(path.join(__dirname, "../components/tasks/TaskDetailsDrawer.tsx"), "utf-8");
+  assert(drawerContentUpdated.includes("final_deliverable_url") && drawerContentUpdated.includes("deliverableUrl"), "3c. TaskDetailsDrawer implements deliverable link capture and display");
+  assert(drawerContentUpdated.includes("handleSubmitForReview") && drawerContentUpdated.includes("handleDecideReview"), "3d. TaskDetailsDrawer implements review submission modal and decision workflow");
+  assert(drawerContentUpdated.includes("سجل جولات المراجعة الداخلية"), "3e. TaskDetailsDrawer displays review rounds history");
+
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
 

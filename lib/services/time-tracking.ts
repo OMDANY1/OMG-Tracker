@@ -15,8 +15,9 @@ export async function startOrSwitchTimer(params: {
   targetRosterId?: string;
   reason?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   // If targetRosterId is provided and distinct, call start_timer_on_behalf
@@ -52,8 +53,9 @@ export async function stopTimer(params: {
   timeEntryId: string;
   note?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("stop_timer", {

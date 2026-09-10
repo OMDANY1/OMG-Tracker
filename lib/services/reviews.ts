@@ -62,8 +62,9 @@ export async function submitTaskForReview(params: {
   roundType?: ReviewRoundType;
   reviewerId?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   if (!params.previewUrl || !params.previewUrl.trim()) {
@@ -88,8 +89,9 @@ export async function decideReviewRound(params: {
   decision: ReviewDecision;
   feedback?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   if (params.decision === "changes_requested" && (!params.feedback || !params.feedback.trim())) {

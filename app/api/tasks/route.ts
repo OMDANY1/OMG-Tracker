@@ -1,22 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { requireWorkspaceMembership, requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
 import { determineDefaultReviewer } from "@/lib/services/reviews";
 import { createTask } from "@/lib/services/tasks";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
-  const supabase = createAdminClient();
-  if (!supabase) {
-    return NextResponse.json({ tasks: [], error: "Database unconfigured" });
+  const authRes = await requireWorkspaceMembership(req);
+  if (!authRes.success) {
+    return authRes.errorResponse;
   }
 
+  const { membership, admin } = authRes.data;
+
   const { searchParams } = new URL(req.url);
+  const myWork = searchParams.get("myWork");
   const assigneeId = searchParams.get("assigneeId");
   const clientId = searchParams.get("clientId");
   const status = searchParams.get("status");
   const priority = searchParams.get("priority");
   const search = searchParams.get("search");
 
-  let query = supabase
+  let query = admin
     .from("tasks")
     .select(`
       *,
@@ -28,9 +33,45 @@ export async function GET(req: NextRequest) {
       checklist_items:task_checklist_items(*),
       review_rounds(*)
     `)
+    .eq("workspace_id", membership.workspaceId)
     .order("created_at", { ascending: false });
 
-  if (assigneeId) query = query.eq("primary_assignee_id", assigneeId);
+  // Role-based scoping
+  if (myWork === "true") {
+    query = query.eq("primary_assignee_id", membership.rosterPersonId);
+  } else if (membership.role === "designer") {
+    // Find task IDs where user is a collaborator
+    const { data: collabs } = await admin
+      .from("task_collaborators")
+      .select("task_id")
+      .eq("workspace_id", membership.workspaceId)
+      .eq("roster_person_id", membership.rosterPersonId);
+
+    const collabTaskIds = collabs?.map((c: any) => c.task_id) || [];
+    if (collabTaskIds.length > 0) {
+      query = query.or(`primary_assignee_id.eq.${membership.rosterPersonId},id.in.(${collabTaskIds.join(",")})`);
+    } else {
+      query = query.eq("primary_assignee_id", membership.rosterPersonId);
+    }
+  } else if (membership.role === "senior_reviewer") {
+    const { data: collabs } = await admin
+      .from("task_collaborators")
+      .select("task_id")
+      .eq("workspace_id", membership.workspaceId)
+      .eq("roster_person_id", membership.rosterPersonId);
+
+    const collabTaskIds = collabs?.map((c: any) => c.task_id) || [];
+    if (collabTaskIds.length > 0) {
+      query = query.or(`reviewer_id.eq.${membership.rosterPersonId},primary_assignee_id.eq.${membership.rosterPersonId},id.in.(${collabTaskIds.join(",")})`);
+    } else {
+      query = query.or(`reviewer_id.eq.${membership.rosterPersonId},primary_assignee_id.eq.${membership.rosterPersonId}`);
+    }
+  }
+
+  // Filters (for management/owner or within user scope)
+  if (assigneeId && (membership.role === "owner" || membership.role === "manager" || assigneeId === membership.rosterPersonId)) {
+    query = query.eq("primary_assignee_id", assigneeId);
+  }
   if (clientId) query = query.eq("client_id", clientId);
   if (status) query = query.eq("status", status);
   if (priority) query = query.eq("priority", priority);
@@ -45,15 +86,23 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const supabase = createAdminClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Database unconfigured" }, { status: 500 });
+  if (!validateSameOrigin(req)) {
+    return NextResponse.json(
+      { error: "رفض الطلب: انتهاك التحقق من مصدر الطلب (CSRF/Same-Origin)." },
+      { status: 403 }
+    );
   }
+
+  const ownerRes = await requireOwner(req);
+  if (!ownerRes.success) {
+    return ownerRes.errorResponse;
+  }
+
+  const { membership, admin } = ownerRes.data;
 
   try {
     const body = await req.json();
     const {
-      workspaceId,
       campaignId,
       clientId,
       title,
@@ -65,14 +114,13 @@ export async function POST(req: NextRequest) {
       reviewerId,
       dueAt,
       estimatedMinutes,
-      createdById,
     } = body;
 
     // Fetch client to know difficulty and owner if assignee/reviewer not explicitly provided
     let finalAssigneeId = primaryAssigneeId;
     let finalReviewerId = reviewerId;
 
-    const { data: client } = await supabase
+    const { data: client } = await admin
       .from("clients")
       .select("owner_roster_id, difficulty")
       .eq("id", clientId)
@@ -84,7 +132,7 @@ export async function POST(req: NextRequest) {
 
     if (!finalReviewerId) {
       const routing = await determineDefaultReviewer({
-        workspaceId,
+        workspaceId: membership.workspaceId,
         assigneeId: finalAssigneeId,
         clientDifficulty: client?.difficulty,
       });
@@ -92,7 +140,7 @@ export async function POST(req: NextRequest) {
     }
 
     const task = await createTask({
-      workspaceId,
+      workspaceId: membership.workspaceId,
       campaignId,
       clientId,
       title,

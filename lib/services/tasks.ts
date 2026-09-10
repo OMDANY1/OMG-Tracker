@@ -91,9 +91,11 @@ export async function updateTaskStatus(params: {
   toStatus: TaskStatus;
   reason?: string;
   deliverableUrl?: string;
+  finalDeliverableAttachmentId?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("transition_task_status", {
@@ -101,6 +103,7 @@ export async function updateTaskStatus(params: {
     p_to_status: params.toStatus,
     p_reason: params.reason || null,
     p_deliverable_url: params.deliverableUrl || null,
+    p_final_deliverable_attachment_id: params.finalDeliverableAttachmentId || null,
     p_idempotency_key: params.idempotencyKey || null,
   });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Play,
   Square,
@@ -12,103 +12,193 @@ import {
   Send,
   Plus,
   X,
+  Layers,
+  Sparkles,
+  ChevronRight,
+  RotateCcw,
+  Check,
+  Eye,
+  Video,
+  Image as ImageIcon,
 } from "lucide-react";
 import {
   TASK_STATUS_LABELS,
   TASK_STATUS_COLORS,
+  TASK_PRIORITY_LABELS,
+  TASK_PRIORITY_COLORS,
+  CLIENT_DIFFICULTY_LABELS,
   TIME_CATEGORY_LABELS,
   formatDurationSeconds,
+  cn,
 } from "@/lib/utils";
-import type { TimeCategory } from "@/types/database";
+import { ActiveTimerBar } from "@/components/timer/ActiveTimerBar";
+import TaskDetailsDrawer from "@/components/tasks/TaskDetailsDrawer";
+import type { TimeCategory, TaskStatus, TaskPriority } from "@/types/database";
 
 export default function MyWorkPage() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activePersona, setActivePersona] = useState<any>({ displayName: "سارة" });
-  const [selectedTaskForTimer, setSelectedTaskForTimer] = useState<any>(null);
-  const [timerCategory, setTimerCategory] = useState<TimeCategory>("initial_design");
-  const [timerNote, setTimerNote] = useState("");
+  const [currentUser, setCurrentUser] = useState<{
+    rosterPersonId: string;
+    role: string;
+    displayName: string;
+    email: string;
+  } | null>(null);
+
+  // Drawer state
+  const [selectedTask, setSelectedTask] = useState<any>(null);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
   // Manual Session Modal State
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualTask, setManualTask] = useState<any>(null);
-  const [manualStart, setManualStart] = useState("2026-09-06T11:00");
-  const [manualEnd, setManualEnd] = useState("2026-09-06T12:00");
+  const [manualStart, setManualStart] = useState("2026-09-10T10:00");
+  const [manualEnd, setManualEnd] = useState("2026-09-10T11:00");
   const [manualCategory, setManualCategory] = useState<TimeCategory>("initial_design");
   const [manualNote, setManualNote] = useState("");
 
-  // Review Submission Modal State
-  const [showReviewModal, setShowReviewModal] = useState(false);
-  const [reviewTask, setReviewTask] = useState<any>(null);
-  const [previewUrl, setPreviewUrl] = useState("");
-  const [reviewNote, setReviewNote] = useState("");
-  const [reviewerId, setReviewerId] = useState("");
-
-  const REVIEWERS_OPTIONS = [
-    { id: "8ade760c-c482-4cfb-91e6-dbd8da040c4c", name: "ندى عبد النبي (Senior Graphic Designer & Reviewer)" },
-    { id: "bcfa3baa-7045-4262-abd6-bdb0be8210fd", name: "عماد عادل (Owner & Art Director)" },
-    { id: "00a38eae-a90e-4796-89e4-56394e987666", name: "سارة (Midlevel Graphic Designer)" },
-    { id: "32d835ec-1456-4d76-8c6e-32f2933a3627", name: "آلاء حسام (Midlevel Graphic Designer)" },
-    { id: "c3c45e0c-adc5-4e28-89f8-ec9757ae4376", name: "شهد لاشين (Midlevel Graphic Designer)" },
-    { id: "aeac45ca-3e5a-493a-8a19-238d892317ab", name: "آية حمزة (Junior Graphic Designer)" },
-  ];
-
-  const fetchData = async () => {
+  const fetchUserAndTasks = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/tasks");
+      // 1. Fetch current user
+      const meRes = await fetch("/api/auth/me");
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        setCurrentUser({
+          rosterPersonId: meData.membership.rosterPersonId,
+          role: meData.membership.role,
+          displayName: meData.membership.displayName || meData.user.email,
+          email: meData.user.email,
+        });
+      }
+
+      // 2. Fetch tasks scoped to user
+      const res = await fetch("/api/tasks?myWork=true");
       if (res.ok) {
         const data = await res.json();
         setTasks(data.tasks || []);
       }
     } catch (e) {
-      console.error(e);
+      console.error("Failed to load My Work data:", e);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
-    const handlePersonaChange = (e: any) => {
-      setActivePersona(e.detail);
-      fetchData();
-    };
-    window.addEventListener("persona_changed", handlePersonaChange);
-    return () => window.removeEventListener("persona_changed", handlePersonaChange);
+    fetchUserAndTasks();
+    const handleTimerChange = () => fetchUserAndTasks();
+    window.addEventListener("timer_state_changed", handleTimerChange);
+    return () => window.removeEventListener("timer_state_changed", handleTimerChange);
   }, []);
 
-  const myTasks = tasks.filter(
-    (t) => t.assignee?.display_name === activePersona.displayName || !t.assignee
-  );
+  // Sort helper: due_date ASC -> Difficulty (Hard > Medium > Easy) -> created_at ASC
+  const sortTasks = (list: any[]) => {
+    const diffWeight: Record<string, number> = { Hard: 3, Medium: 2, Easy: 1 };
+    return [...list].sort((a, b) => {
+      // 1. Due date
+      const dateA = a.due_date ? new Date(a.due_date).getTime() : Infinity;
+      const dateB = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+      if (dateA !== dateB) return dateA - dateB;
 
-  const priorityTasks = myTasks.filter((t) => ["in_progress", "ready", "backlog"].includes(t.status));
-  const changeRequestedTasks = myTasks.filter((t) => t.status === "changes_requested");
-  const inReviewTasks = myTasks.filter((t) => ["internal_review", "client_review"].includes(t.status));
+      // 2. Client Difficulty
+      const weightA = diffWeight[a.client?.difficulty] || 0;
+      const weightB = diffWeight[b.client?.difficulty] || 0;
+      if (weightA !== weightB) return weightB - weightA;
 
-  const handleStartTimer = async (task: any) => {
+      // 3. Created At
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
+  };
+
+  // Canonical Cairo Overdue check
+  const nowCairoStr = new Date().toISOString().slice(0, 10);
+
+  const {
+    overdueTasks,
+    changesRequestedTasks,
+    inProgressTasks,
+    inReviewTasks,
+    backlogTasks,
+    approvedTasks,
+    deliveredTasks,
+  } = useMemo(() => {
+    const overdue: any[] = [];
+    const changes: any[] = [];
+    const inProgress: any[] = [];
+    const inReview: any[] = [];
+    const backlog: any[] = [];
+    const approved: any[] = [];
+    const delivered: any[] = [];
+
+    for (const t of tasks) {
+      const isOverdue =
+        t.due_date &&
+        t.due_date.slice(0, 10) < nowCairoStr &&
+        !["delivered", "cancelled"].includes(t.status);
+
+      if (isOverdue) {
+        overdue.push(t);
+      }
+
+      if (t.status === "changes_requested") {
+        changes.push(t);
+      } else if (t.status === "in_progress") {
+        inProgress.push(t);
+      } else if (t.status === "internal_review" || t.status === "client_review") {
+        inReview.push(t);
+      } else if (t.status === "backlog" || t.status === "ready") {
+        backlog.push(t);
+      } else if (t.status === "approved") {
+        approved.push(t);
+      } else if (t.status === "delivered") {
+        delivered.push(t);
+      }
+    }
+
+    return {
+      overdueTasks: sortTasks(overdue),
+      changesRequestedTasks: sortTasks(changes),
+      inProgressTasks: sortTasks(inProgress),
+      inReviewTasks: sortTasks(inReview),
+      backlogTasks: sortTasks(backlog),
+      approvedTasks: sortTasks(approved),
+      deliveredTasks: sortTasks(delivered),
+    };
+  }, [tasks, nowCairoStr]);
+
+  const handleStartWork = async (task: any, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     try {
-      const res = await fetch("/api/timer/start", {
+      const res = await fetch(`/api/tasks/${task.id}/status`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          taskId: task.id,
-          personId: task.primary_assignee_id || "sarah-id",
-          category: timerCategory,
-          note: timerNote,
-        }),
+        body: JSON.stringify({ toStatus: "in_progress" }),
       });
 
       if (res.ok) {
+        await fetch("/api/timer/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            taskId: task.id,
+            category: "initial_design",
+          }),
+        });
         window.dispatchEvent(new CustomEvent("timer_state_changed"));
-        fetchData();
+        fetchUserAndTasks();
       } else {
         const err = await res.json();
-        alert(`تعذر بدء العداد: ${err.error || "خطأ غير متوقع"}`);
+        alert(`تعذر بدء العمل: ${err.error || "خطأ غير متوقع"}`);
       }
     } catch (err: any) {
       alert(`خطأ: ${err.message}`);
     }
+  };
+
+  const handleOpenDrawer = (task: any) => {
+    setSelectedTask(task);
+    setIsDrawerOpen(true);
   };
 
   const handleSaveManualSession = async (e: React.FormEvent) => {
@@ -122,7 +212,7 @@ export default function MyWorkPage() {
         body: JSON.stringify({
           workspaceId: manualTask.workspace_id,
           taskId: manualTask.id,
-          personId: manualTask.primary_assignee_id || "sarah-id",
+          personId: currentUser?.rosterPersonId || manualTask.primary_assignee_id,
           startedAtLocal: manualStart,
           endedAtLocal: manualEnd,
           category: manualCategory,
@@ -134,7 +224,7 @@ export default function MyWorkPage() {
         alert("تم تسجيل جلسة العمل اليدوية بنجاح!");
         setShowManualModal(false);
         setManualNote("");
-        fetchData();
+        fetchUserAndTasks();
       } else {
         const err = await res.json();
         alert(`فشل تسجيل الجلسة: ${err.error}`);
@@ -144,82 +234,147 @@ export default function MyWorkPage() {
     }
   };
 
-  const handleSubmitReview = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!reviewTask) return;
+  // Render a task card
+  const renderTaskCard = (task: any, accentColor: string = "border-slate-200") => {
+    const statusConfig = TASK_STATUS_COLORS[task.status as TaskStatus] || {
+      bg: "bg-slate-100",
+      text: "text-slate-800",
+      border: "border-slate-200",
+    };
 
-    try {
-      const res = await fetch("/api/reviews/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          taskId: reviewTask.id,
-          submittedById: reviewTask.primary_assignee_id || "sarah-id",
-          previewUrl: previewUrl,
-          note: reviewNote,
-          reviewerId: reviewerId || undefined,
-        }),
-      });
+    return (
+      <div
+        key={task.id}
+        onClick={() => handleOpenDrawer(task)}
+        className={cn(
+          "bg-white rounded-2xl border p-4 shadow-2xs hover:shadow-md transition-all cursor-pointer space-y-3",
+          accentColor
+        )}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="space-y-1 min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="px-2 py-0.5 rounded-md font-mono font-bold text-[10px] bg-slate-100 text-slate-700">
+                {task.deliverable_number || "Post"}
+              </span>
+              <span
+                className={cn(
+                  "px-2 py-0.5 rounded-md font-semibold text-[10px] border",
+                  statusConfig.bg,
+                  statusConfig.text,
+                  statusConfig.border
+                )}
+              >
+                {TASK_STATUS_LABELS[task.status as TaskStatus] || task.status}
+              </span>
+              {task.client?.difficulty && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-800 border border-amber-200">
+                  {(CLIENT_DIFFICULTY_LABELS as Record<string, string>)[task.client.difficulty] || task.client.difficulty}
+                </span>
+              )}
+            </div>
+            <h4 className="font-bold text-slate-900 text-xs line-clamp-2 leading-relaxed">
+              {task.title}
+            </h4>
+          </div>
 
-      if (res.ok) {
-        alert("تم إرسال المهمة للمراجعة بنجاح!");
-        setShowReviewModal(false);
-        setPreviewUrl("");
-        setReviewNote("");
-        setReviewerId("");
-        fetchData();
-      } else {
-        const err = await res.json();
-        alert(`فشل الإرسال للمراجعة: ${err.error}`);
-      }
-    } catch (err: any) {
-      alert(`خطأ: ${err.message}`);
-    }
+          <span
+            className={cn(
+              "px-2 py-0.5 rounded text-[10px] font-semibold shrink-0",
+              TASK_PRIORITY_COLORS[task.priority as TaskPriority]?.bg || "bg-slate-100"
+            )}
+          >
+            {TASK_PRIORITY_LABELS[task.priority as TaskPriority] || task.priority}
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-100">
+          <div>
+            العميل: <strong className="text-slate-700">{task.client?.name || "عام"}</strong>
+          </div>
+          {task.due_date && (
+            <div className="flex items-center gap-1 text-slate-600 font-mono text-[10px]">
+              <Calendar className="w-3 h-3 text-slate-400" />
+              <span>{new Date(task.due_date).toLocaleDateString("ar-EG")}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Quick actions per card */}
+        <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+          {(task.status === "backlog" || task.status === "ready") && (
+            <button
+              type="button"
+              onClick={(e) => handleStartWork(task, e)}
+              className="px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition-colors shadow-2xs"
+            >
+              <Play className="w-3 h-3 fill-white" />
+              <span>بدء العمل</span>
+            </button>
+          )}
+
+          {task.status === "changes_requested" && (
+            <button
+              type="button"
+              onClick={(e) => handleStartWork(task, e)}
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition-colors shadow-2xs"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>بدء العمل على التعديلات</span>
+            </button>
+          )}
+
+          {task.status === "in_progress" && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleOpenDrawer(task);
+              }}
+              className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition-colors shadow-2xs"
+            >
+              <Send className="w-3 h-3" />
+              <span>تسليم للمراجعة</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleOpenDrawer(task);
+            }}
+            className="text-xs text-sky-600 hover:text-sky-800 font-bold mr-auto flex items-center gap-1"
+          >
+            <span>التفاصيل</span>
+            <ChevronRight className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+    );
   };
-
-  const handleDirectApprove = async (task: any) => {
-    if (!confirm(`هل تريد نقل المهمة "${task.title}" مباشرة إلى حالة "معتمد / جاهز للتسليم"؟\n(مهام المدير العام تتجاوز المراجعة الداخلية)`)) {
-      return;
-    }
-    try {
-      const res = await fetch(`/api/tasks/${task.id}/status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          toStatus: "approved",
-        }),
-      });
-      if (res.ok) {
-        alert("تم اعتماد المهمة بنجاح وتجاوز المراجعة الداخلية (Review Bypass). أصبحت جاهزة للتسليم النهائي.");
-        fetchData();
-      } else {
-        const err = await res.json();
-        alert(`فشل الانتقال: ${err.error}`);
-      }
-    } catch (e: any) {
-      alert(`خطأ: ${e.message}`);
-    }
-  };
-
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      {/* Active Timer Bar */}
+      <ActiveTimerBar />
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">
-            شغلي — {activePersona.displayName}
+            شغلي {currentUser ? `— ${currentUser.displayName}` : ""}
           </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            المهام المسندة إليك، المواعيد النهائية، والتحكم السريع في عداد الوقت
+          <p className="text-xs text-slate-500 mt-1">
+            مساحة عمل المصمم: المهام المسندة، أولويات التسليم، والتسليم للمراجعة الداخلية
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <button
             onClick={() => {
-              if (myTasks.length > 0) {
-                setManualTask(myTasks[0]);
+              if (tasks.length > 0) {
+                setManualTask(tasks[0]);
                 setShowManualModal(true);
               } else {
                 alert("لا توجد مهام مسندة لتسجيل جلسة عليها.");
@@ -228,371 +383,237 @@ export default function MyWorkPage() {
             className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
           >
             <Plus className="w-4 h-4" />
-            إضافة جلسة عمل يدوية
+            <span>إضافة جلسة عمل يدوية</span>
           </button>
         </div>
       </div>
 
-      {/* Changes Requested Banner (High Priority) */}
-      {changeRequestedTasks.length > 0 && (
-        <div className="bg-rose-50 border border-rose-200 rounded-2xl p-5 text-xs text-rose-900 space-y-3">
+      {/* Section 1: Overdue Warning (متأخرة) */}
+      {overdueTasks.length > 0 && (
+        <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 text-xs text-rose-900 space-y-3">
           <div className="flex items-center gap-2 font-bold text-sm text-rose-800">
             <AlertCircle className="w-4 h-4 text-rose-600" />
-            مهام مطلوب عليها تعديلات ({changeRequestedTasks.length})
+            <span>مهام متأخرة ({overdueTasks.length})</span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {changeRequestedTasks.map((t) => (
-              <div
-                key={t.id}
-                className="bg-white p-3.5 rounded-xl border border-rose-200/80 shadow-xs flex items-center justify-between"
-              >
-                <div>
-                  <div className="font-bold text-slate-900">{t.title}</div>
-                  <div className="text-slate-500 text-[11px] mt-0.5">
-                    {t.client?.name} | تسليمة: {t.deliverable_number}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleStartTimer(t)}
-                    className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-bold flex items-center gap-1"
-                  >
-                    <Play className="w-3 h-3 fill-white" />
-                    بدء العداد
-                  </button>
-                  <button
-                    onClick={() => {
-                      setReviewTask(t);
-                      setShowReviewModal(true);
-                    }}
-                    className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold flex items-center gap-1"
-                  >
-                    <Send className="w-3 h-3" />
-                    إعادة التقديم
-                  </button>
-                </div>
-              </div>
-            ))}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {overdueTasks.map((t) => renderTaskCard(t, "border-rose-300 bg-rose-50/40"))}
           </div>
         </div>
       )}
 
-      {/* Active Worklist */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Priority Tasks for Today (2 cols) */}
-        <div className="lg:col-span-2 bg-surface rounded-2xl border border-slate-200 p-5 shadow-xs">
-          <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-            <h2 className="font-bold text-base text-slate-900 flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-sky-600" />
-              أولويات اليوم والمهام الجاهزة للتنفيذ
-            </h2>
-            <span className="text-xs font-semibold text-slate-500">
-              {priorityTasks.length} مهام
-            </span>
+      {/* Section 2: Changes Requested (مطلوب تعديلات) */}
+      {changesRequestedTasks.length > 0 && (
+        <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 space-y-3">
+          <div className="flex items-center gap-2 font-bold text-sm text-amber-800">
+            <RotateCcw className="w-4 h-4 text-amber-600" />
+            <span>مطلوب تعديلات ({changesRequestedTasks.length})</span>
           </div>
-
-          <div className="py-4 space-y-3">
-            {priorityTasks.length === 0 ? (
-              <div className="text-center py-8 text-slate-400 text-xs">
-                لا توجد مهام قيد التنفيذ حالياً.
-              </div>
-            ) : (
-              priorityTasks.map((task) => {
-                const statusColor = TASK_STATUS_COLORS[task.status as keyof typeof TASK_STATUS_COLORS] || {
-                  bg: "bg-slate-100",
-                  text: "text-slate-700",
-                  border: "border-slate-200",
-                };
-
-                return (
-                  <div
-                    key={task.id}
-                    className="p-4 rounded-xl border border-slate-200 hover:border-sky-300 transition-all bg-surface hover:shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-sm text-slate-900">{task.title}</span>
-                        <span
-                          className={`px-2 py-0.5 rounded-md font-semibold border ${statusColor.bg} ${statusColor.text} ${statusColor.border}`}
-                        >
-                          {TASK_STATUS_LABELS[task.status as keyof typeof TASK_STATUS_LABELS]}
-                        </span>
-                      </div>
-                      <div className="text-slate-500 mt-1 flex items-center gap-3 text-[11px]">
-                        <span>العميل: <strong className="text-slate-700">{task.client?.name || "عام"}</strong></span>
-                        <span>رقم التسليم: {task.deliverable_number}</span>
-                        {task.due_at && (
-                          <span className="text-amber-700 font-medium">
-                            الموعد: {new Date(task.due_at).toLocaleDateString("ar-EG")}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 self-end sm:self-center">
-                      <button
-                        onClick={() => handleStartTimer(task)}
-                        className="px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold flex items-center gap-1.5 transition-colors shadow-xs"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-white" />
-                        تشغيل العداد
-                      </button>
-                      {(task.primary_assignee_id === "bcfa3baa-7045-4262-abd6-bdb0be8210fd" ||
-                        task.assignee?.display_name?.includes("عماد") ||
-                        activePersona.role === "owner") ? (
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg font-semibold">
-                            لا تتطلب مراجعة داخلية — منفذها Owner
-                          </span>
-                          {task.status === "in_progress" && (
-                            <button
-                              onClick={() => handleDirectApprove(task)}
-                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center gap-1.5 transition-colors shadow-xs"
-                            >
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                              جاهز للتسليم
-                            </button>
-                          )}
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => {
-                            setReviewTask(task);
-                            setShowReviewModal(true);
-                          }}
-                          className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold flex items-center gap-1.5 transition-colors"
-                        >
-                          <Send className="w-3.5 h-3.5" />
-                          طلب مراجعة
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {changesRequestedTasks.map((t) => renderTaskCard(t, "border-amber-300 bg-amber-50/30"))}
           </div>
         </div>
+      )}
 
-        {/* Weekly Stats Summary (1 col) */}
-        <div className="bg-surface rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-          <h2 className="font-bold text-base text-slate-900 flex items-center gap-2 pb-3 border-b border-slate-100">
+      {/* Section 3: In Progress (قيد التنفيذ) */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+          <h2 className="font-bold text-base text-slate-950 flex items-center gap-2">
             <Clock className="w-4 h-4 text-sky-600" />
-            ملخص ساعات العمل هذا الأسبوع
+            <span>قيد التنفيذ ({inProgressTasks.length})</span>
           </h2>
-
-          <div className="space-y-3 text-xs">
-            <div className="p-3.5 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-between">
-              <span className="font-semibold text-sky-900">إجمالي ساعات العمل المسجلة:</span>
-              <span className="font-bold text-base text-sky-700">18.5 س</span>
-            </div>
-
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-              <span className="text-slate-600">ساعات التعديل والمراجعة:</span>
-              <span className="font-bold text-slate-800">4.0 س</span>
-            </div>
-
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-              <span className="text-slate-600">التسليمات المعتمدة:</span>
-              <span className="font-bold text-emerald-600">5 تسليمات</span>
-            </div>
+        </div>
+        {inProgressTasks.length === 0 ? (
+          <div className="p-8 text-center bg-white rounded-2xl border border-slate-200 text-slate-400 text-xs">
+            لا توجد مهام قيد التنفيذ حالياً. اضغط "بدء العمل" على أي مهمة في قائمة الانتظار.
           </div>
-
-          <div className="text-[11px] text-slate-400 pt-2 border-t border-slate-100">
-            يتم تسجيل الجلسات بدقة عبر السيرفر بتوقيت القاهرة بدون احتساب فترات التوقف والانتظار.
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {inProgressTasks.map((t) => renderTaskCard(t, "border-sky-300"))}
           </div>
+        )}
+      </div>
+
+      {/* Section 4: In Review (بانتظار المراجعة) */}
+      {inReviewTasks.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+            <h2 className="font-bold text-base text-slate-950 flex items-center gap-2">
+              <Send className="w-4 h-4 text-purple-600" />
+              <span>بانتظار المراجعة الداخلية ({inReviewTasks.length})</span>
+            </h2>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {inReviewTasks.map((t) => renderTaskCard(t, "border-purple-200 bg-purple-50/30"))}
+          </div>
+        </div>
+      )}
+
+      {/* Section 5: Backlog & Ready (انتظار) */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+          <h2 className="font-bold text-base text-slate-950 flex items-center gap-2">
+            <Calendar className="w-4 h-4 text-slate-600" />
+            <span>انتظار ({backlogTasks.length})</span>
+          </h2>
+        </div>
+        {backlogTasks.length === 0 ? (
+          <div className="p-8 text-center bg-white rounded-2xl border border-slate-200 text-slate-400 text-xs">
+            لا توجد مهام في قائمة الانتظار.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {backlogTasks.map((t) => renderTaskCard(t))}
+          </div>
+        )}
+      </div>
+
+      {/* Section 6 & 7: Approved & Delivered (معتمد وتم التسليم) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4">
+        {/* Approved */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+            <h2 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+              <Check className="w-4 h-4 text-emerald-600" />
+              <span>معتمد ({approvedTasks.length})</span>
+            </h2>
+          </div>
+          {approvedTasks.length === 0 ? (
+            <div className="p-4 text-center bg-white rounded-xl border border-slate-200 text-slate-400 text-xs">
+              لا توجد مهام معتمدة حالياً.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {approvedTasks.map((t) => renderTaskCard(t, "border-emerald-200"))}
+            </div>
+          )}
+        </div>
+
+        {/* Delivered */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+            <h2 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+              <span>تم التسليم ({deliveredTasks.length})</span>
+            </h2>
+          </div>
+          {deliveredTasks.length === 0 ? (
+            <div className="p-4 text-center bg-white rounded-xl border border-slate-200 text-slate-400 text-xs">
+              لا توجد مهام تم تسليمها نهائياً بعد.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {deliveredTasks.map((t) => renderTaskCard(t, "border-slate-200 opacity-80"))}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Manual Work Session Modal */}
+      {/* Task Details Drawer */}
+      <TaskDetailsDrawer
+        task={selectedTask}
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+        onStatusTransition={() => fetchUserAndTasks()}
+        onTaskUpdated={() => fetchUserAndTasks()}
+      />
+
+      {/* Manual Time Session Modal */}
       {showManualModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <form
-            onSubmit={handleSaveManualSession}
-            className="bg-surface rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150"
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl text-right animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
                 <Clock className="w-4 h-4 text-sky-600" />
-                تسجيل جلسة عمل يدوية
+                <span>إضافة جلسة عمل يدوية</span>
               </h3>
-              <button
-                type="button"
-                onClick={() => setShowManualModal(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
-              >
-                <X className="w-5 h-5" />
+              <button onClick={() => setShowManualModal(false)} className="text-slate-400 hover:text-slate-600 p-1">
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
+            <form onSubmit={handleSaveManualSession} className="space-y-3 text-xs">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">المهمة:</label>
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800">
-                  {manualTask?.title} ({manualTask?.client?.name})
-                </div>
+                <label className="block font-semibold text-slate-700 mb-1">المهمة *</label>
+                <select
+                  value={manualTask?.id || ""}
+                  onChange={(e) => {
+                    const found = tasks.find((t) => t.id === e.target.value);
+                    if (found) setManualTask(found);
+                  }}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl bg-slate-50 focus:bg-white"
+                >
+                  {tasks.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.title} ({t.client?.name})
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">بداية الجلسة (القاهرة):</label>
+                  <label className="block font-semibold text-slate-700 mb-1">بداية الجلسة *</label>
                   <input
                     type="datetime-local"
                     value={manualStart}
                     onChange={(e) => setManualStart(e.target.value)}
-                    required
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs"
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-xl font-mono text-[11px]"
                   />
                 </div>
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">نهاية الجلسة (القاهرة):</label>
+                  <label className="block font-semibold text-slate-700 mb-1">نهاية الجلسة *</label>
                   <input
                     type="datetime-local"
                     value={manualEnd}
                     onChange={(e) => setManualEnd(e.target.value)}
-                    required
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs"
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-xl font-mono text-[11px]"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">تصنيف العمل:</label>
+                <label className="block font-semibold text-slate-700 mb-1">تصنيف العمل *</label>
                 <select
                   value={manualCategory}
                   onChange={(e) => setManualCategory(e.target.value as TimeCategory)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl bg-slate-50 focus:bg-white"
                 >
-                  {(Object.keys(TIME_CATEGORY_LABELS) as TimeCategory[]).map((cat) => (
-                    <option key={cat} value={cat}>
-                      {TIME_CATEGORY_LABELS[cat]}
+                  {Object.entries(TIME_CATEGORY_LABELS).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
                     </option>
                   ))}
                 </select>
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">ملاحظات الجلسة:</label>
-                <textarea
+                <label className="block font-semibold text-slate-700 mb-1">ملاحظات (اختياري)</label>
+                <input
+                  type="text"
                   value={manualNote}
                   onChange={(e) => setManualNote(e.target.value)}
-                  placeholder="وصف مختصر للعمل المنجز..."
-                  rows={2}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs resize-none"
-                />
-              </div>
-            </div>
-
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => setShowManualModal(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs"
-              >
-                حفظ الجلسة
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Submit Review Modal */}
-      {showReviewModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <form
-            onSubmit={handleSubmitReview}
-            className="bg-surface rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150"
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
-                <FileCheck className="w-4 h-4 text-purple-600" />
-                إرسال المهمة للمراجعة الداخلية
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowReviewModal(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">المهمة:</label>
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800">
-                  {reviewTask?.title}
-                </div>
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">
-                  رابط المعاينة أو ملف التصميم (إلزامي):
-                </label>
-                <input
-                  type="url"
-                  value={previewUrl}
-                  onChange={(e) => setPreviewUrl(e.target.value)}
-                  placeholder="https://drive.google.com/..."
-                  required
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs"
+                  placeholder="سبب التسجيل اليدوي..."
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl"
                 />
               </div>
 
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">ملاحظات للمراجع:</label>
-                <textarea
-                  value={reviewNote}
-                  onChange={(e) => setReviewNote(e.target.value)}
-                  placeholder="توضيح الفكرة أو التعديلات المنفذة..."
-                  rows={2}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs resize-none"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">
-                  المراجع المحدد{" "}
-                  <span className="text-slate-400 font-normal">(اختياري - افتراضي حسب قواعد التوجيه)</span>
-                </label>
-                <select
-                  value={reviewerId}
-                  onChange={(e) => setReviewerId(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white text-slate-700 focus:outline-sky-500"
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowManualModal(false)}
+                  className="px-3 py-1.5 text-slate-600 hover:bg-slate-100 rounded-xl"
                 >
-                  <option value="">-- التوجيه التلقائي للمراجع الافتراضي --</option>
-                  {REVIEWERS_OPTIONS.filter((r) => r.id !== reviewTask?.primary_assignee_id).map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold"
+                >
+                  تسجيل الجلسة
+                </button>
               </div>
-            </div>
-
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => setShowReviewModal(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                className="px-5 py-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 rounded-xl shadow-xs flex items-center gap-1.5"
-              >
-                <Send className="w-3.5 h-3.5" />
-                إرسال للمراجعة
-              </button>
-            </div>
-          </form>
+            </form>
+          </div>
         </div>
       )}
     </div>

@@ -1,31 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { requireWorkspaceMembership } from "@/lib/auth/server-auth";
+
+export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const supabase = createAdminClient();
-  if (!supabase) {
-    return NextResponse.json({ timer: null, message: "Database unconfigured" });
+  const authRes = await requireWorkspaceMembership(req);
+  if (!authRes.success) {
+    return authRes.errorResponse;
   }
+
+  const { membership, admin } = authRes.data;
 
   const { searchParams } = new URL(req.url);
   let personId = searchParams.get("personId");
 
-  // If no personId provided, fetch the first roster member (e.g. Sarah or Emad) for demonstration
-  if (!personId) {
-    const { data: sarah } = await supabase
-      .from("roster_people")
-      .select("id")
-      .eq("display_name", "سارة")
-      .maybeSingle();
-
-    personId = sarah?.id || null;
+  // If personId is specified and differs from caller's rosterPersonId, only owner can view
+  if (personId && personId !== membership.rosterPersonId) {
+    if (membership.role !== "owner") {
+      return NextResponse.json(
+        { error: "غير مصرح: لا يمكنك عرض مؤقت عضو آخر." },
+        { status: 403 }
+      );
+    }
+  } else {
+    personId = membership.rosterPersonId;
   }
 
-  if (!personId) {
-    return NextResponse.json({ timer: null });
-  }
-
-  const { data: timer, error } = await supabase
+  const { data: timer, error } = await admin
     .from("time_entries")
     .select(`
       *,
@@ -39,6 +40,7 @@ export async function GET(req: NextRequest) {
         )
       )
     `)
+    .eq("workspace_id", membership.workspaceId)
     .eq("roster_person_id", personId)
     .is("ended_at", null)
     .eq("is_voided", false)
@@ -48,5 +50,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ timer });
+  return NextResponse.json({ timer: timer || null });
 }
