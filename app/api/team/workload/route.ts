@@ -43,55 +43,87 @@ export async function GET(req: NextRequest) {
 
     const workspaceId = ws.id;
 
-    // 2. Fetch all roster people
-    const { data: roster, error: rosterErr } = await admin
-      .from("roster_people")
-      .select(`
-        id,
-        display_name,
-        job_title,
-        role,
-        is_active,
-        capacity:member_capacities(*)
-      `)
-      .eq("workspace_id", workspaceId)
-      .eq("is_active", true)
-      .order("display_name", { ascending: true });
+    // 2. Fetch all required data in parallel
+    const [rosterRes, membershipsRes, capacitiesRes, clientsRes, tasksRes] = await Promise.all([
+      admin
+        .from("roster_people")
+        .select("id, display_name, job_title, is_active")
+        .eq("workspace_id", workspaceId)
+        .eq("is_active", true)
+        .order("display_name", { ascending: true }),
+      admin
+        .from("workspace_memberships")
+        .select("roster_person_id, role")
+        .eq("workspace_id", workspaceId)
+        .eq("is_active", true),
+      admin
+        .from("member_capacities")
+        .select("*")
+        .eq("workspace_id", workspaceId),
+      admin
+        .from("clients")
+        .select("id, name, difficulty, owner_roster_id, status")
+        .eq("workspace_id", workspaceId)
+        .eq("status", "Active"),
+      admin
+        .from("tasks")
+        .select(`
+          id,
+          client_id,
+          primary_assignee_id,
+          status,
+          priority,
+          deliverable_format,
+          deliverable_number,
+          due_date,
+          client:clients(id, name, difficulty),
+          content_calendar_item:content_calendar_items!fk_cci_task(slides)
+        `)
+        .eq("workspace_id", workspaceId)
+        .not("status", "in", '("approved","delivered","cancelled")'),
+    ]);
 
-    if (rosterErr) {
-      return NextResponse.json({ error: rosterErr.message }, { status: 500 });
+    if (rosterRes.error) {
+      return NextResponse.json({ error: rosterRes.error.message }, { status: 500 });
     }
 
-    // 3. Fetch all active clients
-    const { data: clients } = await admin
-      .from("clients")
-      .select("id, name, difficulty, owner_roster_id, status")
-      .eq("workspace_id", workspaceId)
-      .eq("status", "Active");
+    const roster = rosterRes.data || [];
+    const memberships = membershipsRes.data || [];
+    const capacities = capacitiesRes.data || [];
+    const clients = clientsRes.data || [];
+    const tasks = tasksRes.data || [];
 
-    // 4. Fetch all active tasks with deliverable details
-    const { data: tasks } = await admin
-      .from("tasks")
-      .select(`
-        id,
-        client_id,
-        primary_assignee_id,
-        status,
-        priority,
-        deliverable_format,
-        deliverable_number,
-        due_date,
-        client:clients(id, name, difficulty),
-        content_calendar_item:content_calendar_items!fk_cci_task(slides)
-      `)
-      .eq("workspace_id", workspaceId)
-      .not("status", "in", '("approved","delivered","cancelled")');
+    const membershipRoleMap = new Map<string, string>();
+    for (const m of memberships) {
+      if (m.roster_person_id && m.role) {
+        membershipRoleMap.set(m.roster_person_id, m.role);
+      }
+    }
+
+    const capacityMap = new Map<string, any>();
+    for (const c of capacities) {
+      if (c.roster_person_id) {
+        capacityMap.set(c.roster_person_id, c);
+      }
+    }
 
     const now = new Date();
     const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const in14Days = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
 
-    const metrics: DesignerWorkloadMetric[] = (roster || []).map((person) => {
+    const metrics: DesignerWorkloadMetric[] = roster.map((person) => {
+      let role = membershipRoleMap.get(person.id);
+      if (!role) {
+        const title = (person.job_title || "").toLowerCase();
+        const name = (person.display_name || "").toLowerCase();
+        if (name.includes("عماد") || title.includes("owner") || title.includes("art director")) {
+          role = "owner";
+        } else if (name.includes("ندى") || title.includes("senior") || title.includes("reviewer")) {
+          role = "senior_reviewer";
+        } else {
+          role = "designer";
+        }
+      }
       const assignedClients = (clients || []).filter((c) => c.owner_roster_id === person.id);
       const personTasks = (tasks || []).filter((t) => t.primary_assignee_id === person.id);
 
@@ -136,9 +168,9 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      const capRecord = Array.isArray(person.capacity) ? person.capacity[0] : person.capacity;
+      const capRecord = capacityMap.get(person.id);
       const weeklyHours = capRecord?.weekly_hours_limit || 40;
-      const reservedHours = person.role === "owner" ? 15 : person.role === "senior_reviewer" ? 8 : 0;
+      const reservedHours = role === "owner" ? 15 : role === "senior_reviewer" ? 8 : 0;
       const maxWeighted = capRecord?.max_weighted_load || 15.0;
 
       const loadRatio = Math.min(100, Math.round((totalWeightedLoad / maxWeighted) * 100));
@@ -151,7 +183,7 @@ export async function GET(req: NextRequest) {
         id: person.id,
         displayName: person.display_name,
         jobTitle: person.job_title || "Graphic Designer",
-        role: person.role,
+        role: role || "designer",
         weeklyHours,
         reservedHours,
         activeClientsCount: assignedClients.length,
@@ -168,9 +200,9 @@ export async function GET(req: NextRequest) {
           difficulty: c.difficulty || "Medium",
         })),
         notes:
-          person.role === "owner"
+          role === "owner"
             ? "مالك الايجنسي والمدير الفني: مراجعة الحسابات والتوجيه الإبداعي"
-            : person.role === "senior_reviewer"
+            : role === "senior_reviewer"
             ? "مراجع أول: مراجعة تصاميم المصممين وتدقيق الجودة"
             : null,
       };
