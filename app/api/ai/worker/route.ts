@@ -38,8 +38,22 @@ export async function POST(req: NextRequest) {
     if (providedSecret) {
       if (workerSecret && providedSecret === workerSecret) {
         isAuthorized = true;
-        authSource = "supabase_cron_secret";
+        authSource = "supabase_cron_secret_env";
       } else {
+        // Fallback: Verify secret against Supabase Vault via service_role RPC
+        const admin = createAdminClient();
+        if (admin) {
+          const { data: isValid, error: vaultErr } = await admin.rpc("verify_ai_worker_secret", {
+            p_secret: providedSecret,
+          });
+          if (!vaultErr && isValid === true) {
+            isAuthorized = true;
+            authSource = "supabase_vault_secret";
+          }
+        }
+      }
+
+      if (!isAuthorized) {
         return NextResponse.json(
           { error: "رمز المصادقة السري للـ Worker غير صالح (Invalid Worker Secret)." },
           { status: 401 }
