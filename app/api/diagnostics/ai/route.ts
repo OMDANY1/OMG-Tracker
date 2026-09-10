@@ -56,26 +56,38 @@ export async function GET(req: NextRequest) {
 
     const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
     const model = getGeminiModel();
-    const testResult = await testGeminiConnection();
-
-    let availableModels: string[] = [];
-    try {
+    let testResults: any[] = [];
+    if (admin || isAuthorized) {
       const client = getGeminiClient();
       if (client) {
-        const pager = await client.models.list();
-        for await (const m of pager) {
-          if (m.name) availableModels.push(m.name);
+        const testCandidates = [
+          "gemini-2.5-flash",
+          "models/gemini-2.5-flash",
+          "gemini-flash-latest",
+          "models/gemini-flash-latest",
+          "gemini-3.8-flash",
+          "models/gemini-3.8-flash",
+          "gemini-2.5-pro",
+          "models/gemini-2.5-pro",
+        ];
+        for (const m of testCandidates) {
+          try {
+            const res = await client.models.generateContent({
+              model: m,
+              contents: "Hello",
+            });
+            testResults.push({ model: m, ok: true, text: res.text?.substring(0, 50) });
+          } catch (err: any) {
+            testResults.push({ model: m, ok: false, status: err?.status, message: err?.message });
+          }
         }
       }
-    } catch (e: any) {
-      availableModels = [`list_failed: ${e.message}`];
     }
 
     return NextResponse.json({
       geminiKeyConfigured: Boolean(apiKey),
       resolvedModel: model,
-      availableModels,
-      testConnection: testResult,
+      testResults,
       runtime: "nodejs",
       vercelEnvironment: process.env.VERCEL_ENV || "production",
     });
