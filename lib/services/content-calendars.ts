@@ -332,6 +332,7 @@ export async function getContentCalendarDetails(params: {
   workspaceId: string;
   clientId: string;
   monthKey: string;
+  campaignId?: string;
   userRosterId?: string;
   isOwner?: boolean;
 }) {
@@ -351,8 +352,8 @@ export async function getContentCalendarDetails(params: {
     }
   }
 
-  // Get current revision campaign
-  const { data: campaign } = await admin
+  // Get targeted or current revision campaign
+  let campaignQuery = admin
     .from("campaigns")
     .select(`
       *,
@@ -362,12 +363,29 @@ export async function getContentCalendarDetails(params: {
     `)
     .eq("workspace_id", params.workspaceId)
     .eq("client_id", params.clientId)
-    .eq("month_key", params.monthKey)
-    .eq("is_current_revision", true)
-    .maybeSingle();
+    .eq("month_key", params.monthKey);
+
+  if (params.campaignId) {
+    campaignQuery = campaignQuery.eq("id", params.campaignId);
+  } else {
+    campaignQuery = campaignQuery.eq("is_current_revision", true);
+  }
+
+  const { data: campaign } = await campaignQuery.maybeSingle();
 
   if (!campaign) {
-    return { campaign: null, items: [], previewUrl: null, revisions: [] };
+    return {
+      campaign: null,
+      campaignId: null,
+      revisionNumber: null,
+      detectedPostCount: 0,
+      excludedSectionCount: 0,
+      items: [],
+      operationalItems: [],
+      excludedItems: [],
+      previewUrl: null,
+      revisions: [],
+    };
   }
 
   // Generate signed preview URL if storage_path exists
@@ -379,14 +397,14 @@ export async function getContentCalendarDetails(params: {
     previewUrl = signed?.signedUrl || null;
   }
 
-  // Get items
+  // Get items with disambiguated tasks relationship
   const { data: items } = await admin
     .from("content_calendar_items")
     .select(`
       *,
       suggested_assignee:roster_people!fk_cci_suggested_assignee(id, display_name),
       approved_assignee:roster_people!fk_cci_approved_assignee(id, display_name),
-      task:tasks(id, status, primary_assignee_id, reviewer_id)
+      task:tasks!fk_cci_task(id, status, primary_assignee_id, reviewer_id)
     `)
     .eq("campaign_id", campaign.id)
     .order("post_order", { ascending: true });
@@ -400,9 +418,26 @@ export async function getContentCalendarDetails(params: {
     .eq("month_key", params.monthKey)
     .order("revision_number", { ascending: false });
 
+  const rawItems = items || [];
+  const operationalItems = rawItems.filter((i: any) => !i.is_excluded_from_tasks);
+  const excludedItems = rawItems.filter((i: any) => i.is_excluded_from_tasks);
+
+  // Suppress stale processing error if campaign has reached a non-failed operational state
+  const isFailedState = campaign.calendar_status === "failed" || campaign.calendar_status === "extraction_failed";
+  const cleanProcessingError = isFailedState ? campaign.processing_error : null;
+
   return {
-    campaign,
-    items: items || [],
+    campaign: {
+      ...campaign,
+      processing_error: cleanProcessingError,
+    },
+    campaignId: campaign.id,
+    revisionNumber: campaign.revision_number,
+    detectedPostCount: campaign.detected_post_count ?? operationalItems.length,
+    excludedSectionCount: excludedItems.length,
+    items: rawItems,
+    operationalItems,
+    excludedItems,
     previewUrl,
     revisions: revisions || [],
   };
@@ -454,6 +489,7 @@ export async function listClientCalendars(params: {
       ai_overall_confidence,
       detected_post_count,
       declared_post_count,
+      processing_error,
       created_at,
       updated_at
     `)
@@ -489,10 +525,17 @@ export async function listClientCalendars(params: {
   return clients.map((client) => {
     const campaign = campaignMap.get(client.id) || null;
     const counts = campaign ? itemCountsMap.get(campaign.id) || { total: 0, tasks: 0 } : { total: 0, tasks: 0 };
+    const isFailedState = campaign && (campaign.calendar_status === "failed" || campaign.calendar_status === "extraction_failed");
+    const cleanCampaign = campaign
+      ? {
+          ...campaign,
+          processing_error: isFailedState ? campaign.processing_error : null,
+        }
+      : null;
 
     return {
       client,
-      campaign,
+      campaign: cleanCampaign,
       postCount: counts.total,
       tasksCreatedCount: counts.tasks,
       calendarStatus: campaign ? campaign.calendar_status : "not_uploaded",

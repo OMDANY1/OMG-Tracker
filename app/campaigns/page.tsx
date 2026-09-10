@@ -424,6 +424,7 @@ export default function CampaignsPage() {
             if (job.status === "completed") {
               jobCompleted = true;
               setPollingStatusText("اكتمل استخراج وتقسيم البوستات بنجاح!");
+              setUploadError(null);
               break;
             } else if (job.status === "failed") {
               throw new Error(job.safe_error_message || job.error_message || "فشلت معالجة التقويم في الخلفية.");
@@ -453,10 +454,11 @@ export default function CampaignsPage() {
       setUploadFile(null);
       setUploadClientId("");
       setTargetClient(null);
+      setUploadError(null);
 
       // Refresh and open Review Matrix
       await fetchData();
-      openReviewMatrix(uploadClientId);
+      await openReviewMatrix(uploadClientId);
     } catch (err: any) {
       setUploadError(err.message || "حدث خطأ أثناء رفع الملف ومعالجته.");
     } finally {
@@ -466,16 +468,24 @@ export default function CampaignsPage() {
   };
 
   // Open Review Matrix Modal
-  const openReviewMatrix = async (clientId: string) => {
+  const openReviewMatrix = async (clientId: string, campaignId?: string) => {
     setReviewLoading(true);
     setShowReviewModal(true);
+    setReviewCampaign(null);
+    setReviewItems([]);
+    setReviewPreviewUrl(null);
     setImportSummary(null);
     setImportError(null);
+    setReanalyzeError(null);
+    setUploadError(null);
     setShowConfirmation(false);
     setExpandedRowIndex(null);
 
     try {
-      const res = await fetch(`/api/campaigns/calendar?clientId=${clientId}&monthKey=${selectedMonth}`);
+      const url = campaignId
+        ? `/api/campaigns/calendar?clientId=${clientId}&monthKey=${selectedMonth}&campaignId=${campaignId}`
+        : `/api/campaigns/calendar?clientId=${clientId}&monthKey=${selectedMonth}`;
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setReviewCampaign(data.campaign);
@@ -969,8 +979,8 @@ export default function CampaignsPage() {
                     </div>
                   </div>
 
-                  {/* Processing Error Notice if failed */}
-                  {hasCampaign && row.campaign?.processing_error && (
+                  {/* Processing Error Notice strictly only if currently failed */}
+                  {hasCampaign && (status === "extraction_failed" || status === "failed") && row.campaign?.processing_error && (
                     <div className="my-2 p-2 bg-rose-50 border border-rose-200 rounded-xl text-[11px] text-rose-800 flex items-start gap-1.5">
                       <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-600 mt-0.5" />
                       <span className="leading-tight">{row.campaign.processing_error}</span>
@@ -999,7 +1009,7 @@ export default function CampaignsPage() {
                   {hasCampaign ? (
                     <>
                       <button
-                        onClick={() => openReviewMatrix(row.client.id)}
+                        onClick={() => openReviewMatrix(row.client.id, row.campaign?.id)}
                         className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5 transition-colors"
                       >
                         <Sliders className="w-3.5 h-3.5" />
@@ -1353,8 +1363,8 @@ export default function CampaignsPage() {
               </div>
             ) : (
               <>
-                {/* Notice / Warning Bar */}
-                {(reviewCampaign?.processing_error || reanalyzeError) && (
+                {/* Notice / Warning Bar - strictly only show when currently failed */}
+                {((reviewCampaign?.calendar_status === "failed" || reviewCampaign?.calendar_status === "extraction_failed") && reviewCampaign?.processing_error || reanalyzeError) && (
                   <div className="p-3 bg-rose-50 border border-rose-200 text-rose-900 rounded-xl text-xs flex items-start justify-between gap-2">
                     <div className="flex items-start gap-2">
                       <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />

@@ -58,10 +58,12 @@ export async function GET(req: NextRequest) {
 
     // If clientId is provided, return single calendar details
     if (clientId) {
+      const campaignId = searchParams.get("campaignId") || undefined;
       const details = await getContentCalendarDetails({
         workspaceId,
         clientId,
         monthKey,
+        campaignId,
         userRosterId: userRosterId || undefined,
         isOwner,
       });

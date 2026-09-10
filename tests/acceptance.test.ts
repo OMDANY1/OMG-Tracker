@@ -1068,6 +1068,21 @@ async function runTestSuite() {
 
   assert(!calendarServiceContent.includes(".from(\"tasks\").insert"), "No task creation before Owner approval (tasks table untouched during calendar extraction)");
 
+  console.log("\n[Scenario 79] P0 Production Content Calendar UI Data-Consistency & Relationship Disambiguation...");
+  assert(calendarServiceContent.includes("tasks!fk_cci_task"), "PostgREST tasks relationship disambiguated with !fk_cci_task to prevent PGRST201 error");
+  assert(calendarServiceContent.includes("campaignId?: string"), "getContentCalendarDetails supports targeted campaignId parameter");
+  assert(calendarServiceContent.includes("operationalItems") && calendarServiceContent.includes("excludedItems"), "getContentCalendarDetails returns structured operationalItems and excludedItems");
+  assert(calendarServiceContent.includes("cleanProcessingError"), "Stale processing errors suppressed for successfully extracted campaigns");
+  
+  const calendarRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/calendar/route.ts"), "utf-8");
+  assert(calendarRouteContent.includes("searchParams.get(\"campaignId\")"), "GET /api/campaigns/calendar accepts and forwards campaignId parameter");
+  
+  assert(campaignsPageContent.includes("openReviewMatrix = async (clientId: string, campaignId?: string)"), "openReviewMatrix accepts targeted campaignId");
+  assert(campaignsPageContent.includes("setReviewCampaign(null)") && campaignsPageContent.includes("setReviewItems([])"), "Switching or opening modal clears previous items and errors immediately");
+  assert(campaignsPageContent.includes("openReviewMatrix(row.client.id, row.campaign?.id)"), "Campaign card passes exact campaign ID to openReviewMatrix");
+  assert(campaignsPageContent.includes("reviewCampaign?.calendar_status === \"failed\""), "Review modal error alert strictly guarded to failed calendar states");
+  assert(campaignsPageContent.includes("(status === \"extraction_failed\" || status === \"failed\")"), "Card error alert strictly guarded to failed calendar states");
+
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
 
