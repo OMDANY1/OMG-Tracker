@@ -1,0 +1,1 @@
+CREATE OR REPLACE FUNCTION public.check_net_post() RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER AS $$ DECLARE v_params jsonb; BEGIN SELECT jsonb_agg(parameter_name || ' ' || data_type) INTO v_params FROM information_schema.parameters WHERE specific_schema = 'net' AND specific_name LIKE '%http_post%'; RETURN jsonb_build_object('net_http_post_params', v_params); END; $$;

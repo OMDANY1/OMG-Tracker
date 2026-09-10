@@ -45,7 +45,6 @@ export async function GET(req: NextRequest) {
         .from("roster_people")
         .select("id, display_name, job_title, is_active")
         .eq("workspace_id", workspaceId)
-        .eq("is_active", true)
         .order("display_name", { ascending: true }),
       admin
         .from("workspace_memberships")
@@ -184,6 +183,7 @@ export async function GET(req: NextRequest) {
         displayName: person.display_name,
         jobTitle: person.job_title || "Graphic Designer",
         role: role || "designer",
+        isActive: person.is_active !== false,
         weeklyHours,
         reservedHours,
         activeClientsCount: assignedClients.length,

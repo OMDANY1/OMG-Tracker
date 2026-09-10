@@ -21,6 +21,7 @@ import {
   Lock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { DeadlineSettingsCard } from "@/components/settings/DeadlineSettingsCard";
 
 interface JobItem {
   id: string;
@@ -487,6 +488,9 @@ export default function OperationsHubPage() {
           })}
         </div>
       </div>
+
+      {/* Deadline Engine Settings & Safe Recalculation Card */}
+      <DeadlineSettingsCard />
 
       {/* Agency Scale Blueprint Card */}
       <div className="p-6 rounded-2xl bg-gradient-to-l from-sky-950/40 to-zinc-900/60 border border-sky-500/20 space-y-4">

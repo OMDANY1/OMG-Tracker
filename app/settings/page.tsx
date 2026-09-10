@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { DeadlineSettingsCard } from "@/components/settings/DeadlineSettingsCard";
 
 export default function SettingsPage() {
   const [timezone, setTimezone] = useState("Africa/Cairo");
@@ -130,6 +131,9 @@ export default function SettingsPage() {
           تهيئة المنطقة الزمنية المعتمدة، أسبوع العمل، وقواعد حماية وأمان البيانات
         </p>
       </div>
+
+      {/* Deadline Engine Settings (Configurable Lead Days & Timezone) */}
+      <DeadlineSettingsCard />
 
       {/* Section 1: General Workspace Settings */}
       <div className="bg-surface rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">

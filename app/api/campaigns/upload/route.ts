@@ -62,16 +62,7 @@ export async function POST(req: NextRequest) {
       createdById: membership.rosterPersonId,
     });
 
-    // 3. Asynchronously trigger worker without waiting (fire-and-forget)
-    const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-    fetch(`${baseUrl}/api/ai/worker`, {
-      method: "POST",
-      headers: {
-        "x-internal-worker-trigger": process.env.SUPABASE_SERVICE_ROLE_KEY || "",
-      },
-    }).catch(() => {});
-
-    // 4. Return HTTP 202 Accepted immediately
+    // 3. Return HTTP 202 Accepted immediately - processing is handled durably by Supabase Cron Worker
     return NextResponse.json(
       {
         success: true,

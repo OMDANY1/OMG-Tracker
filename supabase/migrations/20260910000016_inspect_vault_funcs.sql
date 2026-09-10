@@ -1,0 +1,1 @@
+CREATE OR REPLACE FUNCTION public.check_vault_and_extensions() RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER AS $$ DECLARE v_exts jsonb; v_funcs jsonb; BEGIN SELECT jsonb_agg(routine_name) INTO v_funcs FROM information_schema.routines WHERE routine_schema = 'vault'; RETURN jsonb_build_object('vault_functions', v_funcs); END; $$;

@@ -20,6 +20,9 @@ import {
   Trash2,
   Calendar,
   Layers,
+  Copy,
+  Send,
+  UserX,
 } from "lucide-react";
 import { ROSTER_ROLE_LABELS, cn } from "@/lib/utils";
 
@@ -28,6 +31,7 @@ interface WorkloadMember {
   displayName: string;
   jobTitle: string;
   role: string;
+  isActive?: boolean;
   weeklyHours: number;
   reservedHours: number;
   activeClientsCount: number;
@@ -49,10 +53,15 @@ interface InvitationRecord {
   status: string;
   expires_at: string;
   created_at: string;
+  last_sent_at?: string | null;
+  notes?: string | null;
+  isDraft?: boolean;
+  canCopyLink?: boolean;
   roster_person?: {
     id: string;
     display_name: string;
     job_title: string;
+    is_active?: boolean;
   };
 }
 
@@ -185,6 +194,83 @@ export default function TeamPage() {
     } catch (e: any) {
       alert(e.message);
     }
+  };
+
+  const handleToggleMemberActive = async (member: WorkloadMember) => {
+    if (member.role === "owner") {
+      alert("لا يمكن تعطيل حساب المدير العام (المالك) حفاظاً على استقرار مساحة العمل.");
+      return;
+    }
+
+    const nextState = member.isActive === false;
+    const confirmMsg = nextState
+      ? `هل أنت متأكد من إعادة تفعيل حساب "${member.displayName}"؟`
+      : `هل أنت متأكد من تعطيل حساب "${member.displayName}"؟ لن يتمكن من تسجيل ساعات أو استلام مهام جديدة.`;
+
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      const res = await fetch(`/api/team/members/${member.id}/toggle-active`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: nextState }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "فشل تغيير حالة تفعيل العضو.");
+      }
+
+      fetchTeamData();
+    } catch (err: any) {
+      alert(err.message || "حدث خطأ أثناء تعديل حالة العضو.");
+    }
+  };
+
+  const handleSendInvite = async (invitationId: string) => {
+    if (invitationsPaused) {
+      alert("الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. تم منع إرسال الدعوة حفاظًا على أمان النظام.");
+      return;
+    }
+
+    if (!confirm("هل ترغب في إرسال الدعوة الآن لهذا العضو؟")) return;
+
+    try {
+      const res = await fetch("/api/team/invitations", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: invitationId, action: "send" }),
+      });
+
+      const data = await res.json();
+      if (res.status === 403) {
+        alert("الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. تم منع الإرسال.");
+        return;
+      }
+      if (res.status === 429) {
+        alert(data.error || "يرجى الانتظار دقيقة واحدة قبل إعادة الإرسال (Cooldown).");
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(data.error || "فشل إرسال الدعوة.");
+      }
+
+      alert("تم إرسال الدعوة بنجاح.");
+      fetchTeamData();
+    } catch (err: any) {
+      alert(err.message || "حدث خطأ أثناء إرسال الدعوة.");
+    }
+  };
+
+  const handleCopyLink = (inv: InvitationRecord) => {
+    if (inv.status === "draft" || invitationsPaused) {
+      alert("لا يمكن نسخ الرابط لمسودة غير مرسلة أثناء توقف استقبال الدعوات.");
+      return;
+    }
+
+    const inviteUrl = `${window.location.origin}/accept-invite?id=${inv.id}`;
+    navigator.clipboard.writeText(inviteUrl);
+    alert("تم نسخ رابط الدعوة إلى الحافظة.");
   };
 
   return (
@@ -365,6 +451,50 @@ export default function TeamPage() {
                         </div>
                       </div>
 
+                      {/* Active status & Deactivation toggle */}
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={cn(
+                              "w-2 h-2 rounded-full",
+                              member.isActive !== false ? "bg-emerald-500" : "bg-slate-400"
+                            )}
+                          />
+                          <span className="text-[11px] font-semibold text-slate-600">
+                            {member.isActive !== false ? "حساب نشط" : "معطل مؤقتاً"}
+                          </span>
+                        </div>
+                        {member.role === "owner" ? (
+                          <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                            <Lock className="w-3 h-3 text-slate-400" />
+                            <span>حساب المالك محمي</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleMemberActive(member)}
+                            className={cn(
+                              "px-2.5 py-1 rounded-lg text-[10px] font-semibold transition-colors flex items-center gap-1",
+                              member.isActive !== false
+                                ? "bg-rose-50 text-rose-700 hover:bg-rose-100"
+                                : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                            )}
+                          >
+                            {member.isActive !== false ? (
+                              <>
+                                <UserX className="w-3 h-3" />
+                                <span>تعطيل</span>
+                              </>
+                            ) : (
+                              <>
+                                <UserCheck className="w-3 h-3" />
+                                <span>إعادة تفعيل</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+
                       {member.notes && (
                         <div className="text-[10px] text-slate-400 italic pt-1">
                           {member.notes}
@@ -412,7 +542,7 @@ export default function TeamPage() {
                 <th className="p-3">الدور المخصص</th>
                 <th className="p-3">الحالة</th>
                 <th className="p-3">تاريخ الإنشاء</th>
-                <th className="p-3">الإجراء</th>
+                <th className="p-3">الإجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -438,17 +568,25 @@ export default function TeamPage() {
                       <span
                         className={cn(
                           "px-2 py-0.5 rounded-full text-[10px] font-bold",
-                          inv.status === "pending"
-                            ? "bg-amber-100 text-amber-800"
+                          inv.status === "draft"
+                            ? "bg-amber-100 text-amber-900"
+                            : inv.status === "pending"
+                            ? "bg-sky-100 text-sky-800"
                             : inv.status === "accepted"
                             ? "bg-emerald-100 text-emerald-800"
+                            : inv.status === "revoked"
+                            ? "bg-rose-100 text-rose-800"
                             : "bg-slate-100 text-slate-600"
                         )}
                       >
-                        {inv.status === "pending"
-                          ? "معلقة (مسودة)"
+                        {inv.status === "draft"
+                          ? "مسودة (غير مرسلة)"
+                          : inv.status === "pending"
+                          ? "معلقة"
                           : inv.status === "accepted"
                           ? "تم القبول"
+                          : inv.status === "revoked"
+                          ? "ملغاة"
                           : inv.status}
                       </span>
                     </td>
@@ -456,16 +594,55 @@ export default function TeamPage() {
                       {new Date(inv.created_at).toLocaleDateString("ar-EG")}
                     </td>
                     <td className="p-3">
-                      {inv.status === "pending" && (
+                      <div className="flex items-center gap-1.5">
+                        {/* Copy Link button */}
                         <button
                           type="button"
-                          onClick={() => handleRevokeInvite(inv.id)}
-                          className="text-rose-600 hover:text-rose-700 p-1 hover:bg-rose-50 rounded text-[11px] font-semibold"
-                          title="إلغاء الدعوة"
+                          onClick={() => handleCopyLink(inv)}
+                          className={cn(
+                            "p-1.5 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors",
+                            inv.status === "draft" || invitationsPaused
+                              ? "text-slate-400 hover:text-slate-500 hover:bg-slate-100"
+                              : "text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
+                          )}
+                          title={
+                            inv.status === "draft" || invitationsPaused
+                              ? "نسخ الرابط معطل (مسودة غير مرسلة / الدعوات متوقفة)"
+                              : "نسخ رابط الدعوة"
+                          }
                         >
-                          إلغاء
+                          <Copy className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">نسخ الرابط</span>
                         </button>
-                      )}
+
+                        {/* Send / Resend button */}
+                        {(inv.status === "draft" || inv.status === "pending") && (
+                          <button
+                            type="button"
+                            onClick={() => handleSendInvite(inv.id)}
+                            className="text-emerald-600 hover:text-emerald-800 p-1.5 hover:bg-emerald-50 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors"
+                            title="إرسال الدعوة"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">
+                              {inv.status === "draft" ? "إرسال" : "إعادة إرسال"}
+                            </span>
+                          </button>
+                        )}
+
+                        {/* Revoke button */}
+                        {inv.status !== "revoked" && inv.status !== "accepted" && (
+                          <button
+                            type="button"
+                            onClick={() => handleRevokeInvite(inv.id)}
+                            className="text-rose-600 hover:text-rose-700 p-1.5 hover:bg-rose-50 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors"
+                            title="إلغاء الدعوة"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">إلغاء</span>
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
