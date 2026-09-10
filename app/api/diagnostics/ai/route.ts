@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getGeminiModel, testGeminiConnection, getGeminiClient } from "@/lib/ai/gemini-client";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
@@ -63,12 +64,6 @@ export async function GET(req: NextRequest) {
         const testCandidates = [
           "gemini-2.5-flash",
           "models/gemini-2.5-flash",
-          "gemini-flash-latest",
-          "models/gemini-flash-latest",
-          "gemini-3.8-flash",
-          "models/gemini-3.8-flash",
-          "gemini-2.5-pro",
-          "models/gemini-2.5-pro",
         ];
         for (const m of testCandidates) {
           try {
