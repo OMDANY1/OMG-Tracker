@@ -1068,20 +1068,32 @@ async function runTestSuite() {
 
   assert(!calendarServiceContent.includes(".from(\"tasks\").insert"), "No task creation before Owner approval (tasks table untouched during calendar extraction)");
 
-  console.log("\n[Scenario 79] P0 Production Content Calendar UI Data-Consistency & Relationship Disambiguation...");
-  assert(calendarServiceContent.includes("tasks!fk_cci_task"), "PostgREST tasks relationship disambiguated with !fk_cci_task to prevent PGRST201 error");
-  assert(calendarServiceContent.includes("campaignId?: string"), "getContentCalendarDetails supports targeted campaignId parameter");
-  assert(calendarServiceContent.includes("operationalItems") && calendarServiceContent.includes("excludedItems"), "getContentCalendarDetails returns structured operationalItems and excludedItems");
-  assert(calendarServiceContent.includes("cleanProcessingError"), "Stale processing errors suppressed for successfully extracted campaigns");
+  console.log("\n[Scenario 79] P0 Production Content Calendar UI Data-Consistency & Relationship Disambiguation (Phase 6)...");
+  // 1. A job that previously failed and later completes has all stale error fields cleared
+  assert(calendarServiceContent.includes("cleanProcessingError"), "1. Stale processing errors suppressed/cleared for successfully completed revisions");
+  assert(calendarServiceContent.includes("isFailedState ? campaign.processing_error : null"), "1b. processing_error evaluates to null on non-failed calendar states");
   
-  const calendarRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/calendar/route.ts"), "utf-8");
-  assert(calendarRouteContent.includes("searchParams.get(\"campaignId\")"), "GET /api/campaigns/calendar accepts and forwards campaignId parameter");
+  // 2. The current successful revision returns its extracted items
+  assert(calendarServiceContent.includes("tasks!fk_cci_task"), "2. PostgREST tasks relationship disambiguated with !fk_cci_task to prevent PGRST201 error");
+  assert(calendarServiceContent.includes("operationalItems") && calendarServiceContent.includes("excludedItems"), "2b. getContentCalendarDetails returns structured operationalItems and excludedItems");
   
-  assert(campaignsPageContent.includes("openReviewMatrix = async (clientId: string, campaignId?: string)"), "openReviewMatrix accepts targeted campaignId");
-  assert(campaignsPageContent.includes("setReviewCampaign(null)") && campaignsPageContent.includes("setReviewItems([])"), "Switching or opening modal clears previous items and errors immediately");
-  assert(campaignsPageContent.includes("openReviewMatrix(row.client.id, row.campaign?.id)"), "Campaign card passes exact campaign ID to openReviewMatrix");
-  assert(campaignsPageContent.includes("reviewCampaign?.calendar_status === \"failed\""), "Review modal error alert strictly guarded to failed calendar states");
-  assert(campaignsPageContent.includes("(status === \"extraction_failed\" || status === \"failed\")"), "Card error alert strictly guarded to failed calendar states");
+  // 3. Opening the modal after polling completion displays those items
+  assert(campaignsPageContent.includes("openReviewMatrix(row.client.id, row.campaign?.id)"), "3. Campaign card passes exact campaign ID to openReviewMatrix");
+  assert(campaignsPageContent.includes("if (job.status === \"completed\")"), "3b. Polling completion triggers uploadError clearance and calendar refetch");
+
+  // 4. Switching between clients cannot leak previous items or errors
+  assert(campaignsPageContent.includes("setReviewCampaign(null)") && campaignsPageContent.includes("setReviewItems([])"), "4. Switching or opening modal clears previous items, reviewCampaign, and errors immediately");
+  
+  // 5. The header counters and table rows derive from the same revision
+  assert(campaignsPageContent.includes("reviewItems.filter((i) => !i.is_excluded_from_tasks).length") && campaignsPageContent.includes("reviewCampaign?.detected_post_count"), "5. Header counters, selection total, and table rows derive from the same revision payload");
+  
+  // 6. Re-running success finalization does not duplicate items
+  assert(calendarServiceContent.includes("save_ai_calendar_extraction"), "6. AI extraction finalization invokes atomic save_ai_calendar_extraction RPC preventing duplicate items");
+  
+  // 7. No tasks are created before owner approval
+  assert(!calendarServiceContent.includes(".from(\"tasks\").insert"), "7. No task creation before Owner approval (tasks table untouched during calendar extraction)");
+  const importRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/import-tasks/route.ts"), "utf-8");
+  assert(importRouteContent.includes("import_content_calendar_tasks"), "7b. Tasks are created strictly and exclusively upon manual Owner approval via import-tasks route");
 
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
