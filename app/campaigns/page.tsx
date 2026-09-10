@@ -124,6 +124,7 @@ export default function CampaignsPage() {
   const [calendars, setCalendars] = useState<ClientCalendarRow[]>([]);
   const [allClients, setAllClients] = useState<any[]>([]);
   const [designers, setDesigners] = useState<any[]>([]);
+  const [reviewRules, setReviewRules] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState<boolean>(false);
   const [workspaceId, setWorkspaceId] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -235,7 +236,19 @@ export default function CampaignsPage() {
           rawClientsList = clData.clients;
           setAllClients(clData.clients);
         }
-        if (clData.designers) setDesigners(clData.designers);
+        if (clData.designers) {
+          const normalized = clData.designers.map((d: any) => ({
+            ...d,
+            id: d.id || d.rosterId,
+            rosterId: d.rosterId || d.id,
+            displayName: d.displayName || d.display_name,
+            display_name: d.display_name || d.displayName,
+            jobTitle: d.jobTitle || d.job_title,
+            job_title: d.job_title || d.jobTitle,
+          }));
+          setDesigners(normalized);
+        }
+        if (Array.isArray(clData.reviewRules)) setReviewRules(clData.reviewRules);
         if (typeof clData.isOwner === "boolean") setIsOwner(clData.isOwner);
         if (clData.workspaceId) setWorkspaceId(clData.workspaceId);
       } else {
@@ -546,11 +559,105 @@ export default function CampaignsPage() {
     );
   };
 
+  // Helper to resolve reviewer deterministically based on review routing rules
+  const resolveReviewerForPost = (
+    designerId: string | null | undefined,
+    clientDifficulty: string | null | undefined,
+    ownerRosterId: string | null | undefined,
+    rules: any[],
+    rosterList: any[]
+  ): { id: string | null; name: string; isBypass: boolean } => {
+    if (!designerId) {
+      return { id: null, name: "غير محدد", isBypass: false };
+    }
+
+    // Review Bypass for Owner
+    if (designerId === ownerRosterId) {
+      return { id: null, name: "لا يوجد (اعتماد مباشر / Review Bypass)", isBypass: true };
+    }
+
+    let reviewerId: string | null = null;
+
+    // 1. Check rule with matching designer and matching client_difficulty
+    if (clientDifficulty) {
+      const ruleSpecific = rules.find(
+        (r) => r.designer_roster_id === designerId && r.client_difficulty === clientDifficulty
+      );
+      if (ruleSpecific) {
+        reviewerId = ruleSpecific.reviewer_roster_id;
+      }
+    }
+
+    // 2. Check rule with matching designer and client_difficulty IS NULL
+    if (!reviewerId) {
+      const ruleGeneral = rules.find(
+        (r) => r.designer_roster_id === designerId && !r.client_difficulty
+      );
+      if (ruleGeneral) {
+        reviewerId = ruleGeneral.reviewer_roster_id;
+      }
+    }
+
+    // 3. Check workspace default rule
+    if (!reviewerId) {
+      const ruleDefault = rules.find((r) => r.is_workspace_default);
+      if (ruleDefault) {
+        reviewerId = ruleDefault.reviewer_roster_id;
+      }
+    }
+
+    // 4. Fallback to owner
+    if (!reviewerId) {
+      reviewerId = ownerRosterId || null;
+    }
+
+    // Anti-self-approval
+    if (reviewerId === designerId) {
+      reviewerId = null;
+    }
+
+    if (!reviewerId) {
+      return { id: null, name: "لا يوجد", isBypass: false };
+    }
+
+    const reviewerPerson = rosterList.find((r) => (r.id || r.rosterId) === reviewerId);
+    const reviewerName = reviewerPerson?.displayName || reviewerPerson?.display_name || "المراجع";
+
+    return { id: reviewerId, name: reviewerName, isBypass: false };
+  };
+
+  // Update item field locally and auto-save to database if item exists
+  const updateItemFieldById = async (
+    itemId: string | undefined,
+    index: number,
+    field: keyof CalendarPostItem,
+    value: any
+  ) => {
+    setReviewItems((prev) =>
+      prev.map((item, idx) => {
+        const match = itemId ? item.id === itemId : idx === index;
+        if (!match) return item;
+        return { ...item, [field]: value };
+      })
+    );
+
+    if (itemId) {
+      try {
+        await fetch(`/api/campaigns/items/${itemId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [field]: value }),
+        });
+      } catch (e) {
+        console.error("Failed to auto-save item field:", e);
+      }
+    }
+  };
+
   // Update item field locally
   const updateItemField = (index: number, field: keyof CalendarPostItem, value: any) => {
-    const updated = [...reviewItems];
-    (updated[index] as any)[field] = value;
-    setReviewItems(updated);
+    const item = reviewItems[index];
+    updateItemFieldById(item?.id, index, field, value);
   };
 
   // Delete draft item
@@ -1306,8 +1413,12 @@ export default function CampaignsPage() {
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
                   الشهر: {selectedMonth} • العميل: {reviewCampaign?.client?.name} • المصمم الافتراضي:{" "}
-                  <strong>
-                    {designers.find((d) => d.id === reviewCampaign?.client?.owner_roster_id)?.display_name || "غير مسند"}
+                  <strong className="text-slate-800 font-bold">
+                    {(() => {
+                      const defId = reviewCampaign?.client?.owner_roster_id;
+                      const designer = designers.find((d) => (d.id || d.rosterId) === defId);
+                      return designer?.displayName || designer?.display_name || "غير مسند";
+                    })()}
                   </strong>
                 </p>
               </div>
@@ -1600,15 +1711,20 @@ export default function CampaignsPage() {
                                   <select
                                     value={currentAssignee}
                                     disabled={!isOwner || isExcluded}
-                                    onChange={(e) => updateItemField(idx, "approved_assignee_id", e.target.value)}
-                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white font-semibold"
+                                    onChange={(e) => updateItemFieldById(item.id, idx, "approved_assignee_id", e.target.value)}
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white font-semibold text-slate-800 focus:ring-1 focus:ring-sky-500"
                                   >
-                                    <option value="">-- اختر المصمم --</option>
-                                    {designers.map((d) => (
-                                      <option key={d.id} value={d.id}>
-                                        {d.display_name}
-                                      </option>
-                                    ))}
+                                    <option value="" disabled>-- اختر المصمم --</option>
+                                    {designers.map((d) => {
+                                      const val = d.id || d.rosterId;
+                                      const name = d.displayName || d.display_name;
+                                      const job = d.jobTitle || d.job_title;
+                                      return (
+                                        <option key={val} value={val} className="text-slate-800">
+                                          {name} {job ? `(${job})` : ""}
+                                        </option>
+                                      );
+                                    })}
                                   </select>
                                 </td>
                                 <td className="p-2.5 text-center">
@@ -1788,16 +1904,103 @@ export default function CampaignsPage() {
 
                 {/* Pre-generation confirmation dialog */}
                 {showConfirmation && (
-                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-amber-900 space-y-3 text-xs">
-                    <div className="font-bold text-sm flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-amber-600" />
-                      تأكيد اعتماد الخطة وإنشاء التاسكات في النظام
+                  <div className="p-5 bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200 rounded-2xl text-amber-950 space-y-4 text-xs shadow-md">
+                    <div className="flex items-center justify-between">
+                      <div className="font-bold text-sm flex items-center gap-2 text-amber-900">
+                        <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                        <span>معاينة وتأكيد اعتماد الخطة وتوليد التاسكات</span>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-200 text-amber-900">
+                        {reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length} تاسكات مختارة
+                      </span>
                     </div>
-                    <p className="text-[11px] leading-relaxed text-amber-800">
-                      سيتم تحويل <strong>{reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length}</strong> بوست مختار إلى
-                      تاسكات فعلية بحالة أولية <strong>«{TASK_STATUS_LABELS.backlog}»</strong>، وإرسال إشعارات داخلية
-                      للمصممين المسندة إليهم. مهام عماد (المدير العام) لا تتطلب مراجعة داخلية (Review Bypass).
+
+                    <p className="text-xs leading-relaxed text-amber-900/90">
+                      راجع جدول الإسناد أدناه للتأكد من تعيين المصمم والمراجع المناسب لكل تاسك قبل الاعتماد.
+                      تبدأ جميع المهام بحالة أولية <strong>«{TASK_STATUS_LABELS.backlog}»</strong>.
                     </p>
+
+                    {/* Pre-Import Tasks Breakdown Table */}
+                    <div className="bg-white border border-amber-200/80 rounded-xl overflow-hidden shadow-xs">
+                      <table className="w-full text-right border-collapse">
+                        <thead>
+                          <tr className="bg-amber-100/60 border-b border-amber-200/80 text-[11px] font-bold text-amber-950">
+                            <th className="p-2 w-20">البوست</th>
+                            <th className="p-2">العنوان</th>
+                            <th className="p-2 w-36">المصمم المسؤول</th>
+                            <th className="p-2 w-36">المراجع الداخلي</th>
+                            <th className="p-2 w-24 text-center">الحالة الأولية</th>
+                            <th className="p-2 w-28 text-center">موعد التصميم</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-amber-100 text-xs">
+                          {reviewItems
+                            .filter((i) => i.is_included && !i.is_excluded_from_tasks)
+                            .map((item, idx) => {
+                              const targetAssigneeId =
+                                item.approved_assignee_id ||
+                                item.suggested_assignee_id ||
+                                reviewCampaign?.client?.owner_roster_id;
+
+                              const designerPerson = designers.find(
+                                (d) => (d.id || d.rosterId) === targetAssigneeId
+                              );
+                              const designerName =
+                                designerPerson?.displayName ||
+                                designerPerson?.display_name ||
+                                (targetAssigneeId ? "مصمم محدد" : "غير مسند");
+
+                              const reviewerRes = resolveReviewerForPost(
+                                targetAssigneeId,
+                                reviewCampaign?.client?.difficulty,
+                                designers.find((d) => d.displayName === "عماد" || d.display_name === "عماد")?.id,
+                                reviewRules,
+                                designers
+                              );
+
+                              return (
+                                <tr key={item.id || idx} className="hover:bg-amber-50/40">
+                                  <td className="p-2 font-mono font-bold text-amber-950">
+                                    {item.post_number}
+                                  </td>
+                                  <td className="p-2 text-slate-800 line-clamp-1 max-w-[220px]">
+                                    {item.title}
+                                  </td>
+                                  <td className="p-2">
+                                    <span className="inline-flex items-center gap-1 font-semibold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md">
+                                      <User className="w-3 h-3 text-slate-500" />
+                                      {designerName}
+                                    </span>
+                                  </td>
+                                  <td className="p-2">
+                                    <span
+                                      className={cn(
+                                        "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold",
+                                        reviewerRes.isBypass
+                                          ? "bg-purple-100 text-purple-800"
+                                          : reviewerRes.id
+                                          ? "bg-sky-100 text-sky-800"
+                                          : "bg-slate-100 text-slate-500"
+                                      )}
+                                    >
+                                      <ShieldCheck className="w-3 h-3" />
+                                      {reviewerRes.name}
+                                    </span>
+                                  </td>
+                                  <td className="p-2 text-center">
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                                      {TASK_STATUS_LABELS.backlog}
+                                    </span>
+                                  </td>
+                                  <td className="p-2 text-center font-mono text-[11px] text-slate-600">
+                                    {item.design_due_date || "—"}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                        </tbody>
+                      </table>
+                    </div>
 
                     {importError && (
                       <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-center gap-2 animate-in fade-in-50">
@@ -1806,20 +2009,20 @@ export default function CampaignsPage() {
                       </div>
                     )}
 
-                    <div className="flex items-center gap-2 justify-end">
+                    <div className="flex items-center gap-2 justify-end pt-1">
                       <button
                         onClick={() => {
                           setShowConfirmation(false);
                           setImportError(null);
                         }}
-                        className="px-4 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                        className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100 shadow-xs"
                       >
-                        إلغاء
+                        إلغاء المعاينة
                       </button>
                       <button
                         onClick={handleConfirmImport}
                         disabled={importingTasks}
-                        className="px-5 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5"
+                        className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5"
                       >
                         {importingTasks ? "جاري الإنشاء..." : "تأكيد وإنشاء التاسكات"}
                       </button>
@@ -1991,14 +2194,19 @@ export default function CampaignsPage() {
                   <select
                     value={newPostAssignee}
                     onChange={(e) => setNewPostAssignee(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white font-semibold"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white font-semibold text-slate-800"
                   >
                     <option value="">-- اختر المصمم --</option>
-                    {designers.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.display_name}
-                      </option>
-                    ))}
+                    {designers.map((d) => {
+                      const val = d.id || d.rosterId;
+                      const name = d.displayName || d.display_name;
+                      const job = d.jobTitle || d.job_title;
+                      return (
+                        <option key={val} value={val} className="text-slate-800">
+                          {name} {job ? `(${job})` : ""}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               </div>

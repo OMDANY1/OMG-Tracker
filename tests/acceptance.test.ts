@@ -1139,6 +1139,39 @@ async function runTestSuite() {
   assert(drawerContentUpdated.includes("handleSubmitForReview") && drawerContentUpdated.includes("handleDecideReview"), "3d. TaskDetailsDrawer implements review submission modal and decision workflow");
   assert(drawerContentUpdated.includes("سجل جولات المراجعة الداخلية"), "3e. TaskDetailsDrawer displays review rounds history");
 
+  // [Scenario 81] P0 Assignee Contract, Reviewer Resolution & Pre-Import Preview Assurance
+  console.log("\n[Scenario 81] P0 Assignee Contract, Reviewer Resolution & Pre-Import Preview Assurance...");
+
+  // 1. Migration 26 verification
+  const mig26Path = path.join(__dirname, "../supabase/migrations/20260910000026_assignee_contract_and_reviewer_resolution.sql");
+  assert(fs.existsSync(mig26Path), "1. Migration 26 file exists");
+  const mig26Content = fs.readFileSync(mig26Path, "utf-8");
+  assert(mig26Content.includes("00a38eae-a90e-4796-89e4-56394e987666") && mig26Content.includes("8ade760c-c482-4cfb-91e6-dbd8da040c4c") && mig26Content.includes("15"), "1a. Migration 26 seeds Sara -> Nada review routing rule at priority 15");
+  assert(mig26Content.includes("import_content_calendar_tasks") && mig26Content.includes("v_explicit_reviewer_id"), "1b. Migration 26 supports explicit reviewer_id in import_content_calendar_tasks");
+  assert(mig26Content.includes("يجب اختيار مصمم صالح للبوست رقم"), "1c. Migration 26 enforces active designer selection with Arabic error message");
+
+  // 2. Clients API Data Contract Normalization
+  const clientsRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/clients/route.ts"), "utf-8");
+  assert(clientsRouteContent.includes("displayName: designer.display_name") && clientsRouteContent.includes("display_name: designer.display_name"), "2a. /api/clients returns both camelCase displayName and snake_case display_name");
+  assert(clientsRouteContent.includes("rosterId: designer.id") && clientsRouteContent.includes("jobTitle:") && clientsRouteContent.includes("job_title:"), "2b. /api/clients normalizes rosterId and job titles");
+  assert(clientsRouteContent.includes("reviewRules: reviewRules"), "2c. /api/clients returns live review routing rules");
+
+  // 3. Calendar Item API Assignee Validation
+  const itemPatchContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/items/[itemId]/route.ts"), "utf-8");
+  assert(itemPatchContent.includes("roster_people") && itemPatchContent.includes("is_active") && itemPatchContent.includes("المصمم المختار غير صالح"), "3. PATCH /api/campaigns/items/[itemId] validates approved_assignee_id against active roster");
+
+  // 4. Import API Assignee Strict Enforcement
+  const importTasksRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/import-tasks/route.ts"), "utf-8");
+  assert(importTasksRouteContent.includes("activeRosterIds.has(targetAssigneeId)") && importTasksRouteContent.includes("يجب تحديد مصمم صالح للبوست"), "4. POST /api/campaigns/import-tasks strictly enforces designer selection and rejects invalid assignees");
+
+  // 5. Frontend Assignee Contract & Pre-Import Preview Table
+  const campaignsPageAssigneeContent = fs.readFileSync(path.join(__dirname, "../app/campaigns/page.tsx"), "utf-8");
+  assert(campaignsPageAssigneeContent.includes("resolveReviewerForPost"), "5a. CampaignsPage implements resolveReviewerForPost helper");
+  assert(campaignsPageAssigneeContent.includes("updateItemFieldById") && campaignsPageAssigneeContent.includes("PATCH"), "5b. CampaignsPage implements immutable updateItemFieldById with auto-save");
+  assert(campaignsPageAssigneeContent.includes("المصمم الافتراضي:") && campaignsPageAssigneeContent.includes("defId"), "5c. Modal header resolves and displays default designer name accurately");
+  assert(campaignsPageAssigneeContent.includes("d.displayName || d.display_name") && campaignsPageAssigneeContent.includes("-- اختر المصمم --"), "5d. Assignee dropdown renders visible Arabic names and job titles");
+  assert(campaignsPageAssigneeContent.includes("معاينة وتأكيد اعتماد الخطة وتوليد التاسكات") && campaignsPageAssigneeContent.includes("المراجع الداخلي"), "5e. CampaignsPage renders Pre-Import Confirmation Table with Post, Designer, Reviewer, and Status");
+
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
 

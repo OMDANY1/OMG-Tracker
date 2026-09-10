@@ -46,7 +46,26 @@ export async function PATCH(
     if (body.content_format !== undefined) updateData.content_format = body.content_format;
     if (body.publish_date !== undefined) updateData.publish_date = body.publish_date || null;
     if (body.design_due_date !== undefined) updateData.design_due_date = body.design_due_date || null;
-    if (body.approved_assignee_id !== undefined) updateData.approved_assignee_id = body.approved_assignee_id || null;
+    if (body.approved_assignee_id !== undefined) {
+      if (body.approved_assignee_id) {
+        const { data: assignee } = await admin
+          .from("roster_people")
+          .select("id, is_active")
+          .eq("id", body.approved_assignee_id)
+          .eq("workspace_id", membership.workspace_id)
+          .maybeSingle();
+
+        if (!assignee || !assignee.is_active) {
+          return NextResponse.json(
+            { error: "المصمم المختار غير صالح أو غير نشط في مساحة العمل." },
+            { status: 400 }
+          );
+        }
+        updateData.approved_assignee_id = body.approved_assignee_id;
+      } else {
+        updateData.approved_assignee_id = null;
+      }
+    }
     if (body.is_included !== undefined) updateData.is_included = body.is_included;
     if (body.post_order !== undefined) updateData.post_order = body.post_order;
 

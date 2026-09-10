@@ -51,6 +51,12 @@ export async function GET() {
     .eq("is_active", true)
     .order("display_name", { ascending: true });
 
+  // Fetch review routing rules
+  const { data: reviewRules } = await admin
+    .from("review_routing_rules")
+    .select("*")
+    .order("priority", { ascending: false });
+
   // Calculate stats for each designer
   const designers = (roster || []).map((designer) => {
     const clientCount = (clients || []).filter((c) => c.owner_roster_id === designer.id).length;
@@ -64,8 +70,13 @@ export async function GET() {
     });
     return {
       id: designer.id,
+      rosterId: designer.id,
       displayName: designer.display_name,
+      display_name: designer.display_name,
       jobTitle: designer.job_title,
+      job_title: designer.job_title,
+      isActive: designer.is_active,
+      is_active: designer.is_active,
       clientCount,
       openTasksCount,
     };
@@ -74,6 +85,7 @@ export async function GET() {
   return NextResponse.json({
     clients: clients || [],
     designers,
+    reviewRules: reviewRules || [],
     isOwner,
     callerRosterId,
   });
