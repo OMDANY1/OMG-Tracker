@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { requireTaskAccess, validateSameOrigin } from "@/lib/auth/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -10,10 +9,13 @@ export async function GET(
 ) {
   try {
     const { id: taskId } = await params;
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
+
+    const accessResult = await requireTaskAccess(req, taskId);
+    if (!accessResult.success) {
+      return accessResult.errorResponse;
     }
+
+    const { membership, admin } = accessResult.data;
 
     const { data: comments, error } = await admin
       .from("comments")
@@ -30,6 +32,7 @@ export async function GET(
         resolver:roster_people!comments_resolved_by_roster_id_fkey(id, display_name)
       `)
       .eq("task_id", taskId)
+      .eq("workspace_id", membership.workspaceId)
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -47,75 +50,57 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    if (!validateSameOrigin(req)) {
+      return NextResponse.json({ error: "طلب غير مصرح به (Same-Origin check failed)." }, { status: 403 });
+    }
+
     const { id: taskId } = await params;
+
+    const accessResult = await requireTaskAccess(req, taskId);
+    if (!accessResult.success) {
+      return accessResult.errorResponse;
+    }
+
+    const { membership, admin } = accessResult.data;
+
     const body = await req.json();
     const { content, commentType = "general", mentions = [] } = body;
 
-    if (!content || !content.trim()) {
+    // Strict validation: clean content and length bounds
+    if (!content || typeof content !== "string" || !content.trim()) {
       return NextResponse.json({ error: "نص التعليق مطلوب." }, { status: 400 });
     }
 
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
+    const trimmedContent = content.trim();
+    if (trimmedContent.length > 5000) {
+      return NextResponse.json({ error: "نص التعليق طويل جداً (الحد الأقصى 5000 حرف)." }, { status: 400 });
     }
 
-    // Get task to retrieve workspace_id
-    const { data: task, error: taskErr } = await admin
-      .from("tasks")
-      .select("id, workspace_id")
-      .eq("id", taskId)
-      .single();
+    const validTypes = ["general", "internal_review", "client_note"];
+    const resolvedType = validTypes.includes(commentType) ? commentType : "general";
 
-    if (taskErr || !task) {
-      return NextResponse.json({ error: "المهمة غير موجودة." }, { status: 404 });
+    // Validate mentions: ensure IDs belong to roster_people in the same workspace
+    let validMentions: string[] = [];
+    if (Array.isArray(mentions) && mentions.length > 0) {
+      const { data: validPeople } = await admin
+        .from("roster_people")
+        .select("id")
+        .eq("workspace_id", membership.workspaceId)
+        .in("id", mentions.slice(0, 10)); // max 10 mentions
+
+      validMentions = (validPeople || []).map((p: any) => p.id);
     }
 
-    // Determine caller roster person
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    let authorRosterId: string | null = null;
-
-    if (serverClient) {
-      const { data: authData } = await serverClient.auth.getUser();
-      if (authData?.user) {
-        const { data: member } = await admin
-          .from("workspace_memberships")
-          .select("roster_person_id")
-          .eq("workspace_id", task.workspace_id)
-          .eq("user_id", authData.user.id)
-          .maybeSingle();
-
-        if (member?.roster_person_id) {
-          authorRosterId = member.roster_person_id;
-        }
-      }
-    }
-
-    // Fallback to Owner roster person if auth user not linked yet
-    if (!authorRosterId) {
-      const { data: owner } = await admin
-        .from("workspace_memberships")
-        .select("roster_person_id")
-        .eq("workspace_id", task.workspace_id)
-        .eq("role", "owner")
-        .maybeSingle();
-
-      authorRosterId = owner?.roster_person_id || null;
-    }
-
-    if (!authorRosterId) {
-      return NextResponse.json({ error: "تعذر تحديد هوية كاتب التعليق في الفريق." }, { status: 403 });
-    }
-
+    // Author identity is strictly derived from authenticated session — never from body!
     const { data: inserted, error: insertErr } = await admin
       .from("comments")
       .insert({
-        workspace_id: task.workspace_id,
+        workspace_id: membership.workspaceId,
         task_id: taskId,
-        author_roster_id: authorRosterId,
-        content: content.trim(),
-        comment_type: commentType,
-        mentions: Array.isArray(mentions) ? mentions : [],
+        author_roster_id: membership.rosterPersonId,
+        content: trimmedContent,
+        comment_type: resolvedType,
+        mentions: validMentions,
       })
       .select(`
         id,
@@ -145,7 +130,19 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    if (!validateSameOrigin(req)) {
+      return NextResponse.json({ error: "طلب غير مصرح به (Same-Origin check failed)." }, { status: 403 });
+    }
+
     const { id: taskId } = await params;
+
+    const accessResult = await requireTaskAccess(req, taskId);
+    if (!accessResult.success) {
+      return accessResult.errorResponse;
+    }
+
+    const { membership, task, admin } = accessResult.data;
+
     const body = await req.json();
     const { commentId, isResolved } = body;
 
@@ -153,32 +150,23 @@ export async function PATCH(
       return NextResponse.json({ error: "بيانات غير صالحة لتحديث حالة التعليق." }, { status: 400 });
     }
 
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
-    }
+    // Only Owner, task assignee, or task reviewer can resolve/reopen comments
+    const canResolve =
+      membership.role === "owner" ||
+      task.primary_assignee_id === membership.rosterPersonId ||
+      task.reviewer_id === membership.rosterPersonId;
 
-    // Determine resolver roster ID
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    let resolverRosterId: string | null = null;
-
-    if (serverClient) {
-      const { data: authData } = await serverClient.auth.getUser();
-      if (authData?.user) {
-        const { data: member } = await admin
-          .from("workspace_memberships")
-          .select("roster_person_id")
-          .eq("user_id", authData.user.id)
-          .maybeSingle();
-
-        resolverRosterId = member?.roster_person_id || null;
-      }
+    if (!canResolve) {
+      return NextResponse.json(
+        { error: "غير مصرح: يحق فقط للمالك أو منفذ المهمة أو مراجعها حل التعليقات." },
+        { status: 403 }
+      );
     }
 
     const updatePayload: any = {
       is_resolved: isResolved,
       resolved_at: isResolved ? new Date().toISOString() : null,
-      resolved_by_roster_id: isResolved ? resolverRosterId : null,
+      resolved_by_roster_id: isResolved ? membership.rosterPersonId : null,
     };
 
     const { data: updated, error } = await admin
@@ -186,6 +174,7 @@ export async function PATCH(
       .update(updatePayload)
       .eq("id", commentId)
       .eq("task_id", taskId)
+      .eq("workspace_id", membership.workspaceId)
       .select(`
         id,
         task_id,
@@ -202,6 +191,22 @@ export async function PATCH(
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Log to audit_events
+    try {
+      await admin
+        .from("audit_events")
+        .insert({
+          workspace_id: membership.workspaceId,
+          actor_id: membership.rosterPersonId,
+          action: isResolved ? "resolve_comment" : "reopen_comment",
+          entity_type: "comments",
+          entity_id: commentId,
+          metadata: { task_id: taskId },
+        });
+    } catch {
+      // Non-blocking audit log error
     }
 
     return NextResponse.json({ success: true, comment: updated });

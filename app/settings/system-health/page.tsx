@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 
 export default function SystemHealthPage() {
   const [loading, setLoading] = useState(true);
+  const [isForbidden, setIsForbidden] = useState(false);
   const [dbStatus, setDbStatus] = useState<any>(null);
   const [aiStatus, setAiStatus] = useState<any>(null);
   const [invitationsStatus, setInvitationsStatus] = useState<any>(null);
@@ -30,16 +31,27 @@ export default function SystemHealthPage() {
 
   const runAllChecks = async () => {
     setLoading(true);
+    setIsForbidden(false);
     try {
-      // 1. Diagnostics check
+      // 1. Diagnostics check (Owner-only)
       const diagRes = await fetch("/api/diagnostics").catch(() => null);
+      if (diagRes?.status === 403) {
+        setIsForbidden(true);
+        setLoading(false);
+        return;
+      }
       if (diagRes?.ok) {
         const dData = await diagRes.json();
         setDbStatus(dData);
       }
 
-      // 2. AI Jobs & models check
+      // 2. AI Jobs & models check (Owner-only)
       const aiRes = await fetch("/api/ai/jobs").catch(() => null);
+      if (aiRes?.status === 403) {
+        setIsForbidden(true);
+        setLoading(false);
+        return;
+      }
       if (aiRes?.ok) {
         const aData = await aiRes.json();
         setAiStatus(aData.metrics);
@@ -65,6 +77,28 @@ export default function SystemHealthPage() {
   const handleExport = (type: "tasks" | "calendars" | "workload") => {
     window.location.href = `/api/reports/export-csv?type=${type}`;
   };
+
+  if (isForbidden) {
+    return (
+      <div className="min-h-[50vh] flex items-center justify-center text-center p-6">
+        <div className="bg-surface rounded-2xl border border-rose-200 p-8 max-w-md space-y-4 shadow-sm">
+          <div className="w-12 h-12 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+            <Lock className="w-6 h-6" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-900">غير مصرح بالوصول</h2>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            لوحة صحة وتشخيصات النظام وعمليات التصدير متاحة فقط للمدير العام (Owner).
+          </p>
+          <Link
+            href="/settings"
+            className="inline-block px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold"
+          >
+            العودة للإعدادات
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8 max-w-5xl mx-auto text-right">

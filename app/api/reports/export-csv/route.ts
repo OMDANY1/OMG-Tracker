@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { requireOwner } from "@/lib/auth/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -15,24 +14,16 @@ function escapeCsvField(val: any): string {
 
 export async function GET(req: NextRequest) {
   try {
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
+    const authRes = await requireOwner(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
     }
+
+    const { membership, admin } = authRes.data;
+    const ws = { id: membership.workspaceId };
 
     const { searchParams } = new URL(req.url);
     const type = searchParams.get("type") || "tasks";
-
-    // 1. Get Workspace
-    const { data: ws } = await admin
-      .from("workspaces")
-      .select("id, name")
-      .limit(1)
-      .single();
-
-    if (!ws) {
-      return NextResponse.json({ error: "لم يتم العثور على مساحة العمل." }, { status: 404 });
-    }
 
     let csvContent = "";
     let fileName = `export_${type}_${new Date().toISOString().slice(0, 10)}.csv`;

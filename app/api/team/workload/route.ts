@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { requireOwner } from "@/lib/auth/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -25,23 +24,20 @@ export interface DesignerWorkloadMetric {
 
 export async function GET(req: NextRequest) {
   try {
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
+    const authResult = await requireOwner(req);
+    if (!authResult.success) {
+      return authResult.errorResponse;
     }
+
+    const { membership, admin } = authResult.data;
+    const workspaceId = membership.workspaceId;
 
     // 1. Get Workspace & Invitations Status
     const { data: ws } = await admin
       .from("workspaces")
       .select("id, invitations_paused")
-      .limit(1)
+      .eq("id", workspaceId)
       .single();
-
-    if (!ws) {
-      return NextResponse.json({ error: "لم يتم العثور على مساحة العمل." }, { status: 404 });
-    }
-
-    const workspaceId = ws.id;
 
     // 2. Fetch all required data in parallel
     const [rosterRes, membershipsRes, capacitiesRes, clientsRes, tasksRes] = await Promise.all([
@@ -211,7 +207,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       workspaceId,
-      invitationsPaused: ws.invitations_paused,
+      invitationsPaused: Boolean(ws?.invitations_paused),
       members: metrics,
     });
   } catch (err: any) {

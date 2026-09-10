@@ -973,6 +973,64 @@ async function runTestSuite() {
   assert(fs.existsSync(path.join(__dirname, "../docs/BACKUP_RECOVERY_RUNBOOK.md")), "docs/BACKUP_RECOVERY_RUNBOOK.md exists");
   assert(fs.existsSync(path.join(__dirname, "../docs/AGENCY_SCALE_BLUEPRINT.md")), "docs/AGENCY_SCALE_BLUEPRINT.md exists");
 
+  // [Scenario 77] P0 Emergency Security Hotfix & Unified RBAC Hardening...
+  console.log("\n[Scenario 77] P0 Emergency Security Hotfix & Unified RBAC Hardening...");
+  const serverAuthPath = path.join(__dirname, "../lib/auth/server-auth.ts");
+  assert(fs.existsSync(serverAuthPath), "lib/auth/server-auth.ts exists");
+  const serverAuthCode = fs.readFileSync(serverAuthPath, "utf-8");
+  assert(serverAuthCode.includes("requireAuthenticatedUser"), "server-auth implements requireAuthenticatedUser");
+  assert(serverAuthCode.includes("requireWorkspaceMembership"), "server-auth implements requireWorkspaceMembership");
+  assert(serverAuthCode.includes("requireOwner"), "server-auth implements requireOwner");
+  assert(serverAuthCode.includes("requireTaskAccess"), "server-auth implements requireTaskAccess");
+  assert(serverAuthCode.includes("validateSameOrigin"), "server-auth implements validateSameOrigin");
+
+  // Verify Route Protections
+  const aiJobsRouteCode = fs.readFileSync(path.join(__dirname, "../app/api/ai/jobs/route.ts"), "utf-8");
+  assert(aiJobsRouteCode.includes("requireOwner"), "/api/ai/jobs route protected with requireOwner");
+
+  const workloadCodeProtected = fs.readFileSync(workloadRoutePath, "utf-8");
+  assert(workloadCodeProtected.includes("requireOwner"), "/api/team/workload route protected with requireOwner");
+
+  const invitationsCodeProtected = fs.readFileSync(invitationsRoutePath, "utf-8");
+  assert(invitationsCodeProtected.includes("requireOwner"), "/api/team/invitations route protected with requireOwner");
+  assert(invitationsCodeProtected.includes("validateSameOrigin"), "/api/team/invitations route enforces validateSameOrigin");
+
+  const exportCsvCodeProtected = fs.readFileSync(exportRoutePath, "utf-8");
+  assert(exportCsvCodeProtected.includes("requireOwner"), "/api/reports/export-csv route protected with requireOwner");
+
+  const commentsRoutePath = path.join(__dirname, "../app/api/tasks/[id]/comments/route.ts");
+  assert(fs.existsSync(commentsRoutePath), "app/api/tasks/[id]/comments/route.ts exists");
+  const commentsRouteCode = fs.readFileSync(commentsRoutePath, "utf-8");
+  assert(commentsRouteCode.includes("requireTaskAccess"), "comments route protected with requireTaskAccess");
+  assert(commentsRouteCode.includes("validateSameOrigin"), "comments route enforces validateSameOrigin");
+  assert(!commentsRouteCode.includes("authorRosterId = owner?.roster_person_id"), "Zero fallback to owner in comments route");
+
+  const diagnosticsRouteCode = fs.readFileSync(path.join(__dirname, "../app/api/diagnostics/route.ts"), "utf-8");
+  assert(diagnosticsRouteCode.includes("requireOwner"), "/api/diagnostics route protected with requireOwner");
+
+  // Behavioral test for validateSameOrigin
+  const { validateSameOrigin } = require("../lib/auth/server-auth");
+  const mockSafeGet = { method: "GET", headers: new Headers() };
+  assert(validateSameOrigin(mockSafeGet), "validateSameOrigin allows safe GET requests");
+
+  const mockLegitPost = {
+    method: "POST",
+    headers: new Headers({
+      origin: "https://omg-creative-workspace.vercel.app",
+      host: "omg-creative-workspace.vercel.app",
+    }),
+  };
+  assert(validateSameOrigin(mockLegitPost), "validateSameOrigin allows legitimate same-origin POST requests");
+
+  const mockMaliciousPost = {
+    method: "POST",
+    headers: new Headers({
+      origin: "https://evil-attacker-site.com",
+      host: "omg-creative-workspace.vercel.app",
+    }),
+  };
+  assert(!validateSameOrigin(mockMaliciousPost), "validateSameOrigin blocks cross-origin POST attacks");
+
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
 
