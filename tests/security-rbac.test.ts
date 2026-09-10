@@ -198,7 +198,7 @@ async function runSecurityTests() {
   assert(isDesignerPermitted === false, "Designer role is blocked from Owner-only endpoints (403)");
 
   // Task Access Involvement Gate
-  function evaluateTaskAccess(task: any, mem: typeof mockOwnerMembership): { allowed: boolean; status: number } {
+  function evaluateTaskAccess(task: any, mem: { workspaceId: string; role: string; rosterPersonId: string }): { allowed: boolean; status: number } {
     if (task.workspace_id !== mem.workspaceId) return { allowed: false, status: 404 };
     if (mem.role === "owner") return { allowed: true, status: 200 };
     if (task.primary_assignee_id === mem.rosterPersonId || task.reviewer_id === mem.rosterPersonId) return { allowed: true, status: 200 };
