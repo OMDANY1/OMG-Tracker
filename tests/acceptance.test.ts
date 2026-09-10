@@ -35,7 +35,7 @@ import {
   FIXTURE_D_INVENTORY,
   FIXTURE_D_ITEMS,
 } from "./fixtures/calendar-fixtures";
-
+import { computeCalendarDiff } from "../lib/services/calendar-diff";
 
 let passedCount = 0;
 let failedCount = 0;
@@ -873,6 +873,105 @@ async function runTestSuite() {
   assert(!m11Sql.includes("from_assignee_id"), "Migration 11 contains zero occurrences of from_assignee_id");
   assert(!m11Sql.includes("to_assignee_id"), "Migration 11 contains zero occurrences of to_assignee_id");
   assert(!campaignsPageSql.includes("alert(`خطأ: ${err.message}`"), "Campaigns page replaces browser alert on import failure with inline state");
+
+  // [Scenario 70] Migration 12 Schema Verification (AI Processing Jobs & Operations Hardening)...
+  console.log("\n[Scenario 70] Migration 12 Schema Verification (AI Processing Jobs & Hardening)...");
+  const migration12Path = path.join(__dirname, "../supabase/migrations/20260910000012_ai_processing_jobs_and_hardening.sql");
+  assert(fs.existsSync(migration12Path), "Migration 12 file exists");
+  const m12Sql = fs.readFileSync(migration12Path, "utf-8");
+  const m12Begins = (m12Sql.match(/^BEGIN;/gm) || []).length;
+  const m12Commits = (m12Sql.match(/^COMMIT;/gm) || []).length;
+  assert(m12Begins === 1 && m12Commits === 1, "Migration 12 has exactly 1 BEGIN and 1 COMMIT");
+  assert(m12Sql.includes("CREATE TABLE IF NOT EXISTS public.ai_processing_jobs"), "Migration 12 creates public.ai_processing_jobs table");
+  assert(m12Sql.includes("uq_active_ai_processing_job"), "Migration 12 adds concurrency uniqueness index");
+  assert(m12Sql.includes("acquire_ai_processing_job"), "Migration 12 creates acquire_ai_processing_job RPC");
+  assert(m12Sql.includes("release_ai_processing_job"), "Migration 12 creates release_ai_processing_job RPC");
+  assert(m12Sql.includes("ALTER TABLE public.campaigns") && m12Sql.includes("replacement_reason"), "Migration 12 extends campaigns with replacement_reason");
+  assert(m12Sql.includes("ALTER TABLE public.tasks") && m12Sql.includes("content_calendar_item_id"), "Migration 12 extends tasks with content_calendar_item_id foreign key");
+  assert(m12Sql.includes("ALTER TABLE public.comments") && m12Sql.includes("comment_type"), "Migration 12 extends comments with comment_type");
+  assert(m12Sql.includes("ALTER TABLE public.member_capacities") && m12Sql.includes("max_weighted_load"), "Migration 12 extends member_capacities with max_weighted_load");
+
+  // [Scenario 71] AI Job Queue Service Contract & Lease Protection...
+  console.log("\n[Scenario 71] AI Job Queue Service Contract & Lease Protection...");
+  const aiJobQueuePath = path.join(__dirname, "../lib/services/ai-job-queue.ts");
+  assert(fs.existsSync(aiJobQueuePath), "lib/services/ai-job-queue.ts exists");
+  const aiJobQueueCode = fs.readFileSync(aiJobQueuePath, "utf-8");
+  assert(aiJobQueueCode.includes("acquireJob"), "AiJobQueue implements acquireJob");
+  assert(aiJobQueueCode.includes("releaseJob"), "AiJobQueue implements releaseJob");
+  assert(aiJobQueueCode.includes("getAiUsageMetrics"), "AiJobQueue implements getAiUsageMetrics");
+  const contentCalendarsCode = fs.readFileSync(path.join(__dirname, "../lib/services/content-calendars.ts"), "utf-8");
+  assert(contentCalendarsCode.includes("AiJobQueue.acquireJob"), "processCalendarCampaign calls AiJobQueue.acquireJob");
+  assert(contentCalendarsCode.includes("AiJobQueue.releaseJob"), "processCalendarCampaign calls AiJobQueue.releaseJob");
+  const settingsPageCode = fs.readFileSync(path.join(__dirname, "../app/settings/page.tsx"), "utf-8");
+  assert(settingsPageCode.includes("Gemini AI Operations & Usage"), "Settings page includes Owner AI Operations & Usage dashboard");
+
+  // [Scenario 72] Calendar Revision Diff Engine Contract...
+  console.log("\n[Scenario 72] Calendar Revision Diff Engine Contract...");
+  const sampleOldItems = [
+    { id: "item-1", post_number: "Post 01", title: "Original Post 1", content_format: "Static", design_due_date: "2026-09-01" },
+    { id: "item-2", post_number: "Post 02", title: "Original Post 2", content_format: "Static", design_due_date: "2026-09-05" },
+  ];
+  const sampleNewItems = [
+    { post_number: "Post 01", title: "Original Post 1", content_format: "Static", design_due_date: "2026-09-01" }, // unchanged
+    { post_number: "Post 02", title: "Modified Post 2 Title", content_format: "Carousel", design_due_date: "2026-09-06" }, // changed
+    { post_number: "Post 03", title: "New Extra Post", content_format: "Reel", design_due_date: "2026-09-10" }, // added
+  ];
+  const sampleTasks = [
+    { id: "task-2", content_calendar_item_id: "item-2", title: "Post 02", status: "in_progress", assignee: { display_name: "سارة" } },
+  ];
+  const diffReport = computeCalendarDiff({
+    oldItems: sampleOldItems,
+    newItems: sampleNewItems,
+    existingTasks: sampleTasks,
+  });
+  assert(diffReport.summary.unchangedCount === 1, "Diff engine correctly identifies 1 unchanged post");
+  assert(diffReport.summary.changedCount === 1, "Diff engine correctly identifies 1 changed post");
+  assert(diffReport.summary.addedCount === 1, "Diff engine correctly identifies 1 added post");
+  assert(diffReport.summary.removedCount === 0, "Diff engine correctly identifies 0 removed posts");
+  assert(diffReport.summary.activeTasksAtRiskCount === 1, "Diff engine correctly flags 1 active in-progress task at risk");
+  assert(fs.existsSync(path.join(__dirname, "../app/api/campaigns/diff/route.ts")), "app/api/campaigns/diff/route.ts exists");
+
+  // [Scenario 73] Task Source Traceability & Unified Drawer...
+  console.log("\n[Scenario 73] Task Source Traceability & Unified Drawer...");
+  const drawerPath = path.join(__dirname, "../components/tasks/TaskDetailsDrawer.tsx");
+  assert(fs.existsSync(drawerPath), "components/tasks/TaskDetailsDrawer.tsx exists");
+  const drawerCode = fs.readFileSync(drawerPath, "utf-8");
+  assert(drawerCode.includes("أصل ومصدر المهمة"), "TaskDetailsDrawer displays source calendar origin");
+  assert(drawerCode.includes("On-Design Text"), "TaskDetailsDrawer highlights on-design text");
+  assert(drawerCode.includes("handleOpenPdfPreview"), "TaskDetailsDrawer implements PDF preview link");
+  const tasksPageCode = fs.readFileSync(path.join(__dirname, "../app/tasks/page.tsx"), "utf-8");
+  assert(tasksPageCode.includes("<TaskDetailsDrawer"), "app/tasks/page.tsx renders TaskDetailsDrawer");
+  assert(fs.existsSync(path.join(__dirname, "../app/api/tasks/[id]/comments/route.ts")), "app/api/tasks/[id]/comments/route.ts exists");
+  assert(fs.existsSync(path.join(__dirname, "../app/api/campaigns/preview-url/route.ts")), "app/api/campaigns/preview-url/route.ts exists");
+
+  // [Scenario 74] Team Workload & Weighted Scoring Engine...
+  console.log("\n[Scenario 74] Team Workload & Weighted Scoring Engine...");
+  const workloadRoutePath = path.join(__dirname, "../app/api/team/workload/route.ts");
+  assert(fs.existsSync(workloadRoutePath), "app/api/team/workload/route.ts exists");
+  const workloadCode = fs.readFileSync(workloadRoutePath, "utf-8");
+  assert(workloadCode.includes("baseWeight"), "Workload engine implements base weight scaling");
+  assert(workloadCode.includes("diffMultiplier"), "Workload engine implements client difficulty multiplier");
+  assert(workloadCode.includes("dueNext7Days") && workloadCode.includes("dueNext14Days"), "Workload engine tracks 7-day and 14-day upcoming deadlines radar");
+
+  // [Scenario 75] Owner Invitations Center & Paused Defense...
+  console.log("\n[Scenario 75] Owner Invitations Center & Paused Defense...");
+  const invitationsRoutePath = path.join(__dirname, "../app/api/team/invitations/route.ts");
+  assert(fs.existsSync(invitationsRoutePath), "app/api/team/invitations/route.ts exists");
+  const invitationsCode = fs.readFileSync(invitationsRoutePath, "utf-8");
+  assert(invitationsCode.includes("invitations_paused"), "Invitations API enforces invitations_paused check");
+  const teamPageCode = fs.readFileSync(path.join(__dirname, "../app/team/page.tsx"), "utf-8");
+  assert(teamPageCode.includes("Owner Team Invitations Center") || teamPageCode.includes("مركز دعوات الفريق"), "Team page renders Owner Invitations Center");
+  assert(teamPageCode.includes("حفظ كمسودة"), "Team page allows draft invitations while paused");
+
+  // [Scenario 76] System Health Hub & Disaster Recovery Runbook...
+  console.log("\n[Scenario 76] System Health Hub & Disaster Recovery Runbook...");
+  assert(fs.existsSync(path.join(__dirname, "../app/settings/system-health/page.tsx")), "app/settings/system-health/page.tsx exists");
+  const exportRoutePath = path.join(__dirname, "../app/api/reports/export-csv/route.ts");
+  assert(fs.existsSync(exportRoutePath), "app/api/reports/export-csv/route.ts exists");
+  const exportCode = fs.readFileSync(exportRoutePath, "utf-8");
+  assert(exportCode.includes("\\uFEFF"), "CSV export prepends UTF-8 BOM for Microsoft Excel Arabic support");
+  assert(fs.existsSync(path.join(__dirname, "../docs/BACKUP_RECOVERY_RUNBOOK.md")), "docs/BACKUP_RECOVERY_RUNBOOK.md exists");
+  assert(fs.existsSync(path.join(__dirname, "../docs/AGENCY_SCALE_BLUEPRINT.md")), "docs/AGENCY_SCALE_BLUEPRINT.md exists");
 
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");

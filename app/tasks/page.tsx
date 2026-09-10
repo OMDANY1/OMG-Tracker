@@ -25,6 +25,7 @@ import {
   cn,
 } from "@/lib/utils";
 import type { TaskStatus, TaskPriority } from "@/types/database";
+import TaskDetailsDrawer from "@/components/tasks/TaskDetailsDrawer";
 
 const STATUS_COLUMNS: TaskStatus[] = [
   "backlog",
@@ -62,6 +63,7 @@ export default function TasksPage() {
 
   // Task Details Drawer
   const [selectedTask, setSelectedTask] = useState<any>(null);
+  const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
 
   // Status transition reason modal
   const [showTransitionModal, setShowTransitionModal] = useState(false);
@@ -326,7 +328,10 @@ export default function TasksPage() {
                   {colTasks.map((task) => (
                     <div
                       key={task.id}
-                      onClick={() => setSelectedTask(task)}
+                      onClick={() => {
+                        setSelectedTask(task);
+                        setIsDrawerOpen(true);
+                      }}
                       className="bg-surface p-3.5 rounded-xl border border-slate-200/90 shadow-xs hover:border-sky-300 hover:shadow-sm transition-all cursor-pointer text-xs space-y-2.5"
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -429,7 +434,10 @@ export default function TasksPage() {
                       </td>
                       <td className="px-4 py-3 text-center">
                         <button
-                          onClick={() => setSelectedTask(t)}
+                          onClick={() => {
+                            setSelectedTask(t);
+                            setIsDrawerOpen(true);
+                          }}
                           className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-700 font-semibold"
                         >
                           تفاصيل
@@ -667,6 +675,18 @@ export default function TasksPage() {
           </div>
         </div>
       )}
+
+      {/* Unified Task Details Drawer */}
+      <TaskDetailsDrawer
+        task={selectedTask}
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+        onTaskUpdated={fetchData}
+        onStatusTransition={(taskId, newStatus) => {
+          setIsDrawerOpen(false);
+          handleStatusChangeRequest(selectedTask, newStatus);
+        }}
+      />
     </div>
   );
 }

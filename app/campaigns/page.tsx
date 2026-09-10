@@ -162,6 +162,30 @@ export default function CampaignsPage() {
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [expandedRowIndex, setExpandedRowIndex] = useState<number | null>(null);
 
+  // Diff Modal State
+  const [showDiffModal, setShowDiffModal] = useState(false);
+  const [diffReport, setDiffReport] = useState<any>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+
+  const handleOpenDiff = async (campaignId: string) => {
+    setShowDiffModal(true);
+    setDiffLoading(true);
+    setDiffError(null);
+    try {
+      const res = await fetch(`/api/campaigns/diff?campaignId=${campaignId}`);
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "فشل تحميل مقارنة التعديلات.");
+      }
+      setDiffReport(data.report);
+    } catch (e: any) {
+      setDiffError(e.message || "حدث خطأ أثناء مقارنة التعديلات");
+    } finally {
+      setDiffLoading(false);
+    }
+  };
+
   // Slides Editor Modal
   const [slidesModalIndex, setSlidesModalIndex] = useState<number | null>(null);
 
@@ -1258,6 +1282,17 @@ export default function CampaignsPage() {
                   </button>
                 )}
 
+                {reviewCampaign?.id && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenDiff(reviewCampaign.id)}
+                    className="px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors"
+                  >
+                    <GitMerge className="w-3.5 h-3.5" />
+                    <span>مقارنة التعديلات (Diff)</span>
+                  </button>
+                )}
+
                 {reviewPreviewUrl && (
                   <a
                     href={reviewPreviewUrl}
@@ -2017,6 +2052,151 @@ export default function CampaignsPage() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Diff Preview Modal */}
+      {showDiffModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-4xl w-full p-4 sm:p-6 text-right space-y-4 max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 duration-150 text-xs">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="space-y-0.5">
+                <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                  <GitMerge className="w-4 h-4 text-sky-600" />
+                  مقارنة التعديلات بين الإصدارات (Calendar Revision Diff Engine)
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  فحص الفروقات بين التقويم الحالي والإصدار السابق مع حماية المهام قيد التنفيذ
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDiffModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto space-y-4">
+              {diffLoading ? (
+                <div className="text-center py-12 text-slate-400">جاري احتساب الفروقات بين التعديلات...</div>
+              ) : diffError ? (
+                <div className="p-4 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl">
+                  {diffError}
+                </div>
+              ) : diffReport ? (
+                <div className="space-y-4">
+                  {/* Summary Badges Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200">
+                      <span className="text-emerald-800 block text-[10px] font-bold">بوستات جديدة مضافة:</span>
+                      <strong className="text-lg text-emerald-700 font-bold">+{diffReport.summary.addedCount}</strong>
+                    </div>
+                    <div className="p-3 bg-rose-50 rounded-xl border border-rose-200">
+                      <span className="text-rose-800 block text-[10px] font-bold">بوستات تم حذفها:</span>
+                      <strong className="text-lg text-rose-700 font-bold">-{diffReport.summary.removedCount}</strong>
+                    </div>
+                    <div className="p-3 bg-amber-50 rounded-xl border border-amber-200">
+                      <span className="text-amber-800 block text-[10px] font-bold">بوستات تم تعديلها:</span>
+                      <strong className="text-lg text-amber-700 font-bold">{diffReport.summary.changedCount}</strong>
+                    </div>
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <span className="text-slate-500 block text-[10px] font-bold">بوستات متطابقة:</span>
+                      <strong className="text-lg text-slate-700 font-bold">{diffReport.summary.unchangedCount}</strong>
+                    </div>
+                  </div>
+
+                  {/* Active Tasks Protection Warning */}
+                  {diffReport.summary.activeTasksAtRiskCount > 0 && (
+                    <div className="p-4 bg-amber-50/90 border border-amber-300 rounded-xl text-amber-950 space-y-1">
+                      <div className="font-bold text-xs flex items-center gap-1.5 text-amber-900">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>تنبيه حماية المهام النشطة (In-Progress Protection Guard):</span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed">
+                        يوجد <strong>{diffReport.summary.activeTasksAtRiskCount}</strong> مهمة سابقة قيد التنفيذ أو المراجعة مرتبطة ببوستات تم تعديلها أو حذفها في هذا الإصدار.
+                        لحماية جهود المصممين، <strong>يمنع النظام الحذف الآلي أو الكتابة فوق المهام الجارية</strong>، وتبقى هذه المهام محفوظة في النظام مع ربط الإصدار الجديد.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Diff Items List */}
+                  <div className="space-y-2">
+                    <div className="font-bold text-slate-800 text-xs">تفاصيل البوستات المقارنة:</div>
+                    <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
+                      {diffReport.items.map((item: any, idx: number) => (
+                        <div key={idx} className="p-3 bg-white hover:bg-slate-50/60 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={cn(
+                                  "px-2 py-0.5 rounded text-[10px] font-bold",
+                                  item.status === "added"
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : item.status === "removed"
+                                    ? "bg-rose-100 text-rose-800"
+                                    : item.status === "changed"
+                                    ? "bg-amber-100 text-amber-800"
+                                    : "bg-slate-100 text-slate-600"
+                                )}
+                              >
+                                {item.status === "added"
+                                  ? "بوست جديد (+)"
+                                  : item.status === "removed"
+                                  ? "محذوف (-)"
+                                  : item.status === "changed"
+                                  ? "معدل"
+                                  : "مطابق"}
+                              </span>
+                              <span className="font-bold text-slate-800">{item.postNumber}</span>
+                              <span className="text-slate-600 font-medium">— {item.title}</span>
+                            </div>
+
+                            {item.existingTask && (
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200 font-semibold">
+                                تاسك مرتبط: {item.existingTask.status} ({item.existingTask.assigneeName || "المصمم"})
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Changed Fields breakdown */}
+                          {item.changes && item.changes.length > 0 && (
+                            <div className="pr-4 space-y-1 bg-amber-50/40 p-2 rounded-lg border border-amber-100 text-[11px]">
+                              {item.changes.map((ch: any, cIdx: number) => (
+                                <div key={cIdx} className="grid grid-cols-1 sm:grid-cols-3 gap-1">
+                                  <span className="font-bold text-slate-700">{ch.labelAr}:</span>
+                                  <span className="text-rose-600 line-through text-[10px] break-words">
+                                    {String(ch.oldValue || "فارغ")}
+                                  </span>
+                                  <span className="text-emerald-700 font-semibold text-[10px] break-words">
+                                    ← {String(ch.newValue || "فارغ")}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Footer */}
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setShowDiffModal(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs"
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

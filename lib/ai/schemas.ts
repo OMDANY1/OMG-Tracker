@@ -129,6 +129,7 @@ export const ReconciledCalendarSchema = z.object({
   provider: z.string().default("google"),
   prompt_version: z.string().default("v2.0"),
   schema_version: z.string().default("2026-09-08"),
+  is_cached: z.boolean().optional(),
 });
 
 export type ReconciledItem = z.infer<typeof ReconciledItemSchema>;

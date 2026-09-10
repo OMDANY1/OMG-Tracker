@@ -44,7 +44,10 @@ export class AiDocumentPipeline {
     if (!options.forceRefresh && admin) {
       const cached = await this.getCachedExtraction(admin, options.workspaceId, fileSha256);
       if (cached) {
-        return cached;
+        return {
+          ...cached,
+          is_cached: true,
+        };
       }
     }
 

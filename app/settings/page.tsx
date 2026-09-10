@@ -14,7 +14,15 @@ import {
   Mail,
   PauseCircle,
   PlayCircle,
+  Sparkles,
+  Cpu,
+  Zap,
+  Activity,
+  FileText,
+  XCircle,
+  ExternalLink,
 } from "lucide-react";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 
 export default function SettingsPage() {
@@ -27,6 +35,27 @@ export default function SettingsPage() {
   const [workspaceId, setWorkspaceId] = useState<string>("");
   const [updatingPause, setUpdatingPause] = useState<boolean>(false);
   const [pauseError, setPauseError] = useState<string | null>(null);
+  const [aiMetrics, setAiMetrics] = useState<any>(null);
+  const [loadingAi, setLoadingAi] = useState<boolean>(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  const fetchAiMetrics = async () => {
+    setLoadingAi(true);
+    setAiError(null);
+    try {
+      const res = await fetch("/api/ai/jobs");
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setAiMetrics(data.metrics);
+      } else {
+        setAiError(data.error || "لوحة الاستهلاك متاحة للمدير العام فقط.");
+      }
+    } catch (e: any) {
+      setAiError(e.message || "فشل الاتصال بخدمة مراقبة الذكاء الاصطناعي.");
+    } finally {
+      setLoadingAi(false);
+    }
+  };
 
   const fetchInvitationStatus = async () => {
     try {
@@ -89,6 +118,7 @@ export default function SettingsPage() {
   useEffect(() => {
     runDiagnostics();
     fetchInvitationStatus();
+    fetchAiMetrics();
   }, []);
 
   return (
@@ -216,6 +246,174 @@ export default function SettingsPage() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Section: AI Operations & Gemini Usage (Owner Only) */}
+      <div className="bg-surface rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+          <div>
+            <h2 className="font-bold text-base text-slate-900 flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-indigo-600" />
+              عمليات واستهلاك الذكاء الاصطناعي (Gemini AI Operations & Usage)
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              مراقبة مباشرة للحصة المجانية (Free Tier)، واستهلاك التوكنز، وحماية التزامن، ونسبة التوفير عبر الكاش
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/settings/system-health"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-semibold transition-colors"
+            >
+              <Activity className="w-3.5 h-3.5" />
+              صحة النظام
+              <ExternalLink className="w-3 h-3" />
+            </Link>
+            <button
+              onClick={fetchAiMetrics}
+              disabled={loadingAi}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", loadingAi && "animate-spin")} />
+              تحديث
+            </button>
+          </div>
+        </div>
+
+        {loadingAi && !aiMetrics ? (
+          <div className="text-center py-8 text-xs text-slate-400">جاري تحميل إحصائيات الذكاء الاصطناعي...</div>
+        ) : aiError ? (
+          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+            {aiError}
+          </div>
+        ) : aiMetrics ? (
+          <div className="space-y-4 text-xs">
+            {/* Model & Config Badges */}
+            <div className="flex flex-wrap items-center gap-2 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+              <span className="text-slate-500 font-medium">النموذج المعتمد:</span>
+              <span className="px-2.5 py-1 bg-indigo-100 text-indigo-800 rounded-lg font-mono font-bold text-[11px] flex items-center gap-1">
+                <Cpu className="w-3.5 h-3.5" />
+                {aiMetrics.activeModel || "gemini-3.8-flash"}
+              </span>
+              <span className="text-slate-500 font-medium mr-2">الاحتياطي التلقائي:</span>
+              <span className="px-2.5 py-1 bg-slate-200 text-slate-700 rounded-lg font-mono text-[11px]">
+                {aiMetrics.fallbackModel || "gemini-3.6-flash / gemini-flash-latest"}
+              </span>
+              <span className="text-slate-500 font-medium mr-2">حصة التزامن:</span>
+              <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-lg font-medium text-[11px]">
+                أقصى عمليتين متوازيتين
+              </span>
+            </div>
+
+            {/* KPI Cards Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="text-slate-500 text-[11px] font-medium">إجمالي الطلبات</div>
+                <div className="text-lg font-bold text-slate-900 mt-0.5">{aiMetrics.totalGeminiRequests || 0}</div>
+                <div className="text-[10px] text-slate-400 mt-1">
+                  {aiMetrics.completedRequests || 0} مكتمل | {aiMetrics.failedRequests || 0} فشل
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-emerald-50/60 rounded-xl border border-emerald-200">
+                <div className="text-emerald-800 text-[11px] font-medium">نسبة توفير الكاش</div>
+                <div className="text-lg font-bold text-emerald-700 mt-0.5">
+                  {aiMetrics.totalGeminiRequests
+                    ? `${Math.round((aiMetrics.cacheHits / aiMetrics.totalGeminiRequests) * 100)}%`
+                    : "0%"}
+                </div>
+                <div className="text-[10px] text-emerald-600 mt-1">
+                  {aiMetrics.cacheHits || 0} استرجاع كاش فوري
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-indigo-50/60 rounded-xl border border-indigo-200">
+                <div className="text-indigo-800 text-[11px] font-medium">إجمالي التوكنز</div>
+                <div className="text-lg font-bold text-indigo-700 mt-0.5">
+                  {(aiMetrics.totalTokens || 0).toLocaleString()}
+                </div>
+                <div className="text-[10px] text-indigo-600 mt-1 font-mono">
+                  {(aiMetrics.inputTokens || 0).toLocaleString()} in / {(aiMetrics.outputTokens || 0).toLocaleString()} out
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="text-slate-500 text-[11px] font-medium">متوسط المعالجة</div>
+                <div className="text-lg font-bold text-slate-900 mt-0.5">{aiMetrics.avgDurationSeconds || 0} ثانية</div>
+                <div className="text-[10px] text-slate-400 mt-1">لكل تقويم كامل</div>
+              </div>
+            </div>
+
+            {/* Free Tier Protection Notice */}
+            <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl text-amber-900 text-[11px] leading-relaxed">
+              <strong className="font-bold block mb-0.5">ضوابط الحصة المجانية (Google Gemini Free Tier Rules):</strong>
+              الحصة الرسمية محددة بـ 15 طلب في الدقيقة (RPM) و 1,000,000 توكن في الدقيقة (TPM).
+              يحمي النظام مساحة العمل عبر جدول الطوابير الدائم <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">ai_processing_jobs</code> مع منع تشغيل أكثر من عمليتين في اللحظة ذاتها وتفعيل الانتظار التدريجي (Exponential Backoff).
+            </div>
+
+            {/* Recent Jobs Table */}
+            {aiMetrics.recentJobs && aiMetrics.recentJobs.length > 0 && (
+              <div className="space-y-2 pt-2">
+                <div className="font-bold text-slate-800 text-xs">سجل أحدث عمليات التحليل:</div>
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-right text-[11px]">
+                    <thead className="bg-slate-100 text-slate-600 font-semibold border-b border-slate-200">
+                      <tr>
+                        <th className="p-2.5">الوقت</th>
+                        <th className="p-2.5">النموذج</th>
+                        <th className="p-2.5">الحالة</th>
+                        <th className="p-2.5">التوكنز</th>
+                        <th className="p-2.5">المدة</th>
+                        <th className="p-2.5">الكاش</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {aiMetrics.recentJobs.slice(0, 8).map((job: any) => (
+                        <tr key={job.id} className="hover:bg-slate-50/80">
+                          <td className="p-2.5 text-slate-600 font-mono text-[10px]">
+                            {new Date(job.createdAt).toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" })}
+                          </td>
+                          <td className="p-2.5 font-mono text-slate-700">{job.model || "gemini-3.8-flash"}</td>
+                          <td className="p-2.5">
+                            <span
+                              className={cn(
+                                "px-2 py-0.5 rounded-full text-[10px] font-bold",
+                                job.status === "completed"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : job.status === "failed"
+                                  ? "bg-rose-100 text-rose-800"
+                                  : job.status === "rate_limited"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : "bg-sky-100 text-sky-800"
+                              )}
+                            >
+                              {job.status === "completed"
+                                ? "ناجح"
+                                : job.status === "failed"
+                                ? "فشل"
+                                : job.status === "rate_limited"
+                                ? "حد الحصة"
+                                : "قيد المعالجة"}
+                            </span>
+                          </td>
+                          <td className="p-2.5 font-mono text-slate-700">{(job.tokens || 0).toLocaleString()}</td>
+                          <td className="p-2.5 text-slate-600">{job.durationSeconds || 0} ثانية</td>
+                          <td className="p-2.5">
+                            {job.cacheHit ? (
+                              <span className="text-emerald-700 font-bold text-[10px] bg-emerald-50 px-2 py-0.5 rounded">كاش</span>
+                            ) : (
+                              <span className="text-slate-400 text-[10px]">جديد</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : null}
       </div>
 
       {/* Section: Invitations Control (Owner Only) */}

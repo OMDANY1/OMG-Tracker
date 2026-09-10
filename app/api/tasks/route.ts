@@ -20,10 +20,11 @@ export async function GET(req: NextRequest) {
     .from("tasks")
     .select(`
       *,
-      campaign:campaigns(id, title),
+      campaign:campaigns(id, title, month_key, revision_number, original_file_name, storage_path),
       client:clients(id, name, difficulty),
       assignee:roster_people!fk_task_assignee(id, display_name, job_title),
       reviewer:roster_people!fk_task_reviewer(id, display_name, job_title),
+      content_calendar_item:content_calendar_items!fk_cci_task(*),
       checklist_items:task_checklist_items(*),
       review_rounds(*)
     `)

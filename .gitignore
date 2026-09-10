@@ -22,6 +22,7 @@ tools/omg-db-verification/test_artifacts_backup.json
 *.tmp
 *.zip
 scratch/
+backups/
 backup_previous_migrations/
 tools/omg-db-verification/backup_previous_migrations/
 supabase/.temp/

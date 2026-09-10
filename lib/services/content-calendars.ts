@@ -2,6 +2,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validatePdfBuffer } from "./pdf-extractor";
 import { aiDocumentPipeline } from "./ai-document-pipeline";
+import { AiJobQueue } from "./ai-job-queue";
+import { getGeminiModel } from "@/lib/ai/gemini-client";
 import crypto from "crypto";
 
 export async function uploadCalendarFileOnly(params: {
@@ -141,7 +143,42 @@ export async function processCalendarCampaign(params: {
     throw new Error("سجل التقويم غير موجود في مساحة العمل.");
   }
 
-  // 2. Update status to 'processing'
+  // 2. Download PDF buffer from storage
+  if (!campaign.storage_path) {
+    throw new Error("مسار تخزين الملف مفقود من سجل الكامبين.");
+  }
+
+  const { data: fileBlob, error: downloadErr } = await admin.storage
+    .from("content-calendars")
+    .download(campaign.storage_path);
+
+  if (downloadErr || !fileBlob) {
+    throw new Error(`تعذر تحميل الملف من التخزين: ${downloadErr?.message}`);
+  }
+
+  const buffer = Buffer.from(await fileBlob.arrayBuffer());
+  const fileSha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+
+  // 3. Acquire durable AI processing job lease
+  const jobAcquire = await AiJobQueue.acquireJob({
+    workspaceId: params.workspaceId,
+    campaignId: campaign.id,
+    clientId: campaign.client_id,
+    fileSha256,
+    model: getGeminiModel(),
+    forceRefresh: params.forceRefresh,
+  });
+
+  if (jobAcquire.status === "already_active") {
+    throw new Error(
+      "توجد عملية تحليل جارية بالفعل لهذا الملف في الخلفية. يرجى الانتظار لحين اكتمالها."
+    );
+  }
+
+  const jobId = jobAcquire.jobId;
+  const startTime = Date.now();
+
+  // 4. Update campaign status to 'processing'
   await admin
     .from("campaigns")
     .update({
@@ -152,22 +189,7 @@ export async function processCalendarCampaign(params: {
     .eq("id", campaign.id);
 
   try {
-    // 3. Download PDF buffer from storage
-    if (!campaign.storage_path) {
-      throw new Error("مسار تخزين الملف مفقود من سجل الكامبين.");
-    }
-
-    const { data: fileBlob, error: downloadErr } = await admin.storage
-      .from("content-calendars")
-      .download(campaign.storage_path);
-
-    if (downloadErr || !fileBlob) {
-      throw new Error(`تعذر تحميل الملف من التخزين: ${downloadErr?.message}`);
-    }
-
-    const buffer = Buffer.from(await fileBlob.arrayBuffer());
-
-    // 4. Run AI Document Pipeline
+    // 5. Run AI Document Pipeline
     const reconciled = await aiDocumentPipeline.processCalendar(buffer, {
       workspaceId: params.workspaceId,
       clientId: campaign.client_id,
@@ -176,7 +198,7 @@ export async function processCalendarCampaign(params: {
       forceRefresh: params.forceRefresh,
     });
 
-    // 5. Default assignee is client's assigned designer
+    // 6. Default assignee is client's assigned designer
     const defaultAssignee = campaign.client?.owner_roster_id || null;
     const itemsToSave = reconciled.items.map((it) => ({
       ...it,
@@ -184,7 +206,7 @@ export async function processCalendarCampaign(params: {
       approved_assignee_id: it.approved_assignee_id || defaultAssignee,
     }));
 
-    // 6. Save extraction atomically via RPC
+    // 7. Save extraction atomically via RPC
     const aiMetadata = {
       provider: reconciled.provider,
       model: reconciled.model_used,
@@ -211,7 +233,7 @@ export async function processCalendarCampaign(params: {
       throw new Error(`فشل حفظ استخراج الذكاء الاصطناعي: ${saveErr.message}`);
     }
 
-    // 7. Re-fetch updated campaign and items
+    // 8. Re-fetch updated campaign and items
     const { data: updatedCampaign } = await admin
       .from("campaigns")
       .select("*")
@@ -228,6 +250,20 @@ export async function processCalendarCampaign(params: {
       .eq("campaign_id", campaign.id)
       .order("post_order", { ascending: true });
 
+    // 9. Release AI Job on success
+    if (jobId) {
+      await AiJobQueue.releaseJob({
+        jobId,
+        status: "completed",
+        model: reconciled.model_used,
+        inputTokens: reconciled.token_usage?.prompt_tokens || 0,
+        outputTokens: reconciled.token_usage?.completion_tokens || 0,
+        totalTokens: reconciled.token_usage?.total_tokens || 0,
+        durationMs: Date.now() - startTime,
+        cacheHit: Boolean((reconciled as any).is_cached),
+      });
+    }
+
     return {
       campaign: updatedCampaign,
       items: updatedItems || [],
@@ -243,6 +279,21 @@ export async function processCalendarCampaign(params: {
         updated_at: new Date().toISOString(),
       })
       .eq("id", campaign.id);
+
+    // Release AI Job on failure
+    if (jobId) {
+      const isRateLimit =
+        err?.code === "RATE_LIMIT" ||
+        err?.status === 429 ||
+        /quota|429|exhausted|RESOURCE_EXHAUSTED/i.test(err?.message || "");
+      await AiJobQueue.releaseJob({
+        jobId,
+        status: isRateLimit ? "rate_limited" : "failed",
+        durationMs: Date.now() - startTime,
+        safeErrorMsg: err.message || String(err),
+        errorCode: err.code || (isRateLimit ? "RATE_LIMIT" : "EXTRACTION_FAILED"),
+      });
+    }
 
     throw err;
   }
