@@ -92,13 +92,15 @@ export default function MyWorkPage() {
     return () => window.removeEventListener("timer_state_changed", handleTimerChange);
   }, []);
 
-  // Sort helper: due_date ASC -> Difficulty (Hard > Medium > Easy) -> created_at ASC
+  // Sort helper: design_due_date (or due_date) ASC -> Difficulty (Hard > Medium > Easy) -> created_at ASC
   const sortTasks = (list: any[]) => {
     const diffWeight: Record<string, number> = { Hard: 3, Medium: 2, Easy: 1 };
     return [...list].sort((a, b) => {
-      // 1. Due date
-      const dateA = a.due_date ? new Date(a.due_date).getTime() : Infinity;
-      const dateB = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+      // 1. Designer production deadline: design_due_date || due_date
+      const effectiveA = a.design_due_date || a.due_date;
+      const effectiveB = b.design_due_date || b.due_date;
+      const dateA = effectiveA ? new Date(effectiveA).getTime() : Infinity;
+      const dateB = effectiveB ? new Date(effectiveB).getTime() : Infinity;
       if (dateA !== dateB) return dateA - dateB;
 
       // 2. Client Difficulty
@@ -111,7 +113,7 @@ export default function MyWorkPage() {
     });
   };
 
-  // Canonical Cairo Overdue check
+  // Canonical Cairo Overdue check (prioritizing design_due_date for designer production deadlines)
   const nowCairoStr = new Date().toISOString().slice(0, 10);
 
   const {
@@ -132,10 +134,11 @@ export default function MyWorkPage() {
     const delivered: any[] = [];
 
     for (const t of tasks) {
+      const effectiveDueDate = t.design_due_date || t.due_date;
       const isOverdue =
-        t.due_date &&
-        t.due_date.slice(0, 10) < nowCairoStr &&
-        !["delivered", "cancelled"].includes(t.status);
+        effectiveDueDate &&
+        effectiveDueDate.slice(0, 10) < nowCairoStr &&
+        !["approved", "delivered", "archived", "cancelled"].includes(t.status);
 
       if (isOverdue) {
         overdue.push(t);
@@ -292,10 +295,13 @@ export default function MyWorkPage() {
           <div>
             العميل: <strong className="text-slate-700">{task.client?.name || "عام"}</strong>
           </div>
-          {task.due_date && (
+          {(task.design_due_date || task.due_date) && (
             <div className="flex items-center gap-1 text-slate-600 font-mono text-[10px]">
               <Calendar className="w-3 h-3 text-slate-400" />
-              <span>{new Date(task.due_date).toLocaleDateString("ar-EG")}</span>
+              <span>
+                {task.design_due_date ? "موعد التصميم: " : "الموعد: "}
+                {new Date(task.design_due_date || task.due_date).toLocaleDateString("ar-EG")}
+              </span>
             </div>
           )}
         </div>

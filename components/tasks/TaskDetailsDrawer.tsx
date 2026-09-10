@@ -246,6 +246,7 @@ export default function TaskDetailsDrawer({
           taskId: task.id,
           previewUrl: url,
           note: reviewNote.trim() || null,
+          reviewerId: task.reviewer_id || undefined,
         }),
       });
       if (res.ok) {
@@ -427,6 +428,8 @@ export default function TaskDetailsDrawer({
   const isAssignee = currentUser?.rosterPersonId === task.primary_assignee_id;
   const isReviewer = currentUser?.rosterPersonId === task.reviewer_id;
   const isPendingReview = task.status === "internal_review";
+  const isTaskAssignedToOwner = isOwner && isAssignee;
+  const canDecideReview = isPendingReview && (isReviewer || isOwner) && !isAssignee;
   const reviewRounds = Array.isArray(task.review_rounds)
     ? [...task.review_rounds].sort((a: any, b: any) => (a.round_number || 0) - (b.round_number || 0))
     : [];
@@ -983,8 +986,8 @@ export default function TaskDetailsDrawer({
               </button>
             )}
 
-            {/* Owner Review Bypass (from in_progress if assigned to Owner) */}
-            {task.status === "in_progress" && (isOwner || task.primary_assignee_id === currentUser?.rosterPersonId) && (
+            {/* Owner Review Bypass (from in_progress ONLY if task is assigned to Workspace Owner) */}
+            {task.status === "in_progress" && isTaskAssignedToOwner && (
               <button
                 type="button"
                 onClick={handleOwnerDirectApprove}
@@ -995,8 +998,8 @@ export default function TaskDetailsDrawer({
               </button>
             )}
 
-            {/* Review Decision Buttons (when internal_review) */}
-            {isPendingReview && (isReviewer || isOwner) && (
+            {/* Review Decision Buttons (when internal_review) - strictly guards against self-approval */}
+            {canDecideReview && (
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -1096,8 +1099,8 @@ export default function TaskDetailsDrawer({
                 <button
                   type="button"
                   onClick={handleSubmitForReview}
-                  disabled={submittingReview}
-                  className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-colors"
+                  disabled={submittingReview || !deliverableUrl.trim()}
+                  className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-colors"
                 >
                   {submittingReview ? "جاري الإرسال..." : "تأكيد التسليم للمراجعة"}
                 </button>

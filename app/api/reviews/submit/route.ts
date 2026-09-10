@@ -28,12 +28,14 @@ export async function POST(req: NextRequest) {
       return accessRes.errorResponse;
     }
 
+    const effectiveReviewerId = reviewerId || accessRes.data.task.reviewer_id || undefined;
+
     const round = await submitTaskForReview({
       taskId,
       previewUrl,
       note,
       roundType,
-      reviewerId,
+      reviewerId: effectiveReviewerId,
       idempotencyKey,
       client: accessRes.data.serverClient,
     });

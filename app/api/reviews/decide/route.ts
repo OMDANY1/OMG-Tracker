@@ -30,6 +30,46 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (decision === "changes_requested" && (!feedback || !feedback.trim())) {
+      return NextResponse.json(
+        { error: "ملاحظات التوجيه والتعديل إلزامية عند طلب تعديلات." },
+        { status: 400 }
+      );
+    }
+
+    // Explicit permission & anti-self-approval check
+    const { data: roundData, error: roundErr } = await authRes.data.admin
+      .from("review_rounds")
+      .select("id, submitter_id, reviewer_id, task:tasks!review_rounds_task_id_fkey(id, primary_assignee_id, reviewer_id)")
+      .eq("id", roundId)
+      .eq("workspace_id", authRes.data.membership.workspaceId)
+      .maybeSingle();
+
+    if (roundErr || !roundData) {
+      return NextResponse.json({ error: "جولة المراجعة غير موجودة." }, { status: 404 });
+    }
+
+    const taskData: any = roundData.task;
+    const callerRosterId = authRes.data.membership.rosterPersonId;
+    const callerRole = authRes.data.membership.role;
+
+    // Zero self-approval
+    if (callerRosterId === roundData.submitter_id || (taskData && callerRosterId === taskData.primary_assignee_id)) {
+      return NextResponse.json(
+        { error: "غير مصرح: لا يمكن لمقدم الطلب أو المنفذ اعتماد عمله بنفسه." },
+        { status: 400 }
+      );
+    }
+
+    // Reviewer authorization: must be designated reviewer or workspace owner/manager
+    const designatedReviewerId = roundData.reviewer_id || (taskData && taskData.reviewer_id);
+    if (callerRole !== "owner" && callerRole !== "manager" && callerRosterId !== designatedReviewerId) {
+      return NextResponse.json(
+        { error: "غير مصرح: لست المراجع المعتمد لهذه المهمة." },
+        { status: 403 }
+      );
+    }
+
     const result = await decideReviewRound({
       reviewRoundId: roundId,
       decision,
