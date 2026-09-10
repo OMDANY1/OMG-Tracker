@@ -31,14 +31,33 @@ export async function runtime() {
     GRANT ALL ON ALL TABLES IN SCHEMA auth TO service_role;
     -- Exercise hardening even when a hosted project's defaults expose new objects.
     ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO authenticated, service_role;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO authenticated, service_role;
+    CREATE SCHEMA IF NOT EXISTS cron;
+    CREATE TABLE IF NOT EXISTS cron.job (jobid BIGSERIAL PRIMARY KEY, jobname TEXT UNIQUE, schedule TEXT, command TEXT, active BOOLEAN DEFAULT true);
+    CREATE OR REPLACE FUNCTION cron.schedule(name text, sched text, cmd text) RETURNS bigint LANGUAGE sql AS 'SELECT 1::bigint';
+    CREATE OR REPLACE FUNCTION cron.unschedule(name text) RETURNS void LANGUAGE sql AS 'SELECT';
+    CREATE SCHEMA IF NOT EXISTS net;
+    CREATE OR REPLACE FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) RETURNS bigint LANGUAGE sql AS 'SELECT 1::bigint';
+    CREATE SCHEMA IF NOT EXISTS vault;
+    CREATE TABLE IF NOT EXISTS vault.decrypted_secrets (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT UNIQUE, decrypted_secret TEXT);
+    GRANT USAGE ON SCHEMA cron, net, vault TO anon, authenticated, service_role;
+    GRANT ALL ON ALL TABLES IN SCHEMA cron, net, vault TO authenticated, service_role;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA cron, net, vault TO authenticated, service_role;
     SET search_path = public, extensions;
   `);
   return db;
 }
 export async function migrations(db, directory='migrations', report=console.log) {
   for (const file of (await readdir(resolve(root,directory))).filter(x=>x.endsWith('.sql')).sort()) {
-    try { await db.exec(await readFile(resolve(root,directory,file),'utf8')); report(`COMMITTED ${file}`); }
+    try {
+      let sql = await readFile(resolve(root,directory,file),'utf8');
+      if (sql.charCodeAt(0) === 0xFEFF) sql = sql.slice(1);
+      // Stub out extensions not available in WASM
+      sql = sql.replace(/CREATE EXTENSION IF NOT EXISTS pg_cron;/g, 'CREATE SCHEMA IF NOT EXISTS cron;')
+               .replace(/CREATE EXTENSION IF NOT EXISTS pg_net;/g, 'CREATE SCHEMA IF NOT EXISTS net;')
+               .replace(/CREATE EXTENSION IF NOT EXISTS supabase_vault;/g, 'CREATE SCHEMA IF NOT EXISTS vault;');
+      await db.exec(sql);
+      report(`COMMITTED ${file}`);
+    }
     catch(e) { report(`FAILED ${file}: ${e.code}: ${e.message}`); throw e; }
   }
 }

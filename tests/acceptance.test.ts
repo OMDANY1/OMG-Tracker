@@ -1172,6 +1172,65 @@ async function runTestSuite() {
   assert(campaignsPageAssigneeContent.includes("d.displayName || d.display_name") && campaignsPageAssigneeContent.includes("-- اختر المصمم --"), "5d. Assignee dropdown renders visible Arabic names and job titles");
   assert(campaignsPageAssigneeContent.includes("معاينة وتأكيد اعتماد الخطة وتوليد التاسكات") && campaignsPageAssigneeContent.includes("المراجع الداخلي"), "5e. CampaignsPage renders Pre-Import Confirmation Table with Post, Designer, Reviewer, and Status");
 
+  // =========================================================================
+  // Scenario 82: Partial Import Safety Contract & Progress Tracking Assurance
+  // =========================================================================
+  console.log("\n[Scenario 82] Partial Import Safety Contract & Progress Tracking Assurance...");
+
+  const mig27Path = path.join(__dirname, "../supabase/migrations/20260910000027_partial_import_contract_and_progress_tracking.sql");
+  assert(fs.existsSync(mig27Path), "1. Migration 27 file exists");
+  const mig27Content = fs.readFileSync(mig27Path, "utf-8");
+
+  assert(
+    mig27Content.includes("v_total_operational") &&
+    mig27Content.includes("v_imported_operational") &&
+    mig27Content.includes("v_imported_operational >= v_total_operational AND v_total_operational > 0 THEN 'imported'"),
+    "1a. Migration 27 only marks calendar_status = 'imported' when all operational items are imported"
+  );
+  assert(
+    mig27Content.includes("deliverable_format") &&
+    mig27Content.includes("deliverable_number") &&
+    mig27Content.includes("content_calendar_item_id"),
+    "1b. Migration 27 correctly maps tasks table columns deliverable_format and deliverable_number"
+  );
+  assert(
+    mig27Content.includes("'is_fully_imported', (v_imported_operational >= v_total_operational AND v_total_operational > 0)"),
+    "1c. Migration 27 returns partial import progress metadata in result"
+  );
+
+  const contentCalendarsServicePath = path.join(__dirname, "../lib/services/content-calendars.ts");
+  const ccServiceContent = fs.readFileSync(contentCalendarsServicePath, "utf-8");
+  assert(
+    ccServiceContent.includes('derivedStatus = "partially_imported"') &&
+    ccServiceContent.includes('derivedCalendarStatus = "partially_imported"'),
+    "2a. Content calendars service derives partially_imported status dynamically"
+  );
+  assert(
+    ccServiceContent.includes('isPartiallyImported: importedCount > 0 && importedCount < totalOperational') &&
+    ccServiceContent.includes('isFullyImported: importedCount >= totalOperational'),
+    "2b. getClientCalendar exposes explicit progress tracking properties"
+  );
+
+  const campaignsPagePath = path.join(__dirname, "../app/campaigns/page.tsx");
+  const campaignsPagePartialContent = fs.readFileSync(campaignsPagePath, "utf-8");
+  assert(
+    campaignsPagePartialContent.includes("if (item.is_excluded_from_tasks || item.task_id) return { ...item, is_included: false };"),
+    "3a. toggleSelectAll strictly excludes already imported items"
+  );
+  assert(
+    campaignsPagePartialContent.includes("disabled={isExcluded || hasTask}") &&
+    campaignsPagePartialContent.includes("disabled={!isOwner || isExcluded || hasTask}"),
+    "3b. Review matrix rows visibly lock and disable inputs for already imported tasks"
+  );
+  assert(
+    campaignsPagePartialContent.includes("reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id)"),
+    "3c. handleConfirmImport strictly filters unimported items"
+  );
+  assert(
+    campaignsPagePartialContent.includes("status === \"partially_imported\""),
+    "3d. Campaign card renders partially_imported status badge"
+  );
+
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
 

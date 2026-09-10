@@ -541,19 +541,21 @@ export default function CampaignsPage() {
     }
   };
 
-  // Toggle item inclusion
+  // Toggle item inclusion (cannot toggle if already imported or excluded)
   const toggleItemInclude = (index: number) => {
+    const item = reviewItems[index];
+    if (!item || item.is_excluded_from_tasks || item.task_id) return;
     const updated = [...reviewItems];
     updated[index].is_included = !updated[index].is_included;
     setReviewItems(updated);
   };
 
-  // Select all or deselect all
+  // Select all or deselect all (strictly targets unimported operational posts)
   const toggleSelectAll = (select: boolean) => {
     setReviewItems((prev) =>
       prev.map((item) => {
-        // Excluded non-operational items remain unselected by default
-        if (item.is_excluded_from_tasks) return { ...item, is_included: false };
+        // Excluded non-operational items or already imported posts remain unselected
+        if (item.is_excluded_from_tasks || item.task_id) return { ...item, is_included: false };
         return { ...item, is_included: select };
       })
     );
@@ -778,7 +780,7 @@ export default function CampaignsPage() {
   const handleConfirmImport = async () => {
     if (!reviewCampaign) return;
 
-    const selectedItems = reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks);
+    const selectedItems = reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id);
     if (selectedItems.length === 0) {
       setImportError("يرجى اختيار بوست تشغيلي واحد على الأقل للاعتماد وإنشاء التاسك.");
       return;
@@ -794,6 +796,28 @@ export default function CampaignsPage() {
       return;
     }
 
+    const itemsToImport = selectedItems.map((item) => {
+      const targetAssigneeId =
+        item.approved_assignee_id ||
+        item.suggested_assignee_id ||
+        reviewCampaign.client?.owner_roster_id;
+
+      const ownerPerson = designers.find((d) => d.displayName === "عماد" || d.display_name === "عماد");
+      const reviewerRes = resolveReviewerForPost(
+        targetAssigneeId,
+        reviewCampaign.client?.difficulty,
+        ownerPerson?.id || reviewCampaign.client?.owner_roster_id,
+        reviewRules,
+        designers
+      );
+
+      return {
+        ...item,
+        approved_assignee_id: targetAssigneeId,
+        reviewer_id: reviewerRes.id,
+      };
+    });
+
     setImportingTasks(true);
     setImportError(null);
     try {
@@ -804,7 +828,7 @@ export default function CampaignsPage() {
           workspaceId,
           campaignId: reviewCampaign.id,
           idempotencyKey: `import-${reviewCampaign.id}-${Date.now()}`,
-          items: selectedItems,
+          items: itemsToImport,
         }),
       });
 
@@ -1031,6 +1055,7 @@ export default function CampaignsPage() {
                 className={cn(
                   "bg-surface rounded-2xl border p-5 shadow-xs flex flex-col justify-between transition-all hover:shadow-md",
                   status === "imported" && "border-emerald-200 bg-emerald-50/10",
+                  status === "partially_imported" && "border-amber-200 bg-amber-50/10",
                   status === "needs_review" && "border-purple-200 bg-purple-50/10",
                   status === "not_uploaded" && "border-slate-200 bg-surface"
                 )}
@@ -1059,10 +1084,15 @@ export default function CampaignsPage() {
 
                     {/* Status Badge */}
                     <div>
-                      {status === "imported" ? (
+                      {status === "partially_imported" ? (
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-1">
+                          <Sparkles className="w-3 h-3 text-amber-600" />
+                          استيراد جزئي ({row.tasksCreatedCount} من {row.postCount})
+                        </span>
+                      ) : status === "imported" ? (
                         <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
                           <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                          تم الاستيراد
+                          تم الاستيراد ({row.tasksCreatedCount} من {row.postCount})
                         </span>
                       ) : (status === "failed" || row.campaign?.calendar_status === "failed") ? (
                         <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200 flex items-center gap-1">
@@ -1496,43 +1526,62 @@ export default function CampaignsPage() {
                 )}
 
                 {/* Batch Actions Bar */}
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs">
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <button
-                      onClick={() => toggleSelectAll(true)}
-                      className="text-sky-600 hover:text-sky-800 font-bold"
-                    >
-                      تحديد الكل ({reviewItems.filter((i) => !i.is_excluded_from_tasks).length})
-                    </button>
-                    <span className="text-slate-300">|</span>
-                    <button
-                      onClick={() => toggleSelectAll(false)}
-                      className="text-slate-500 hover:text-slate-700 font-bold"
-                    >
-                      إلغاء التحديد
-                    </button>
-                    <span className="text-slate-300">|</span>
-                    <span className="text-slate-600">
-                      المختار:{" "}
-                      <strong className="text-slate-900">
-                        {reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length}
-                      </strong>{" "}
-                      من {reviewItems.filter((i) => !i.is_excluded_from_tasks).length} بوست تشغيلي
-                    </span>
-                  </div>
+                {(() => {
+                  const unimportedOperational = reviewItems.filter((i) => !i.is_excluded_from_tasks && !i.task_id);
+                  const selectedUnimported = reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id);
+                  const totalOperationalCount = reviewItems.filter((i) => !i.is_excluded_from_tasks).length;
+                  const importedTasksCount = reviewItems.filter((i) => !i.is_excluded_from_tasks && i.task_id).length;
 
-                  {isOwner && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setShowAddPostModal(true)}
-                        className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-800 rounded-xl font-bold flex items-center gap-1 shadow-2xs"
-                      >
-                        <Plus className="w-3.5 h-3.5 text-sky-600" />
-                        إضافة بوست يدوي
-                      </button>
+                  return (
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <button
+                          onClick={() => toggleSelectAll(true)}
+                          className="text-sky-600 hover:text-sky-800 font-bold disabled:text-slate-400 disabled:cursor-not-allowed"
+                          disabled={unimportedOperational.length === 0}
+                        >
+                          تحديد المتبقي ({unimportedOperational.length})
+                        </button>
+                        <span className="text-slate-300">|</span>
+                        <button
+                          onClick={() => toggleSelectAll(false)}
+                          className="text-slate-500 hover:text-slate-700 font-bold"
+                        >
+                          إلغاء التحديد
+                        </button>
+                        <span className="text-slate-300">|</span>
+                        <span className="text-slate-600">
+                          المختار:{" "}
+                          <strong className="text-slate-900">
+                            {selectedUnimported.length}
+                          </strong>{" "}
+                          من {unimportedOperational.length} بوست متبقي
+                        </span>
+                        {importedTasksCount > 0 && (
+                          <>
+                            <span className="text-slate-300">|</span>
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              تم إنشاء {importedTasksCount} من {totalOperationalCount} تاسك
+                            </span>
+                          </>
+                        )}
+                      </div>
+
+                      {isOwner && (
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setShowAddPostModal(true)}
+                            className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-800 rounded-xl font-bold flex items-center gap-1 shadow-2xs"
+                          >
+                            <Plus className="w-3.5 h-3.5 text-sky-600" />
+                            إضافة بوست يدوي
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  );
+                })()}
 
                 {/* Items Matrix Table */}
                 <div className="flex-1 overflow-auto border border-slate-200 rounded-xl">
@@ -1584,8 +1633,8 @@ export default function CampaignsPage() {
                                 <td className="p-2.5 text-center">
                                   <input
                                     type="checkbox"
-                                    checked={item.is_included && !isExcluded}
-                                    disabled={isExcluded}
+                                    checked={item.is_included && !isExcluded && !hasTask}
+                                    disabled={isExcluded || hasTask}
                                     onChange={() => toggleItemInclude(idx)}
                                     className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 cursor-pointer disabled:cursor-not-allowed"
                                   />
@@ -1595,9 +1644,9 @@ export default function CampaignsPage() {
                                     <input
                                       type="text"
                                       value={item.post_number}
-                                      disabled={!isOwner || isExcluded}
+                                      disabled={!isOwner || isExcluded || hasTask}
                                       onChange={(e) => updateItemField(idx, "post_number", e.target.value)}
-                                      className="w-20 px-2 py-1 border border-slate-200 rounded-lg text-xs font-mono font-bold bg-white"
+                                      className="w-20 px-2 py-1 border border-slate-200 rounded-lg text-xs font-mono font-bold bg-white disabled:bg-slate-50 disabled:text-slate-500"
                                     />
                                     {isDuplicate && (
                                       <span className="block text-[9px] font-bold text-amber-700 bg-amber-100 px-1 py-0.5 rounded">
@@ -1615,9 +1664,9 @@ export default function CampaignsPage() {
                                   <input
                                     type="text"
                                     value={item.title}
-                                    disabled={!isOwner || isExcluded}
+                                    disabled={!isOwner || isExcluded || hasTask}
                                     onChange={(e) => updateItemField(idx, "title", e.target.value)}
-                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs font-semibold bg-white"
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs font-semibold bg-white disabled:bg-slate-50 disabled:text-slate-500"
                                   />
                                   {item.on_design_text && (
                                     <div className="mt-1 text-[10px] text-slate-500 bg-slate-50 p-1 rounded border border-slate-100 truncate">
@@ -1629,28 +1678,28 @@ export default function CampaignsPage() {
                                   <textarea
                                     rows={2}
                                     value={item.caption || ""}
-                                    disabled={!isOwner || isExcluded}
+                                    disabled={!isOwner || isExcluded || hasTask}
                                     onChange={(e) => updateItemField(idx, "caption", e.target.value)}
                                     placeholder="نص البوست..."
-                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-[11px] bg-white leading-relaxed resize-none"
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-[11px] bg-white leading-relaxed resize-none disabled:bg-slate-50 disabled:text-slate-500"
                                   />
                                 </td>
                                 <td className="p-2.5">
                                   <textarea
                                     rows={2}
                                     value={item.brief || ""}
-                                    disabled={!isOwner || isExcluded}
+                                    disabled={!isOwner || isExcluded || hasTask}
                                     onChange={(e) => updateItemField(idx, "brief", e.target.value)}
                                     placeholder="توجيه التصميم..."
-                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-[11px] bg-white leading-relaxed resize-none"
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-[11px] bg-white leading-relaxed resize-none disabled:bg-slate-50 disabled:text-slate-500"
                                   />
                                 </td>
                                 <td className="p-2.5">
                                   <select
                                     value={item.platform || "Instagram"}
-                                    disabled={!isOwner || isExcluded}
+                                    disabled={!isOwner || isExcluded || hasTask}
                                     onChange={(e) => updateItemField(idx, "platform", e.target.value)}
-                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white"
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white disabled:bg-slate-50 disabled:text-slate-500"
                                   >
                                     {PLATFORM_OPTIONS.map((p) => (
                                       <option key={p} value={p}>
@@ -1663,9 +1712,9 @@ export default function CampaignsPage() {
                                   <div className="space-y-1">
                                     <select
                                       value={item.content_format || "Static"}
-                                      disabled={!isOwner || isExcluded}
+                                      disabled={!isOwner || isExcluded || hasTask}
                                       onChange={(e) => updateItemField(idx, "content_format", e.target.value)}
-                                      className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white"
+                                      className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white disabled:bg-slate-50 disabled:text-slate-500"
                                     >
                                       {FORMAT_OPTIONS.map((f) => (
                                         <option key={f} value={f}>
@@ -1702,17 +1751,17 @@ export default function CampaignsPage() {
                                   <input
                                     type="date"
                                     value={item.design_due_date || ""}
-                                    disabled={!isOwner || isExcluded}
+                                    disabled={!isOwner || isExcluded || hasTask}
                                     onChange={(e) => updateItemField(idx, "design_due_date", e.target.value)}
-                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white"
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white disabled:bg-slate-50 disabled:text-slate-500"
                                   />
                                 </td>
                                 <td className="p-2.5">
                                   <select
                                     value={currentAssignee}
-                                    disabled={!isOwner || isExcluded}
+                                    disabled={!isOwner || isExcluded || hasTask}
                                     onChange={(e) => updateItemFieldById(item.id, idx, "approved_assignee_id", e.target.value)}
-                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white font-semibold text-slate-800 focus:ring-1 focus:ring-sky-500"
+                                    className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white font-semibold text-slate-800 focus:ring-1 focus:ring-sky-500 disabled:bg-slate-50 disabled:text-slate-500"
                                   >
                                     <option value="" disabled>-- اختر المصمم --</option>
                                     {designers.map((d) => {
@@ -1729,9 +1778,16 @@ export default function CampaignsPage() {
                                 </td>
                                 <td className="p-2.5 text-center">
                                   {hasTask ? (
-                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                      {TASK_STATUS_LABELS.backlog}
-                                    </span>
+                                    <a
+                                      href={`/tasks?taskId=${item.task_id}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 inline-flex items-center gap-1 hover:bg-emerald-200 transition-colors"
+                                      title="فتح التاسك"
+                                    >
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                      <span>تم إنشاء التاسك</span>
+                                    </a>
                                   ) : isExcluded ? (
                                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500">
                                       مستبعد
@@ -1911,7 +1967,7 @@ export default function CampaignsPage() {
                         <span>معاينة وتأكيد اعتماد الخطة وتوليد التاسكات</span>
                       </div>
                       <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-200 text-amber-900">
-                        {reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length} تاسكات مختارة
+                        {reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id).length} تاسكات جديدة مختارة
                       </span>
                     </div>
 
@@ -1935,7 +1991,7 @@ export default function CampaignsPage() {
                         </thead>
                         <tbody className="divide-y divide-amber-100 text-xs">
                           {reviewItems
-                            .filter((i) => i.is_included && !i.is_excluded_from_tasks)
+                            .filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id)
                             .map((item, idx) => {
                               const targetAssigneeId =
                                 item.approved_assignee_id ||
@@ -2048,12 +2104,12 @@ export default function CampaignsPage() {
                         setShowConfirmation(true);
                         setImportError(null);
                       }}
-                      disabled={importingTasks || reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length === 0}
+                      disabled={importingTasks || reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id).length === 0}
                       className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-2"
                     >
                       <CheckCheck className="w-4 h-4" />
                       <span>
-                        اعتماد وإنشاء التاسكات ({reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks).length})
+                        اعتماد وإنشاء التاسكات ({reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id).length})
                       </span>
                     </button>
                   )}

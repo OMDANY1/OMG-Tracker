@@ -426,15 +426,33 @@ export async function getContentCalendarDetails(params: {
   const isFailedState = campaign.calendar_status === "failed" || campaign.calendar_status === "extraction_failed";
   const cleanProcessingError = isFailedState ? campaign.processing_error : null;
 
+  const totalOperational = operationalItems.length;
+  const importedCount = operationalItems.filter((i: any) => i.task_id).length;
+  let derivedCalendarStatus = campaign.calendar_status;
+  if (!isFailedState && totalOperational > 0) {
+    if (importedCount === 0) {
+      derivedCalendarStatus = campaign.calendar_status === "uploaded" ? "uploaded" : "needs_review";
+    } else if (importedCount < totalOperational) {
+      derivedCalendarStatus = "partially_imported";
+    } else {
+      derivedCalendarStatus = "imported";
+    }
+  }
+
   return {
     campaign: {
       ...campaign,
+      calendar_status: derivedCalendarStatus,
       processing_error: cleanProcessingError,
     },
     campaignId: campaign.id,
     revisionNumber: campaign.revision_number,
     detectedPostCount: campaign.detected_post_count ?? operationalItems.length,
     excludedSectionCount: excludedItems.length,
+    totalOperationalCount: totalOperational,
+    importedTasksCount: importedCount,
+    isPartiallyImported: importedCount > 0 && importedCount < totalOperational,
+    isFullyImported: importedCount >= totalOperational && totalOperational > 0,
     items: rawItems,
     operationalItems,
     excludedItems,
@@ -533,12 +551,26 @@ export async function listClientCalendars(params: {
         }
       : null;
 
+    // Derive calendar status dynamically based on operational tasks created
+    let derivedStatus = campaign ? campaign.calendar_status : "not_uploaded";
+    if (campaign && !isFailedState) {
+      if (counts.total > 0) {
+        if (counts.tasks === 0) {
+          derivedStatus = campaign.calendar_status === "uploaded" ? "uploaded" : "needs_review";
+        } else if (counts.tasks < counts.total) {
+          derivedStatus = "partially_imported";
+        } else {
+          derivedStatus = "imported";
+        }
+      }
+    }
+
     return {
       client,
       campaign: cleanCampaign,
       postCount: counts.total,
       tasksCreatedCount: counts.tasks,
-      calendarStatus: campaign ? campaign.calendar_status : "not_uploaded",
+      calendarStatus: derivedStatus,
       lastUpdated: campaign ? campaign.updated_at : null,
       aiConfidence: campaign?.ai_overall_confidence || null,
       detectedPostCount: campaign?.detected_post_count || counts.total,

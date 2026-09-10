@@ -1,54 +1,10 @@
--- Migration 26: Assignee Contract & Reviewer Resolution Hardening
--- 1. Seeds review routing rule for Sara (00a38eae-a90e-4796-89e4-56394e987666) -> Nada (8ade760c-c482-4cfb-91e6-dbd8da040c4c) for default/non-Hard clients at priority 15.
--- 2. Updates import_content_calendar_tasks to support explicit reviewer_id, strictly enforce active designer selection, and return clear Arabic error messages.
+-- Migration 27: Partial Import Contract & Progress Tracking Hardening
+-- 1. Updates import_content_calendar_tasks to prevent premature campaign 'imported' locking.
+--    Only marks calendar_status = 'imported' when all operational posts have been imported.
+--    For partial imports, marks calendar_status = 'ready'.
+-- 2. Returns total_operational, imported_operational, and is_fully_imported in result payload.
 
 BEGIN;
-
--- 1. Seed Sara -> Nada Review Routing Rule
-DO $$
-DECLARE
-    v_ws_id UUID;
-    v_sara_id UUID;
-    v_nada_id UUID;
-    v_emad_id UUID;
-BEGIN
-    SELECT id INTO v_ws_id FROM public.workspaces WHERE id = 'a180f3ab-33bb-4431-88a4-592add7c773e';
-    IF v_ws_id IS NULL THEN
-        SELECT id INTO v_ws_id FROM public.workspaces LIMIT 1;
-    END IF;
-
-    IF v_ws_id IS NOT NULL THEN
-        SELECT id INTO v_sara_id FROM public.roster_people WHERE workspace_id = v_ws_id AND (id = '00a38eae-a90e-4796-89e4-56394e987666' OR display_name = 'سارة') LIMIT 1;
-        SELECT id INTO v_nada_id FROM public.roster_people WHERE workspace_id = v_ws_id AND (id = '8ade760c-c482-4cfb-91e6-dbd8da040c4c' OR display_name = 'ندى') LIMIT 1;
-        SELECT id INTO v_emad_id FROM public.roster_people WHERE workspace_id = v_ws_id AND (id = 'bcfa3baa-7045-4262-abd6-bdb0be8210fd' OR display_name = 'عماد') LIMIT 1;
-
-        IF v_sara_id IS NOT NULL AND v_nada_id IS NOT NULL THEN
-            INSERT INTO public.review_routing_rules (
-                workspace_id,
-                designer_roster_id,
-                client_difficulty,
-                reviewer_roster_id,
-                fallback_reviewer_id,
-                priority,
-                is_workspace_default
-            ) VALUES (
-                v_ws_id,
-                v_sara_id,
-                NULL,
-                v_nada_id,
-                v_emad_id,
-                15,
-                FALSE
-            )
-            ON CONFLICT (workspace_id, designer_roster_id, client_difficulty)
-            DO UPDATE SET
-                reviewer_roster_id = EXCLUDED.reviewer_roster_id,
-                fallback_reviewer_id = EXCLUDED.fallback_reviewer_id,
-                priority = EXCLUDED.priority,
-                updated_at = pg_catalog.now();
-        END IF;
-    END IF;
-END $$;
 
 -- 2. Update import_content_calendar_tasks Function
 CREATE OR REPLACE FUNCTION public.import_content_calendar_tasks(
@@ -97,6 +53,8 @@ DECLARE
     v_description_parts TEXT[];
     v_full_description TEXT;
     v_explicit_reviewer_id UUID;
+    v_total_operational INT := 0;
+    v_imported_operational INT := 0;
 BEGIN
     IF p_workspace_id IS NULL OR p_campaign_id IS NULL THEN
         RAISE EXCEPTION 'workspace_id and campaign_id are required.';
@@ -342,13 +300,15 @@ BEGIN
             title,
             brief,
             description,
-            format,
-            post_number,
+            deliverable_format,
+            deliverable_number,
             priority,
             status,
             primary_assignee_id,
             reviewer_id,
+            due_date,
             design_due_date,
+            content_calendar_item_id,
             created_by_id
         ) VALUES (
             p_workspace_id,
@@ -364,6 +324,8 @@ BEGIN
             v_target_assignee_id,
             v_reviewer_id,
             v_due_date,
+            v_due_date,
+            v_item_id,
             v_caller.roster_person_id
         ) RETURNING id INTO v_new_task_id;
 
@@ -499,10 +461,21 @@ BEGIN
         );
     END LOOP;
 
-    -- Update campaign status
+    -- Check if all operational items are now imported
+    SELECT 
+        COUNT(*) FILTER (WHERE NOT is_excluded_from_tasks),
+        COUNT(*) FILTER (WHERE NOT is_excluded_from_tasks AND task_id IS NOT NULL)
+    INTO v_total_operational, v_imported_operational
+    FROM public.content_calendar_items
+    WHERE campaign_id = p_campaign_id AND workspace_id = p_workspace_id;
+
+    -- Update campaign status: only mark calendar_status = 'imported' when all operational items are imported
     UPDATE public.campaigns
     SET status = 'Active',
-        calendar_status = 'imported',
+        calendar_status = CASE 
+            WHEN v_imported_operational >= v_total_operational AND v_total_operational > 0 THEN 'imported'
+            ELSE 'ready'
+        END,
         approved_at = pg_catalog.now(),
         approved_by_roster_id = v_caller.roster_person_id,
         updated_at = pg_catalog.now()
@@ -535,7 +508,10 @@ BEGIN
         'campaign_id', p_campaign_id,
         'tasks_created', v_tasks_created,
         'notifications_created', v_notifications_created,
-        'assignees', v_assignee_map
+        'assignees', v_assignee_map,
+        'total_operational', v_total_operational,
+        'imported_operational', v_imported_operational,
+        'is_fully_imported', (v_imported_operational >= v_total_operational AND v_total_operational > 0)
     );
 
     IF p_idempotency_key IS NOT NULL AND btrim(p_idempotency_key) <> '' THEN
