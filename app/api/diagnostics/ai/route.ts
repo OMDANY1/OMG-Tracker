@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getGeminiModel, testGeminiConnection } from "@/lib/ai/gemini-client";
+import { getGeminiModel, testGeminiConnection, getGeminiClient } from "@/lib/ai/gemini-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,9 +58,23 @@ export async function GET(req: NextRequest) {
     const model = getGeminiModel();
     const testResult = await testGeminiConnection();
 
+    let availableModels: string[] = [];
+    try {
+      const client = getGeminiClient();
+      if (client) {
+        const pager = await client.models.list();
+        for await (const m of pager) {
+          if (m.name) availableModels.push(m.name);
+        }
+      }
+    } catch (e: any) {
+      availableModels = [`list_failed: ${e.message}`];
+    }
+
     return NextResponse.json({
       geminiKeyConfigured: Boolean(apiKey),
       resolvedModel: model,
+      availableModels,
       testConnection: testResult,
       runtime: "nodejs",
       vercelEnvironment: process.env.VERCEL_ENV || "production",
