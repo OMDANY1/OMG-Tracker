@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getGeminiModel } from "@/lib/ai/gemini-client";
 import crypto from "crypto";
 
 export interface AiJobRecord {
@@ -201,7 +202,7 @@ export class AiJobQueue {
       totalTokens,
       estimatedCostUsd,
       avgDurationSeconds: Math.round(avgDurationMs / 1000),
-      activeModel: process.env.GEMINI_DOCUMENT_MODEL || "gemini-3.6-flash",
+      activeModel: getGeminiModel(),
       fallbackModel: process.env.GEMINI_FALLBACK_MODEL || null,
       lastSuccessAt: lastSuccessJob?.completed_at || null,
       lastError: lastFailedJob
@@ -277,7 +278,7 @@ export class AiJobQueue {
         campaign_id: params.campaignId,
         client_id: params.clientId,
         file_sha256: params.fileSha256,
-        model: params.model || process.env.GEMINI_DOCUMENT_MODEL || "gemini-3.6-flash",
+        model: params.model || getGeminiModel(),
         status: "queued",
         attempt_count: 0,
         max_attempts: 3,

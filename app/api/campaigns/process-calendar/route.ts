@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { processCalendarCampaign } from "@/lib/services/content-calendars";
-import { isGeminiConfigured, classifyGeminiError } from "@/lib/ai/gemini-client";
+import { isGeminiConfigured, classifyGeminiError, getGeminiModel } from "@/lib/ai/gemini-client";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
     }
 
     const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
-    const model = process.env.GEMINI_DOCUMENT_MODEL?.trim() || "gemini-3.8-flash";
+    const model = getGeminiModel();
 
     return NextResponse.json({
       geminiKeyConfigured: Boolean(apiKey),

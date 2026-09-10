@@ -186,13 +186,13 @@ export default function SystemHealthPage() {
             <div className="flex justify-between">
               <span className="text-slate-400">النموذج الأساسي المعتمد:</span>
               <strong className="font-mono text-indigo-700 font-bold">
-                {aiStatus?.activeModel || "gemini-3.8-flash"}
+                {aiStatus?.activeModel || "gemini-2.5-flash"}
               </strong>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">النموذج الاحتياطي التلقائي:</span>
               <span className="font-mono text-slate-700 text-[10px]">
-                {aiStatus?.fallbackModel || "gemini-3.6-flash / gemini-flash-latest"}
+                {aiStatus?.fallbackModel || "gemini-2.0-flash / gemini-1.5-flash"}
               </span>
             </div>
             <div className="flex justify-between">

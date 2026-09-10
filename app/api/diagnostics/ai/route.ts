@@ -1,47 +1,67 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getGeminiModel, testGeminiConnection } from "@/lib/ai/gemini-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (!serverClient) {
-      return NextResponse.json({ error: "جلسة المستخدم غير متوفرة." }, { status: 401 });
-    }
+    let isAuthorized = false;
 
-    const { data: authData, error: authErr } = await serverClient.auth.getUser();
-    if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "يجب تسجيل الدخول أولاً." }, { status: 401 });
-    }
-
+    // Check worker secret header
+    const providedSecret = req.headers.get("x-worker-secret");
+    const workerSecret = (process.env.AI_WORKER_SECRET || "").trim();
     const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
+
+    if (providedSecret) {
+      if (workerSecret && providedSecret === workerSecret) {
+        isAuthorized = true;
+      } else if (admin) {
+        const { data: isValid } = await admin.rpc("verify_ai_worker_secret", {
+          p_secret: providedSecret,
+        });
+        if (isValid === true) {
+          isAuthorized = true;
+        }
+      }
     }
 
-    const { data: membership } = await admin
-      .from("workspace_memberships")
-      .select("role")
-      .eq("user_id", authData.user.id)
-      .eq("is_active", true)
-      .maybeSingle();
+    if (!isAuthorized) {
+      const serverClient = await createServerSupabaseClient().catch(() => null);
+      if (serverClient) {
+        const { data: authData } = await serverClient.auth.getUser();
+        if (authData?.user && admin) {
+          const { data: membership } = await admin
+            .from("workspace_memberships")
+            .select("role")
+            .eq("user_id", authData.user.id)
+            .eq("is_active", true)
+            .maybeSingle();
 
-    if (!membership || membership.role !== "owner") {
+          if (membership?.role === "owner") {
+            isAuthorized = true;
+          }
+        }
+      }
+    }
+
+    if (!isAuthorized) {
       return NextResponse.json(
-        { error: "صلاحية غير كافية: الفحص التشخيصي مسموح فقط للمدير العام (Owner)." },
+        { error: "صلاحية غير كافية: الفحص التشخيصي مسموح فقط للمدير العام أو هيدر الـ Worker." },
         { status: 403 }
       );
     }
 
     const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
-    const model = process.env.GEMINI_DOCUMENT_MODEL?.trim() || "gemini-3.8-flash";
+    const model = getGeminiModel();
+    const testResult = await testGeminiConnection();
 
     return NextResponse.json({
       geminiKeyConfigured: Boolean(apiKey),
       resolvedModel: model,
+      testConnection: testResult,
       runtime: "nodejs",
       vercelEnvironment: process.env.VERCEL_ENV || "production",
     });

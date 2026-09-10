@@ -21,12 +21,24 @@ export function isGeminiConfigured(): boolean {
   return Boolean(getGeminiApiKey());
 }
 
+export const VALID_GEMINI_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-2.5-pro",
+  "gemini-1.5-pro",
+];
+
 /**
  * Returns the Gemini document analysis model.
- * Defaults centrally to 'gemini-3.8-flash'.
+ * Defaults centrally to 'gemini-2.5-flash' and sanitizes legacy typos.
  */
 export function getGeminiModel(): string {
-  return process.env.GEMINI_DOCUMENT_MODEL?.trim() || "gemini-3.8-flash";
+  const envModel = process.env.GEMINI_DOCUMENT_MODEL?.trim();
+  if (!envModel || envModel.includes("3.8") || envModel.includes("3.6") || envModel.includes("latest")) {
+    return "gemini-2.5-flash";
+  }
+  return envModel;
 }
 
 /**
@@ -150,36 +162,51 @@ export async function testGeminiConnection(): Promise<{
   safeMessageAr?: string;
 }> {
   const client = getGeminiClient();
-  const model = getGeminiModel();
+  const preferredModel = getGeminiModel();
 
   if (!client) {
     return {
       ok: false,
-      model,
+      model: preferredModel,
       category: "INVALID_KEY",
       error: "GEMINI_API_KEY is not configured.",
       safeMessageAr: "تحليل Gemini غير مهيأ — لم يتم العثور على GEMINI_API_KEY.",
     };
   }
 
-  try {
-    const response = await client.models.generateContent({
-      model,
-      contents: "ping",
-    });
-    return {
-      ok: true,
-      model,
-    };
-  } catch (err: any) {
-    const errMsg = err?.message || String(err);
-    const classification = classifyGeminiError(errMsg, err?.status);
-    return {
-      ok: false,
-      model,
-      category: classification.category,
-      error: errMsg,
-      safeMessageAr: classification.safeMessageAr,
-    };
+  const modelsToTry = [
+    preferredModel,
+    ...VALID_GEMINI_MODELS,
+  ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
+
+  let lastClassification: any = null;
+  let lastErrorMsg = "";
+
+  for (const m of modelsToTry) {
+    try {
+      await client.models.generateContent({
+        model: m,
+        contents: "ping",
+      });
+      return {
+        ok: true,
+        model: m,
+      };
+    } catch (err: any) {
+      lastErrorMsg = err?.message || String(err);
+      lastClassification = classifyGeminiError(lastErrorMsg, err?.status);
+      if (lastClassification.category === "MODEL_NOT_FOUND" && m !== modelsToTry[modelsToTry.length - 1]) {
+        continue;
+      }
+      break;
+    }
   }
+
+  return {
+    ok: false,
+    model: preferredModel,
+    category: lastClassification?.category || "UNKNOWN_ERROR",
+    error: lastErrorMsg,
+    safeMessageAr: lastClassification?.safeMessageAr || lastErrorMsg,
+  };
 }

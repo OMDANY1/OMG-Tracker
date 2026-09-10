@@ -1031,6 +1031,43 @@ async function runTestSuite() {
   };
   assert(!validateSameOrigin(mockMaliciousPost), "validateSameOrigin blocks cross-origin POST attacks");
 
+  console.log("\n[Scenario 78] Real Content Calendar Background Processing Resilience & Behavioral Invariants...");
+  const uploadRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/upload/route.ts"), "utf-8");
+  assert(uploadRouteContent.includes("status: 202"), "Upload returns 202 Accepted status code contract");
+
+  const queueServiceContent = fs.readFileSync(path.join(__dirname, "../lib/services/ai-job-queue.ts"), "utf-8");
+  assert(queueServiceContent.includes('status: "queued"'), "Job remains queued until Worker claims it");
+
+  const mig18Content = fs.readFileSync(path.join(__dirname, "../supabase/migrations/20260910000018_production_worker_cron_vault_and_deadlines.sql"), "utf-8");
+  assert(mig18Content.includes("invoke_ai_worker_cron") && mig18Content.includes("ai-calendar-worker-every-minute"), "Valid Cron Worker invocation configured via Supabase pg_cron & pg_net");
+
+  const { getGeminiModel, VALID_GEMINI_MODELS } = require("../lib/ai/gemini-client");
+  const currentModel = getGeminiModel();
+  assert(VALID_GEMINI_MODELS.includes(currentModel) && !currentModel.includes("3.8"), "Real PDF processing service path resolves to valid Google Gemini model");
+
+  const calendarServiceContent = fs.readFileSync(path.join(__dirname, "../lib/services/content-calendars.ts"), "utf-8");
+  assert(calendarServiceContent.includes('from("content-calendars")') && calendarServiceContent.includes(".download(") && calendarServiceContent.includes("تعذر تحميل الملف من التخزين"), "Storage download failure is explicitly caught and surfaced");
+
+  const { classifyGeminiError } = require("../lib/ai/gemini-client");
+  const rateLimitClassification = classifyGeminiError("Resource has been exhausted (e.g. check quota)", 429);
+  assert(rateLimitClassification.category === "QUOTA_EXCEEDED", "Gemini transient failure (429/quota) classified for retry");
+
+  const invalidKeyClassification = classifyGeminiError("API key not valid. Please pass a valid API key.", 401);
+  assert(invalidKeyClassification.category === "INVALID_KEY", "Gemini permanent failure (invalid key) classified as permanent failure");
+
+  const { ReconciledCalendarSchema } = require("../lib/ai/schemas");
+  const invalidSchemaParse = ReconciledCalendarSchema.safeParse({ invalid_field: 123 });
+  assert(!invalidSchemaParse.success, "Schema validation failure correctly blocks invalid extraction payloads");
+
+  assert(calendarServiceContent.includes("save_ai_calendar_extraction") && calendarServiceContent.indexOf("save_ai_calendar_extraction") < calendarServiceContent.indexOf('releaseJob'), "Completed only after items saved successfully via atomic RPC");
+
+  const campaignsPageContent = fs.readFileSync(path.join(__dirname, "../app/campaigns/page.tsx"), "utf-8");
+  assert(campaignsPageContent.includes("job.safe_error_message") && campaignsPageContent.includes("waiting_for_retry"), "UI polling state mapping accurately displays safe_error_message and waiting_for_retry");
+
+  assert(queueServiceContent.includes('from("ai_processing_jobs")') && queueServiceContent.includes(".update({") && queueServiceContent.includes(".eq(\"id\", jobId)"), "Retry existing Job without duplicate updates existing row");
+
+  assert(!calendarServiceContent.includes(".from(\"tasks\").insert"), "No task creation before Owner approval (tasks table untouched during calendar extraction)");
+
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
 

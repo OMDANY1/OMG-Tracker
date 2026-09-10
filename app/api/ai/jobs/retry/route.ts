@@ -59,11 +59,14 @@ export async function POST(req: NextRequest) {
 
     // Trigger worker asynchronously
     const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+    const workerSecret = (process.env.AI_WORKER_SECRET || "").trim();
     fetch(`${baseUrl}/api/ai/worker`, {
       method: "POST",
       headers: {
-        "x-internal-worker-trigger": process.env.SUPABASE_SERVICE_ROLE_KEY || "",
+        "Content-Type": "application/json",
+        ...(workerSecret ? { "x-worker-secret": workerSecret } : {}),
       },
+      body: JSON.stringify({ source: "manual_retry", jobId }),
     }).catch(() => {});
 
     return NextResponse.json({

@@ -297,11 +297,11 @@ export default function SettingsPage() {
               <span className="text-slate-500 font-medium">النموذج المعتمد:</span>
               <span className="px-2.5 py-1 bg-indigo-100 text-indigo-800 rounded-lg font-mono font-bold text-[11px] flex items-center gap-1">
                 <Cpu className="w-3.5 h-3.5" />
-                {aiMetrics.activeModel || "gemini-3.8-flash"}
+                {aiMetrics.activeModel || "gemini-2.5-flash"}
               </span>
               <span className="text-slate-500 font-medium mr-2">الاحتياطي التلقائي:</span>
               <span className="px-2.5 py-1 bg-slate-200 text-slate-700 rounded-lg font-mono text-[11px]">
-                {aiMetrics.fallbackModel || "gemini-3.6-flash / gemini-flash-latest"}
+                {aiMetrics.fallbackModel || "gemini-2.0-flash / gemini-1.5-flash"}
               </span>
               <span className="text-slate-500 font-medium mr-2">حصة التزامن:</span>
               <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-lg font-medium text-[11px]">
@@ -377,7 +377,7 @@ export default function SettingsPage() {
                           <td className="p-2.5 text-slate-600 font-mono text-[10px]">
                             {new Date(job.createdAt).toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" })}
                           </td>
-                          <td className="p-2.5 font-mono text-slate-700">{job.model || "gemini-3.8-flash"}</td>
+                          <td className="p-2.5 font-mono text-slate-700">{job.model || "gemini-2.5-flash"}</td>
                           <td className="p-2.5">
                             <span
                               className={cn(

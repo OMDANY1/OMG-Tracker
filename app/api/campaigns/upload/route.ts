@@ -3,6 +3,8 @@ import { requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
 import { uploadCalendarFileOnly as uploadContentCalendar } from "@/lib/services/content-calendars";
 import { AiJobQueue } from "@/lib/services/ai-job-queue";
 
+import { getGeminiModel } from "@/lib/ai/gemini-client";
+
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
@@ -58,7 +60,7 @@ export async function POST(req: NextRequest) {
       campaignId: result.campaign.id,
       clientId,
       fileSha256: result.fileHash,
-      model: process.env.GEMINI_DOCUMENT_MODEL || "gemini-3.6-flash",
+      model: getGeminiModel(),
       createdById: membership.rosterPersonId,
     });
 

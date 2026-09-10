@@ -426,9 +426,11 @@ export default function CampaignsPage() {
               setPollingStatusText("اكتمل استخراج وتقسيم البوستات بنجاح!");
               break;
             } else if (job.status === "failed") {
-              throw new Error(job.error_message || "فشلت معالجة التقويم في الخلفية.");
+              throw new Error(job.safe_error_message || job.error_message || "فشلت معالجة التقويم في الخلفية.");
             } else if (job.status === "processing") {
               setPollingStatusText(`جاري التحليل واستخراج البوستات بواسطة الذكاء الاصطناعي... (${attemptsCount})`);
+            } else if (job.status === "waiting_for_retry") {
+              setPollingStatusText(`حدث ضغط مؤقت، جاري إعادة المحاولة تلقائياً (محاولة ${job.attempt_count || 1})...`);
             } else {
               setPollingStatusText("في الانتظار... جاري استلام المهمة من قبل الـWorker...");
             }

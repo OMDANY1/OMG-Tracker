@@ -131,8 +131,7 @@ export async function POST(req: NextRequest) {
           (claim.attempt_count || 1) >= (claim.max_attempts || 3) ||
           classification.category === "INVALID_KEY" ||
           classification.category === "PERMISSION_DENIED" ||
-          classification.category === "BILLING_REQUIRED" ||
-          classification.category === "MODEL_NOT_FOUND";
+          classification.category === "BILLING_REQUIRED";
 
         const nextStatus = isPermanent ? "failed" : "waiting_for_retry";
         const backoffDelay = Math.min(300, 15 * Math.pow(2, (claim.attempt_count || 1) - 1));
@@ -163,6 +162,7 @@ export async function POST(req: NextRequest) {
         results.push({
           jobId: claim.job_id,
           status: nextStatus,
+          errorCode: classification.category,
           error: classification.safeMessageAr,
           isPermanent,
         });
@@ -176,8 +176,21 @@ export async function POST(req: NextRequest) {
         workerId,
         authSource,
         jobsProcessed: 0,
+        summary: {
+          claimed: 0,
+          completed: 0,
+          waiting_for_retry: 0,
+          failed: 0,
+        },
       });
     }
+
+    const summary = {
+      claimed: processedCount,
+      completed: results.filter((r) => r.status === "completed").length,
+      waiting_for_retry: results.filter((r) => r.status === "waiting_for_retry").length,
+      failed: results.filter((r) => r.status === "failed").length,
+    };
 
     return NextResponse.json({
       success: true,
@@ -185,6 +198,7 @@ export async function POST(req: NextRequest) {
       workerId,
       authSource,
       jobsProcessed: processedCount,
+      summary,
       results,
     });
   } catch (err: any) {
