@@ -62,8 +62,10 @@ export async function GET(req: NextRequest) {
       const client = getGeminiClient();
       if (client) {
         const testCandidates = [
+          "gemini-flash-latest",
+          "gemini-3.8-flash",
+          "gemini-3.6-flash",
           "gemini-2.5-flash",
-          "models/gemini-2.5-flash",
         ];
         for (const m of testCandidates) {
           try {

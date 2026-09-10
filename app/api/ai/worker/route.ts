@@ -106,6 +106,7 @@ export async function POST(req: NextRequest) {
         const result = await processCalendarCampaign({
           workspaceId: claim.workspace_id,
           campaignId: claim.campaign_id,
+          jobId: claim.job_id,
           forceRefresh: true,
         });
 

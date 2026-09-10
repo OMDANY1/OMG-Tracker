@@ -126,6 +126,7 @@ export async function uploadCalendarFileOnly(params: {
 export async function processCalendarCampaign(params: {
   workspaceId: string;
   campaignId: string;
+  jobId?: string;
   forceRefresh?: boolean;
 }) {
   const admin = createAdminClient();
@@ -159,23 +160,26 @@ export async function processCalendarCampaign(params: {
   const buffer = Buffer.from(await fileBlob.arrayBuffer());
   const fileSha256 = crypto.createHash("sha256").update(buffer).digest("hex");
 
-  // 3. Acquire durable AI processing job lease
-  const jobAcquire = await AiJobQueue.acquireJob({
-    workspaceId: params.workspaceId,
-    campaignId: campaign.id,
-    clientId: campaign.client_id,
-    fileSha256,
-    model: getGeminiModel(),
-    forceRefresh: params.forceRefresh,
-  });
+  // 3. Acquire durable AI processing job lease (if not already provided by worker)
+  let jobId = params.jobId;
+  if (!jobId) {
+    const jobAcquire = await AiJobQueue.acquireJob({
+      workspaceId: params.workspaceId,
+      campaignId: campaign.id,
+      clientId: campaign.client_id,
+      fileSha256,
+      model: getGeminiModel(),
+      forceRefresh: params.forceRefresh,
+    });
 
-  if (jobAcquire.status === "already_active") {
-    throw new Error(
-      "توجد عملية تحليل جارية بالفعل لهذا الملف في الخلفية. يرجى الانتظار لحين اكتمالها."
-    );
+    if (jobAcquire.action === "already_active" || jobAcquire.status === "already_active") {
+      throw new Error(
+        "توجد عملية تحليل جارية بالفعل لهذا الملف في الخلفية. يرجى الانتظار لحين اكتمالها."
+      );
+    }
+    jobId = jobAcquire.jobId;
   }
 
-  const jobId = jobAcquire.jobId;
   const startTime = Date.now();
 
   // 4. Update campaign status to 'processing'

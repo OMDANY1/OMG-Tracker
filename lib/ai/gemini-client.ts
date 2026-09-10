@@ -22,6 +22,9 @@ export function isGeminiConfigured(): boolean {
 }
 
 export const VALID_GEMINI_MODELS = [
+  "gemini-flash-latest",
+  "gemini-3.8-flash",
+  "gemini-3.6-flash",
   "gemini-2.5-flash",
   "gemini-2.0-flash",
   "gemini-1.5-flash",
@@ -31,14 +34,14 @@ export const VALID_GEMINI_MODELS = [
 
 /**
  * Returns the Gemini document analysis model.
- * Defaults centrally to 'gemini-2.5-flash' and sanitizes legacy typos.
+ * Defaults centrally to 'gemini-flash-latest' (or process.env.GEMINI_DOCUMENT_MODEL).
  */
 export function getGeminiModel(): string {
   const envModel = process.env.GEMINI_DOCUMENT_MODEL?.trim();
-  if (!envModel || envModel.includes("3.8") || envModel.includes("3.6") || envModel.includes("latest")) {
-    return "gemini-2.5-flash";
+  if (envModel && envModel.length > 0) {
+    return envModel;
   }
-  return envModel;
+  return "gemini-flash-latest";
 }
 
 /**
