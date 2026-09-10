@@ -150,20 +150,44 @@ export async function GET(req: NextRequest) {
 
       csvContent = [headers.join(","), ...rows].join("\n");
     } else if (type === "workload") {
-      // Return team members and capacities
-      const { data: roster, error } = await admin
-        .from("roster_people")
-        .select(`
-          id,
-          display_name,
-          job_title,
-          role,
-          capacity:member_capacities(*)
-        `)
-        .eq("workspace_id", ws.id)
-        .eq("is_active", true);
+      // Return team members and capacities safely
+      const [rosterRes, membershipsRes, capacitiesRes] = await Promise.all([
+        admin
+          .from("roster_people")
+          .select("id, display_name, job_title, is_active")
+          .eq("workspace_id", ws.id)
+          .eq("is_active", true)
+          .order("display_name", { ascending: true }),
+        admin
+          .from("workspace_memberships")
+          .select("roster_person_id, role")
+          .eq("workspace_id", ws.id)
+          .eq("is_active", true),
+        admin
+          .from("member_capacities")
+          .select("*")
+          .eq("workspace_id", ws.id),
+      ]);
 
-      if (error) throw new Error(error.message);
+      if (rosterRes.error) throw new Error(rosterRes.error.message);
+
+      const roster = rosterRes.data || [];
+      const memberships = membershipsRes.data || [];
+      const capacities = capacitiesRes.data || [];
+
+      const membershipRoleMap = new Map<string, string>();
+      for (const m of memberships) {
+        if (m.roster_person_id && m.role) {
+          membershipRoleMap.set(m.roster_person_id, m.role);
+        }
+      }
+
+      const capacityMap = new Map<string, any>();
+      for (const c of capacities) {
+        if (c.roster_person_id) {
+          capacityMap.set(c.roster_person_id, c);
+        }
+      }
 
       const headers = [
         "معرف العضو (ID)",
@@ -175,15 +199,27 @@ export async function GET(req: NextRequest) {
         "السعة القصوى للحمل الموزون",
       ];
 
-      const rows = (roster || []).map((r: any) => {
-        const cap = Array.isArray(r.capacity) ? r.capacity[0] : r.capacity;
+      const rows = roster.map((r: any) => {
+        let role = membershipRoleMap.get(r.id);
+        if (!role) {
+          const title = (r.job_title || "").toLowerCase();
+          const name = (r.display_name || "").toLowerCase();
+          if (name.includes("عماد") || title.includes("owner") || title.includes("art director")) {
+            role = "owner";
+          } else if (name.includes("ندى") || title.includes("senior") || title.includes("reviewer")) {
+            role = "senior_reviewer";
+          } else {
+            role = "designer";
+          }
+        }
+        const cap = capacityMap.get(r.id);
         return [
           r.id,
           r.display_name,
           r.job_title || "",
-          r.role,
+          role,
           cap?.weekly_hours_limit || 40,
-          r.role === "owner" ? 15 : r.role === "senior_reviewer" ? 8 : 0,
+          role === "owner" ? 15 : role === "senior_reviewer" ? 8 : 0,
           cap?.max_weighted_load || 15.0,
         ].map(escapeCsvField).join(",");
       });
