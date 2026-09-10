@@ -2,8 +2,25 @@
 // tests/database-integration.test.ts
 // This script executes ACTUAL PostgreSQL queries and tests RLS policies against Supabase.
 
+import fs from "fs";
+import path from "path";
 import { createClient } from "@supabase/supabase-js";
 import { checkDatabaseConnection } from "../lib/supabase/diagnostics";
+
+const envPath = path.join(__dirname, "../.env.local");
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, "utf-8");
+  for (const line of envContent.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx !== -1) {
+      const key = trimmed.slice(0, eqIdx).trim();
+      const val = trimmed.slice(eqIdx + 1).trim();
+      if (!process.env[key]) process.env[key] = val;
+    }
+  }
+}
 
 async function runDatabaseIntegrationTests() {
   console.log("==========================================================");

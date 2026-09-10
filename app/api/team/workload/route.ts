@@ -72,6 +72,9 @@ export async function GET(req: NextRequest) {
           deliverable_format,
           deliverable_number,
           due_date,
+          design_due_date,
+          review_due_date,
+          publish_at,
           client:clients(id, name, difficulty),
           content_calendar_item:content_calendar_items!fk_cci_task(slides)
         `)
@@ -152,9 +155,10 @@ export async function GET(req: NextRequest) {
 
         totalWeightedLoad += baseWeight * diffMultiplier;
 
-        // Due date radar
-        if (t.due_date) {
-          const dueDate = new Date(t.due_date);
+        // Due date radar (prioritizing design_due_date for production, falling back to due_date)
+        const targetDate = t.design_due_date || t.due_date;
+        if (targetDate) {
+          const dueDate = new Date(targetDate);
           if (dueDate >= now && dueDate <= in7Days) {
             due7++;
           }

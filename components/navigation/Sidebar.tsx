@@ -13,6 +13,7 @@ import {
   Users,
   BarChart3,
   Settings,
+  Activity,
   Menu,
   X,
 } from "lucide-react";
@@ -26,6 +27,7 @@ const NAV_ITEMS = [
   { href: "/campaigns", label: "الكامبينز", icon: Layers },
   { href: "/time-ledger", label: "سجل الشغل", icon: Clock },
   { href: "/team", label: "التيم", icon: Users },
+  { href: "/operations", label: "مركز العمليات", icon: Activity },
   { href: "/reports", label: "التقارير الشهرية", icon: BarChart3 },
   { href: "/settings", label: "الإعدادات", icon: Settings },
 ];

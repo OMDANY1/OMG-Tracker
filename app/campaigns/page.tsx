@@ -38,6 +38,7 @@ import {
   TASK_STATUS_LABELS,
   cn,
 } from "@/lib/utils";
+import { ApplyRevisionModal } from "@/components/campaigns/ApplyRevisionModal";
 
 interface ClientCalendarRow {
   client: {
@@ -167,8 +168,12 @@ export default function CampaignsPage() {
   const [diffReport, setDiffReport] = useState<any>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
+  const [showApplyModal, setShowApplyModal] = useState(false);
+  const [applyCampaignId, setApplyCampaignId] = useState<string>("");
+  const [pollingStatusText, setPollingStatusText] = useState<string>("");
 
   const handleOpenDiff = async (campaignId: string) => {
+    setApplyCampaignId(campaignId);
     setShowDiffModal(true);
     setDiffLoading(true);
     setDiffError(null);
@@ -387,7 +392,7 @@ export default function CampaignsPage() {
     formData.append("monthKey", uploadMonth || selectedMonth);
 
     try {
-      // Step 1: Fast Storage Upload (returns campaignId)
+      // Step 1: Fast Storage Upload & Durable Job Enqueue (returns 202 Accepted)
       const uploadRes = await fetch("/api/campaigns/upload", {
         method: "POST",
         body: formData,
@@ -398,23 +403,48 @@ export default function CampaignsPage() {
         throw new Error(uploadData.error || "فشل رفع الملف إلى التخزين.");
       }
 
-      const campaignId = uploadData.campaignId;
-
-      // Step 2: Decoupled AI Processing via Google Gemini Flash
+      const { campaignId, jobId } = uploadData;
       setUploadStage("processing_ai");
+      setPollingStatusText("تم تسجيل المهمة في طابور العمليات الخلفية (Worker Queue)...");
 
-      const processRes = await fetch("/api/campaigns/process-calendar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaignId, forceRefresh: true }),
-      });
+      // Step 2: Poll Durable AI Worker Job Status
+      let jobCompleted = false;
+      let attemptsCount = 0;
+      const maxPollAttempts = 40; // 40 * 2500ms = 100 seconds max
 
-      const processData = await processRes.json();
-      if (!processRes.ok) {
-        if (processRes.status === 503 || processData.code === "GEMINI_NOT_CONFIGURED") {
-          throw new Error("تحليل Gemini غير مهيأ — لم يتم تحليل الملف");
+      while (!jobCompleted && attemptsCount < maxPollAttempts) {
+        await new Promise((r) => setTimeout(r, 2500));
+        attemptsCount++;
+
+        const jobRes = await fetch(`/api/ai/jobs?jobId=${jobId}`);
+        if (jobRes.ok) {
+          const jobData = await jobRes.json();
+          const job = jobData.job;
+          if (job) {
+            if (job.status === "completed") {
+              jobCompleted = true;
+              setPollingStatusText("اكتمل استخراج وتقسيم البوستات بنجاح!");
+              break;
+            } else if (job.status === "failed") {
+              throw new Error(job.error_message || "فشلت معالجة التقويم في الخلفية.");
+            } else if (job.status === "processing") {
+              setPollingStatusText(`جاري التحليل واستخراج البوستات بواسطة الذكاء الاصطناعي... (${attemptsCount})`);
+            } else {
+              setPollingStatusText("في الانتظار... جاري استلام المهمة من قبل الـWorker...");
+            }
+          }
         }
-        throw new Error(processData.safeMessageAr || processData.error || "فشل تحليل التقويم بالذكاء الاصطناعي.");
+      }
+
+      if (!jobCompleted) {
+        // If timed out waiting for UI, the job is still safely progressing on server
+        setShowUploadModal(false);
+        setUploadFile(null);
+        setUploadClientId("");
+        setTargetClient(null);
+        await fetchData();
+        alert("المعالجة مستمرة في الخلفية عبر الـWorker. سيظهر التقويم في الجدول بمجرد اكتمال الفحص.");
+        return;
       }
 
       setShowUploadModal(false);
@@ -1183,7 +1213,7 @@ export default function CampaignsPage() {
                     <span>
                       {uploadStage === "uploading"
                         ? "المرحلة 1: جاري حفظ الملف في التخزين السحابي الآمن..."
-                        : "المرحلة 2: جاري تحليل وفحص التقويم بالذكاء الاصطناعي (Gemini Flash)..."}
+                        : (pollingStatusText || "المرحلة 2: جاري تحليل وفحص التقويم بالذكاء الاصطناعي (Gemini Flash)...")}
                     </span>
                   </div>
                   <div className="w-full bg-sky-200 h-1.5 rounded-full overflow-hidden">
@@ -2187,7 +2217,7 @@ export default function CampaignsPage() {
             </div>
 
             {/* Footer */}
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-end">
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
               <button
                 type="button"
                 onClick={() => setShowDiffModal(false)}
@@ -2195,10 +2225,36 @@ export default function CampaignsPage() {
               >
                 إغلاق
               </button>
+
+              {isOwner && diffReport && (
+                <button
+                  type="button"
+                  onClick={() => setShowApplyModal(true)}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all"
+                >
+                  <GitMerge className="w-3.5 h-3.5" />
+                  <span>اعتماد وتطبيق التعديلات (Safe Apply)</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
       )}
+
+      {/* Apply Revision Modal */}
+      <ApplyRevisionModal
+        isOpen={showApplyModal}
+        onClose={() => setShowApplyModal(false)}
+        diffReport={diffReport}
+        campaignId={applyCampaignId}
+        onSuccess={async () => {
+          setShowDiffModal(false);
+          await fetchData();
+          if (reviewCampaign?.client_id) {
+            await openReviewMatrix(reviewCampaign.client_id);
+          }
+        }}
+      />
     </div>
   );
 }

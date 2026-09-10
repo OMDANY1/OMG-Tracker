@@ -224,4 +224,127 @@ export class AiJobQueue {
       })),
     };
   }
+
+  /**
+   * Atomically claims the next eligible job for worker execution.
+   */
+  static async claimNextJob(workerId: string, leaseSeconds: number = 300) {
+    const admin = createAdminClient();
+    if (!admin) throw new Error("Database client not available");
+
+    const { data, error } = await admin.rpc("claim_next_ai_job", {
+      p_worker_id: workerId,
+      p_lease_seconds: leaseSeconds,
+    });
+
+    if (error) {
+      console.error("Error claiming next AI job:", error);
+      throw new Error(`Failed to claim AI job: ${error.message}`);
+    }
+
+    return data as {
+      claimed: boolean;
+      job_id?: string;
+      workspace_id?: string;
+      campaign_id?: string;
+      client_id?: string;
+      file_sha256?: string;
+      model?: string;
+      attempt_count?: number;
+      max_attempts?: number;
+      is_recovered?: boolean;
+    };
+  }
+
+  /**
+   * Enqueues a new background AI extraction job.
+   */
+  static async enqueueJob(params: {
+    workspaceId: string;
+    campaignId: string;
+    clientId: string;
+    fileSha256: string;
+    model?: string;
+    createdById?: string;
+  }) {
+    const admin = createAdminClient();
+    if (!admin) throw new Error("Database client not available");
+
+    const { data, error } = await admin
+      .from("ai_processing_jobs")
+      .insert({
+        workspace_id: params.workspaceId,
+        campaign_id: params.campaignId,
+        client_id: params.clientId,
+        file_sha256: params.fileSha256,
+        model: params.model || process.env.GEMINI_DOCUMENT_MODEL || "gemini-3.6-flash",
+        status: "queued",
+        attempt_count: 0,
+        max_attempts: 3,
+        created_by_id: params.createdById || null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Error enqueuing AI job:", error);
+      throw new Error(`Failed to enqueue AI job: ${error.message}`);
+    }
+
+    return data as AiJobRecord;
+  }
+
+  /**
+   * Resets a failed or stalled job for an immediate retry.
+   */
+  static async retryJob(jobId: string, workspaceId: string) {
+    const admin = createAdminClient();
+    if (!admin) throw new Error("Database client not available");
+
+    const { data, error } = await admin
+      .from("ai_processing_jobs")
+      .update({
+        status: "queued",
+        attempt_count: 0,
+        next_retry_at: null,
+        lease_owner: null,
+        lease_expires_at: null,
+        last_error_code: null,
+        safe_error_message: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", jobId)
+      .eq("workspace_id", workspaceId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Error retrying AI job:", error);
+      throw new Error(`Failed to reset AI job: ${error.message}`);
+    }
+
+    return data as AiJobRecord;
+  }
+
+  /**
+   * Fetches status of a specific job.
+   */
+  static async getJobStatus(jobId: string, workspaceId: string) {
+    const admin = createAdminClient();
+    if (!admin) throw new Error("Database client not available");
+
+    const { data, error } = await admin
+      .from("ai_processing_jobs")
+      .select("*")
+      .eq("id", jobId)
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Error getting job status:", error);
+      throw new Error(`Failed to get job status: ${error.message}`);
+    }
+
+    return data as AiJobRecord | null;
+  }
 }

@@ -1,41 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { uploadContentCalendar, uploadCalendarFileOnly } from "@/lib/services/content-calendars";
+import { requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
+import { uploadCalendarFileOnly as uploadContentCalendar } from "@/lib/services/content-calendars";
+import { AiJobQueue } from "@/lib/services/ai-job-queue";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (!serverClient) {
-      return NextResponse.json({ error: "جلسة المستخدم غير متوفرة." }, { status: 401 });
-    }
-
-    const { data: authData, error: authErr } = await serverClient.auth.getUser();
-    if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "يجب تسجيل الدخول أولاً." }, { status: 401 });
-    }
-
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
-    }
-
-    // Check membership & verify Owner
-    const { data: membership } = await admin
-      .from("workspace_memberships")
-      .select("workspace_id, roster_person_id, role")
-      .eq("user_id", authData.user.id)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (!membership || membership.role !== "owner") {
+    if (!validateSameOrigin(req)) {
       return NextResponse.json(
-        { error: "صلاحية غير كافية: رفع تقويم المحتوى مسموح فقط للمدير العام (Owner)." },
+        { error: "طلب غير مصرح به (Same-Origin check failed)." },
         { status: 403 }
       );
     }
+
+    const authRes = await requireOwner(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
+    }
+
+    const { membership } = authRes.data;
 
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
@@ -58,24 +42,52 @@ export async function POST(req: NextRequest) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
 
-    const result = await uploadCalendarFileOnly({
-      workspaceId: membership.workspace_id,
+    // 1. Fast Storage Upload & Campaign Row Creation (< 1.5s)
+    const result = await uploadContentCalendar({
+      workspaceId: membership.workspaceId,
       clientId,
       monthKey,
       fileName: file.name,
       fileBuffer: buffer,
-      uploaderRosterId: membership.roster_person_id,
+      uploaderRosterId: membership.rosterPersonId,
     });
 
-    return NextResponse.json({
-      success: true,
+    // 2. Enqueue background AI job in durable queue table
+    const job = await AiJobQueue.enqueueJob({
+      workspaceId: membership.workspaceId,
       campaignId: result.campaign.id,
-      campaign: result.campaign,
-      previewUrl: result.previewUrl,
-      storagePath: result.storagePath,
-      message: "تم رفع الملف بنجاح إلى التخزين الآمن، وجاري تجهيز المعالجة الذكية.",
+      clientId,
+      fileSha256: result.fileHash,
+      model: process.env.GEMINI_DOCUMENT_MODEL || "gemini-3.6-flash",
+      createdById: membership.rosterPersonId,
     });
+
+    // 3. Asynchronously trigger worker without waiting (fire-and-forget)
+    const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+    fetch(`${baseUrl}/api/ai/worker`, {
+      method: "POST",
+      headers: {
+        "x-internal-worker-trigger": process.env.SUPABASE_SERVICE_ROLE_KEY || "",
+      },
+    }).catch(() => {});
+
+    // 4. Return HTTP 202 Accepted immediately
+    return NextResponse.json(
+      {
+        success: true,
+        status: "queued",
+        campaignId: result.campaign.id,
+        jobId: job.id,
+        campaign: result.campaign,
+        previewUrl: result.previewUrl,
+        storagePath: result.storagePath,
+        message: "تم استلام ملف التقويم بنجاح، وجاري تحليله في الخلفية بواسطة معالج الذكاء الاصطناعي.",
+      },
+      { status: 202 }
+    );
   } catch (err: any) {
+    console.error("Error in /api/campaigns/upload:", err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
+
