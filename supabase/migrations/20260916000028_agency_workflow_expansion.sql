@@ -701,19 +701,19 @@ BEGIN
         SET on_design_text = COALESCE(p_approved_copy, on_design_text),
             updated_at = pg_catalog.now()
         WHERE id = v_cci_id;
-
-        -- Unlock downstream tasks (e.g. design or video_editing) linked to this item or dependent on this task
-        UPDATE public.tasks
-        SET status = 'ready',
-            is_waiting = FALSE,
-            waiting_reason = NULL,
-            updated_at = pg_catalog.now()
-        WHERE workspace_id = v_copy_task.workspace_id
-          AND (dependency_task_id = p_copy_task_id OR (content_calendar_item_id = v_cci_id AND work_stage IN ('design', 'video_editing')))
-          AND status IN ('backlog', 'blocked');
-
-        GET DIAGNOSTICS v_downstream_unlocked = ROW_COUNT;
     END IF;
+
+    -- Unlock downstream tasks (e.g. design or video_editing) linked to this item or dependent on this task
+    UPDATE public.tasks
+    SET status = 'ready',
+        is_waiting = FALSE,
+        waiting_reason = NULL,
+        updated_at = pg_catalog.now()
+    WHERE workspace_id = v_copy_task.workspace_id
+      AND (dependency_task_id = p_copy_task_id OR (v_cci_id IS NOT NULL AND content_calendar_item_id = v_cci_id AND work_stage IN ('design', 'video_editing')))
+      AND status IN ('backlog', 'blocked');
+
+    GET DIAGNOSTICS v_downstream_unlocked = ROW_COUNT;
 
     RETURN jsonb_build_object(
         'success', TRUE,
