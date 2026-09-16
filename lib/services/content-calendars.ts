@@ -577,3 +577,65 @@ export async function listClientCalendars(params: {
     };
   });
 }
+
+export async function createManualContentCalendar(params: {
+  workspaceId: string;
+  clientId: string;
+  monthKey: string;
+  creatorRosterId?: string | null;
+}) {
+  const admin = createAdminClient();
+  if (!admin) throw new Error("تعذر الاتصال بقاعدة البيانات.");
+
+  const { data: client } = await admin
+    .from("clients")
+    .select("id, name")
+    .eq("id", params.clientId)
+    .eq("workspace_id", params.workspaceId)
+    .single();
+
+  if (!client) throw new Error("العميل غير موجود.");
+
+  // Check current max revision for this client & month
+  const { data: existingRevisions } = await admin
+    .from("campaigns")
+    .select("revision_number")
+    .eq("workspace_id", params.workspaceId)
+    .eq("client_id", params.clientId)
+    .eq("month_key", params.monthKey)
+    .order("revision_number", { ascending: false })
+    .limit(1);
+
+  const nextRevision = (existingRevisions?.[0]?.revision_number || 0) + 1;
+  const campaignTitle = `خطة محتوى — ${client.name} (${params.monthKey}) (إصدار ${nextRevision})`;
+
+  // Mark prior revisions as not current
+  await admin
+    .from("campaigns")
+    .update({ is_current_revision: false })
+    .eq("workspace_id", params.workspaceId)
+    .eq("client_id", params.clientId)
+    .eq("month_key", params.monthKey);
+
+  const { data: campaign, error } = await admin
+    .from("campaigns")
+    .insert({
+      workspace_id: params.workspaceId,
+      client_id: params.clientId,
+      title: campaignTitle,
+      month_key: params.monthKey,
+      revision_number: nextRevision,
+      calendar_status: "needs_review",
+      original_file_name: "Manual Campaign Plan",
+      storage_path: "manual",
+      uploaded_by_roster_id: params.creatorRosterId || null,
+      uploaded_at: new Date().toISOString(),
+      is_current_revision: true,
+      status: "Active",
+    })
+    .select()
+    .single();
+
+  if (error) throw new Error(`فشل إنشاء خطة المحتوى اليدوية: ${error.message}`);
+  return campaign;
+}

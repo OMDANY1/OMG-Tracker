@@ -45,6 +45,18 @@ export const TIME_CATEGORY_LABELS: Record<TimeCategory, string> = {
   internal_revision: "تعديلات داخلية",
   client_revision: "تعديلات العميل",
   final_preparation_export: "تجهيز وتصدير نهائي",
+  strategy_research: "بحث وإعداد الاستراتيجية",
+  content_writing: "كتابة المحتوى والاسكربت",
+  video_editing: "مونتاج وإنتاج الفيديو",
+  review: "مراجعة واعتماد",
+};
+
+export const WORK_STAGE_LABELS: Record<string, string> = {
+  strategy: "استراتيجية",
+  copywriting: "كتابة محتوى",
+  design: "تصميم",
+  video_editing: "مونتاج فيديو",
+  video_cover: "تصميم غلاف فيديو",
 };
 
 export const TASK_PRIORITY_LABELS: Record<TaskPriority, string> = {
@@ -80,6 +92,11 @@ export const ROSTER_ROLE_LABELS: Record<RosterRole, string> = {
   manager: "مدير الفريق (Manager)",
   senior_reviewer: "مراجع أول (Senior Reviewer)",
   designer: "مصمم (Designer)",
+  marketing_director: "مدير التسويق (Marketing Director)",
+  strategy_lead: "تيم ليدر الاستراتيجية (Strategy Lead)",
+  strategist: "استراتيجيست (Strategist)",
+  content_writer: "كونتنت رايتر (Content Writer)",
+  video_editor: "فيديو إيديتور (Video Editor)",
 };
 
 export function formatDurationSeconds(seconds: number): string {

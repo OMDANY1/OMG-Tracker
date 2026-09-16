@@ -68,6 +68,13 @@ export async function PATCH(
     }
     if (body.is_included !== undefined) updateData.is_included = body.is_included;
     if (body.post_order !== undefined) updateData.post_order = body.post_order;
+    if (body.on_design_text !== undefined) updateData.on_design_text = body.on_design_text;
+    if (body.onDesignText !== undefined) updateData.on_design_text = body.onDesignText;
+    if (body.hook !== undefined) updateData.hook = body.hook;
+    if (body.cta !== undefined) updateData.cta = body.cta;
+    if (body.reel_script !== undefined) updateData.reel_script = body.reel_script;
+    if (body.reelScript !== undefined) updateData.reel_script = body.reelScript;
+    if (body.slides !== undefined) updateData.slides = body.slides;
 
     const { data: updatedItem, error: updateErr } = await admin
       .from("content_calendar_items")

@@ -20,6 +20,10 @@ import {
   Eye,
   Video,
   Image as ImageIcon,
+  AlertTriangle,
+  Filter,
+  Users,
+  Compass,
 } from "lucide-react";
 import {
   TASK_STATUS_LABELS,
@@ -44,6 +48,10 @@ export default function MyWorkPage() {
     displayName: string;
     email: string;
   } | null>(null);
+
+  // Filters state
+  const [stageFilter, setStageFilter] = useState<string>("all");
+  const [viewPerspective, setViewPerspective] = useState<"standard" | "strategy_lead" | "marketing_director">("standard");
 
   // Drawer state
   const [selectedTask, setSelectedTask] = useState<any>(null);
@@ -116,7 +124,22 @@ export default function MyWorkPage() {
   // Canonical Cairo Overdue check (prioritizing design_due_date for designer production deadlines)
   const nowCairoStr = new Date().toISOString().slice(0, 10);
 
+  // Filter tasks based on stage and perspective
+  const stageFilteredTasks = useMemo(() => {
+    let list = tasks;
+    if (viewPerspective === "strategy_lead") {
+      list = list.filter((t) => t.work_stage === "strategy" || t.work_stage === "copywriting");
+    } else if (viewPerspective === "marketing_director") {
+      list = tasks; // Director sees comprehensive pipeline
+    }
+    if (stageFilter !== "all") {
+      list = list.filter((t) => (t.work_stage || "design") === stageFilter);
+    }
+    return list;
+  }, [tasks, stageFilter, viewPerspective]);
+
   const {
+    waitingTasks,
     overdueTasks,
     changesRequestedTasks,
     inProgressTasks,
@@ -125,6 +148,7 @@ export default function MyWorkPage() {
     approvedTasks,
     deliveredTasks,
   } = useMemo(() => {
+    const waiting: any[] = [];
     const overdue: any[] = [];
     const changes: any[] = [];
     const inProgress: any[] = [];
@@ -133,7 +157,12 @@ export default function MyWorkPage() {
     const approved: any[] = [];
     const delivered: any[] = [];
 
-    for (const t of tasks) {
+    for (const t of stageFilteredTasks) {
+      if (t.is_waiting && !["approved", "delivered", "archived", "cancelled"].includes(t.status)) {
+        waiting.push(t);
+        continue;
+      }
+
       const effectiveDueDate = t.design_due_date || t.due_date;
       const isOverdue =
         effectiveDueDate &&
@@ -160,6 +189,7 @@ export default function MyWorkPage() {
     }
 
     return {
+      waitingTasks: sortTasks(waiting),
       overdueTasks: sortTasks(overdue),
       changesRequestedTasks: sortTasks(changes),
       inProgressTasks: sortTasks(inProgress),
@@ -168,7 +198,7 @@ export default function MyWorkPage() {
       approvedTasks: sortTasks(approved),
       deliveredTasks: sortTasks(delivered),
     };
-  }, [tasks, nowCairoStr]);
+  }, [stageFilteredTasks, nowCairoStr]);
 
   const handleStartWork = async (task: any, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -180,12 +210,21 @@ export default function MyWorkPage() {
       });
 
       if (res.ok) {
+        const stageCategory =
+          task.work_stage === "copywriting"
+            ? "copywriting"
+            : task.work_stage === "video_editing"
+            ? "video_editing"
+            : task.work_stage === "strategy"
+            ? "strategy"
+            : "initial_design";
+
         await fetch("/api/timer/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             taskId: task.id,
-            category: "initial_design",
+            category: stageCategory,
           }),
         });
         window.dispatchEvent(new CustomEvent("timer_state_changed"));
@@ -196,6 +235,25 @@ export default function MyWorkPage() {
       }
     } catch (err: any) {
       alert(`خطأ: ${err.message}`);
+    }
+  };
+
+  const handleResumeTask = async (task: any, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/waiting`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isWaiting: false }),
+      });
+      if (res.ok) {
+        fetchUserAndTasks();
+      } else {
+        const err = await res.json();
+        alert(err.error || "فشل استئناف العمل");
+      }
+    } catch (err: any) {
+      alert(err.message || "خطأ");
     }
   };
 
@@ -270,6 +328,31 @@ export default function MyWorkPage() {
               >
                 {TASK_STATUS_LABELS[task.status as TaskStatus] || task.status}
               </span>
+
+              {/* Stage Badge */}
+              {task.work_stage && (
+                <span
+                  className={cn(
+                    "px-1.5 py-0.5 rounded text-[10px] font-bold border",
+                    task.work_stage === "strategy"
+                      ? "bg-amber-50 text-amber-800 border-amber-200"
+                      : task.work_stage === "copywriting"
+                      ? "bg-purple-50 text-purple-800 border-purple-200"
+                      : task.work_stage === "video_editing"
+                      ? "bg-rose-50 text-rose-800 border-rose-200"
+                      : "bg-sky-50 text-sky-800 border-sky-200"
+                  )}
+                >
+                  {task.work_stage === "strategy"
+                    ? "استراتيجية"
+                    : task.work_stage === "copywriting"
+                    ? "محتوى"
+                    : task.work_stage === "video_editing"
+                    ? "فيديو"
+                    : "تصميم"}
+                </span>
+              )}
+
               {task.client?.difficulty && (
                 <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-800 border border-amber-200">
                   {(CLIENT_DIFFICULTY_LABELS as Record<string, string>)[task.client.difficulty] || task.client.difficulty}
@@ -290,6 +373,23 @@ export default function MyWorkPage() {
             {TASK_PRIORITY_LABELS[task.priority as TaskPriority] || task.priority}
           </span>
         </div>
+
+        {/* Waiting notification banner inside card */}
+        {task.is_waiting && (
+          <div className="bg-amber-100/90 text-amber-900 border border-amber-300 rounded-xl p-2 text-xs flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1 font-semibold text-[11px] truncate">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              <span>معلقة: {task.waiting_reason || "انتظار مدخلات"}</span>
+            </span>
+            <button
+              type="button"
+              onClick={(e) => handleResumeTask(task, e)}
+              className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-bold shrink-0 transition-colors shadow-2xs"
+            >
+              استئناف العمل
+            </button>
+          </div>
+        )}
 
         <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-100">
           <div>
@@ -330,7 +430,7 @@ export default function MyWorkPage() {
             </button>
           )}
 
-          {task.status === "in_progress" && (
+          {task.status === "in_progress" && !task.is_waiting && (
             <button
               type="button"
               onClick={(e) => {
@@ -372,7 +472,7 @@ export default function MyWorkPage() {
             شغلي {currentUser ? `— ${currentUser.displayName}` : ""}
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            مساحة عمل المصمم: المهام المسندة، أولويات التسليم، والتسليم للمراجعة الداخلية
+            مساحة عمل الفريق: الاستراتيجية، كتابة المحتوى، التصميم الجرافيكي، ومونتاج الفيديو
           </p>
         </div>
 
@@ -394,6 +494,80 @@ export default function MyWorkPage() {
         </div>
       </div>
 
+      {/* Filter Tabs & Perspective Bar */}
+      <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+        {/* Specialty Filter Tabs */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs font-bold text-slate-500 ml-1 flex items-center gap-1">
+            <Filter className="w-3.5 h-3.5" />
+            <span>التخصص:</span>
+          </span>
+          {[
+            { id: "all", label: "الكل" },
+            { id: "strategy", label: "استراتيجية" },
+            { id: "copywriting", label: "كتابة محتوى" },
+            { id: "design", label: "تصميم جرافيكي" },
+            { id: "video_editing", label: "مونتاج فيديو" },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setStageFilter(tab.id)}
+              className={cn(
+                "px-3 py-1 rounded-xl text-xs font-bold transition-colors",
+                stageFilter === tab.id
+                  ? "bg-sky-600 text-white shadow-2xs"
+                  : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Multi-Team Role View Filter */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs font-bold text-slate-500 ml-1 flex items-center gap-1">
+            <Users className="w-3.5 h-3.5" />
+            <span>المنظور:</span>
+          </span>
+          <button
+            onClick={() => setViewPerspective("standard")}
+            className={cn(
+              "px-2.5 py-1 rounded-xl text-xs font-medium transition-colors",
+              viewPerspective === "standard"
+                ? "bg-slate-800 text-white font-bold"
+                : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+            )}
+          >
+            عرض المهام
+          </button>
+          <button
+            onClick={() => setViewPerspective("marketing_director")}
+            className={cn(
+              "px-2.5 py-1 rounded-xl text-xs font-medium transition-colors",
+              viewPerspective === "marketing_director"
+                ? "bg-indigo-700 text-white font-bold"
+                : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+            )}
+            title="إشراف شامل على خطط العملاء والمهام"
+          >
+            إشراف التخطيط والمدير التسويقي (عطا)
+          </button>
+          <button
+            onClick={() => setViewPerspective("strategy_lead")}
+            className={cn(
+              "px-2.5 py-1 rounded-xl text-xs font-medium transition-colors",
+              viewPerspective === "strategy_lead"
+                ? "bg-amber-600 text-white font-bold"
+                : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+            )}
+            title="قيادة فريق الاستراتيجية وبريفات العملاء"
+          >
+            قيادة فريق الاستراتيجية (أروى)
+          </button>
+        </div>
+      </div>
+
       {/* Section 1: Overdue Warning (متأخرة) */}
       {overdueTasks.length > 0 && (
         <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 text-xs text-rose-900 space-y-3">
@@ -403,6 +577,19 @@ export default function MyWorkPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {overdueTasks.map((t) => renderTaskCard(t, "border-rose-300 bg-rose-50/40"))}
+          </div>
+        </div>
+      )}
+
+      {/* Section: Waiting for Inputs (تنتظر مدخلات) */}
+      {waitingTasks.length > 0 && (
+        <div className="bg-amber-50/80 border border-amber-300 rounded-2xl p-4 text-xs text-amber-950 space-y-3">
+          <div className="flex items-center gap-2 font-bold text-sm text-amber-800">
+            <AlertTriangle className="w-4 h-4 text-amber-600" />
+            <span>تنتظر مدخلات ({waitingTasks.length})</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {waitingTasks.map((t) => renderTaskCard(t, "border-amber-300 bg-amber-50/30"))}
           </div>
         </div>
       )}
