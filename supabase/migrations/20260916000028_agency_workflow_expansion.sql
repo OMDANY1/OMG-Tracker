@@ -127,7 +127,10 @@ CREATE TABLE IF NOT EXISTS public.client_briefs (
     strategy_summary TEXT,
     approved_strategy_content TEXT,
     strategy_version INT NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'in_review', 'approved')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'in_review', 'reviewed', 'approved')),
+    operational_review_by UUID REFERENCES public.roster_people(id) ON DELETE SET NULL,
+    operational_review_at TIMESTAMPTZ,
+    operational_feedback TEXT,
     approved_by_roster_id UUID REFERENCES public.roster_people(id) ON DELETE SET NULL,
     approved_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.now(),
@@ -375,7 +378,65 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
--- 10. RPC: APPROVE CLIENT BRIEF STRATEGY
+-- 10. RPC: OPERATIONAL STRATEGY REVIEW (Arwa - Strategy Lead / Designated Strategy Reviewer)
+CREATE OR REPLACE FUNCTION public.review_client_brief_operational(
+    p_workspace_id UUID,
+    p_client_id UUID,
+    p_decision TEXT DEFAULT 'approved', -- 'approved' or 'changes_requested'
+    p_feedback TEXT DEFAULT NULL,
+    p_idempotency_key TEXT DEFAULT NULL
+)
+RETURNS JSONB AS $$
+DECLARE
+    v_caller RECORD;
+    v_brief RECORD;
+    v_team RECORD;
+BEGIN
+    SELECT * INTO v_caller FROM private.get_caller_context(p_workspace_id);
+
+    SELECT * INTO v_brief FROM public.client_briefs
+    WHERE workspace_id = p_workspace_id AND client_id = p_client_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Client brief not found.';
+    END IF;
+
+    SELECT * INTO v_team FROM public.client_team_assignments
+    WHERE workspace_id = p_workspace_id AND client_id = p_client_id;
+
+    -- Operational Reviewer authorization: Owner, Strategy Team Lead (Arwa), or assigned Strategy Reviewer for this client
+    IF v_caller.role <> 'owner' 
+       AND v_caller.roster_person_id <> COALESCE(v_team.strategy_lead_id, '00000000-0000-0000-0000-000000000000'::UUID)
+       AND v_caller.roster_person_id <> COALESCE(v_team.strategy_reviewer_id, '00000000-0000-0000-0000-000000000000'::UUID) THEN
+        RAISE EXCEPTION 'Access denied: Only Strategy Lead (Arwa) or designated Strategy Reviewer can perform operational review.';
+    END IF;
+
+    IF p_decision = 'approved' THEN
+        UPDATE public.client_briefs
+        SET status = 'reviewed',
+            operational_review_by = v_caller.roster_person_id,
+            operational_review_at = pg_catalog.now(),
+            operational_feedback = p_feedback,
+            updated_at = pg_catalog.now()
+        WHERE workspace_id = p_workspace_id AND client_id = p_client_id;
+    ELSE
+        UPDATE public.client_briefs
+        SET status = 'in_review',
+            operational_feedback = p_feedback,
+            updated_at = pg_catalog.now()
+        WHERE workspace_id = p_workspace_id AND client_id = p_client_id;
+    END IF;
+
+    RETURN jsonb_build_object(
+        'success', TRUE,
+        'client_id', p_client_id,
+        'status', CASE WHEN p_decision = 'approved' THEN 'reviewed' ELSE 'in_review' END,
+        'reviewed_by', v_caller.roster_person_id,
+        'reviewed_at', pg_catalog.now()
+    );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+-- 10.1 RPC: MARKETING STRATEGY APPROVAL (Ata - Marketing Director / Owner Emad)
 CREATE OR REPLACE FUNCTION public.approve_client_brief_strategy(
     p_workspace_id UUID,
     p_client_id UUID,
@@ -400,11 +461,15 @@ BEGIN
     SELECT * INTO v_team FROM public.client_team_assignments
     WHERE workspace_id = p_workspace_id AND client_id = p_client_id;
 
-    -- Check authorization: Owner, Marketing Director (Ata), or Assigned Strategy Reviewer
+    -- Marketing Approval authorization: Owner (Emad) or Marketing Director (Ata) assigned for this client
     IF v_caller.role <> 'owner' 
-       AND v_caller.roster_person_id <> COALESCE(v_team.marketing_director_id, '00000000-0000-0000-0000-000000000000'::UUID)
-       AND v_caller.roster_person_id <> COALESCE(v_team.strategy_reviewer_id, '00000000-0000-0000-0000-000000000000'::UUID) THEN
-        RAISE EXCEPTION 'Access denied: Only Owner, Marketing Director, or designated Strategy Reviewer can approve the client strategy.';
+       AND v_caller.roster_person_id <> COALESCE(v_team.marketing_director_id, '00000000-0000-0000-0000-000000000000'::UUID) THEN
+        RAISE EXCEPTION 'Access denied: Only Marketing Director (Ata) or Workspace Owner can grant final marketing strategy approval.';
+    END IF;
+
+    -- Enforce prerequisite: Operational review must be completed first (or bypassed by Owner)
+    IF v_caller.role <> 'owner' AND v_brief.status <> 'reviewed' THEN
+        RAISE EXCEPTION 'Prerequisite not met: Strategy must pass operational review by Strategy Lead before final marketing approval.';
     END IF;
 
     v_new_version := COALESCE(v_brief.strategy_version, 0) + 1;

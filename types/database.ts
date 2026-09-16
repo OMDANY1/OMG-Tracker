@@ -174,7 +174,10 @@ export interface ClientBrief {
   strategy_summary?: string | null;
   approved_strategy_content?: string | null;
   strategy_version: number;
-  status: 'draft' | 'in_review' | 'approved';
+  status: 'draft' | 'in_review' | 'reviewed' | 'approved';
+  operational_review_by?: string | null;
+  operational_review_at?: string | null;
+  operational_feedback?: string | null;
   approved_by_roster_id?: string | null;
   approved_at?: string | null;
   created_at: string;

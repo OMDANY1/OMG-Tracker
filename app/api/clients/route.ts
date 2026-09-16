@@ -6,6 +6,7 @@ import {
   updateClientAssignment,
   upsertClientTeamAssignment,
   upsertClientBrief,
+  reviewClientBriefOperational,
   approveClientBriefStrategy,
 } from "@/lib/services/clients";
 
@@ -197,7 +198,19 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: true, result });
     }
 
-    // 3. Approve Strategy
+    // 2.1 Operational Review (Arwa - Strategy Lead / Designated Reviewer)
+    if (action === "review_strategy_operational") {
+      const result = await reviewClientBriefOperational({
+        workspaceId: "00000000-0000-0000-0000-000000000000",
+        clientId,
+        decision: body.decision || "approved",
+        feedback: body.feedback || null,
+        idempotencyKey: `rev-strat-${clientId}-${Date.now()}`,
+      });
+      return NextResponse.json({ success: true, result });
+    }
+
+    // 3. Marketing Strategy Approval (Ata - Marketing Director / Owner Emad)
     if (action === "approve_strategy") {
       if (!approvedContent || !approvedContent.trim()) {
         return NextResponse.json({ error: "Approved content cannot be empty" }, { status: 400 });

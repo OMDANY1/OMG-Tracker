@@ -253,6 +253,28 @@ export async function upsertClientBrief(params: {
   return data;
 }
 
+export async function reviewClientBriefOperational(params: {
+  workspaceId: string;
+  clientId: string;
+  decision?: "approved" | "changes_requested";
+  feedback?: string | null;
+  idempotencyKey?: string;
+}) {
+  const supabase = await getClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const { data, error } = await supabase.rpc("review_client_brief_operational", {
+    p_workspace_id: params.workspaceId,
+    p_client_id: params.clientId,
+    p_decision: params.decision || "approved",
+    p_feedback: params.feedback || null,
+    p_idempotency_key: params.idempotencyKey || null,
+  });
+
+  if (error) throw new Error(`فشل المراجعة التشغيلية للاستراتيجية: ${error.message}`);
+  return data;
+}
+
 export async function approveClientBriefStrategy(params: {
   workspaceId: string;
   clientId: string;
