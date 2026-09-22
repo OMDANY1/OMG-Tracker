@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Users,
   Briefcase,
@@ -23,14 +23,22 @@ import {
   Copy,
   Send,
   UserX,
+  Edit2,
+  ShieldAlert,
+  Sparkles,
+  Check,
+  ArrowRightLeft,
+  FileText,
 } from "lucide-react";
 import { ROSTER_ROLE_LABELS, cn } from "@/lib/utils";
 
-interface WorkloadMember {
+export interface WorkloadMember {
   id: string;
   displayName: string;
   jobTitle: string;
   role: string;
+  specialties?: string[];
+  hasJoined?: boolean;
   isActive?: boolean;
   weeklyHours: number;
   reservedHours: number;
@@ -46,7 +54,7 @@ interface WorkloadMember {
   notes?: string | null;
 }
 
-interface InvitationRecord {
+export interface InvitationRecord {
   id: string;
   invited_email: string;
   role: string;
@@ -65,14 +73,56 @@ interface InvitationRecord {
   };
 }
 
-const DEFAULT_EMAILS: Record<string, string> = {
-  "عماد عادل": "emadadelgd@gmail.com",
-  "ندى عبد النبي": "nadaabdulnabi513@gmail.com",
-  "سارة": "sara95gd@gmail.com",
-  "آلاء حسام": "alaa.hossam16814@gmail.com",
-  "شهد لاشين": "lasheeen178@gmail.com",
-  "آية حمزة": "ayahamza318@gmail.com",
-};
+const AVAILABLE_SPECIALTIES = [
+  { key: "design", label: "تصميم جرافيك" },
+  { key: "copywriting", label: "كتابة محتوى" },
+  { key: "strategy", label: "استراتيجية" },
+  { key: "video_editing", label: "مونتاج فيديو" },
+  { key: "management", label: "إدارة ومتابعة" },
+];
+
+const AVAILABLE_ROLES = [
+  { value: "designer", label: "مصمم (Designer)" },
+  { value: "senior_reviewer", label: "مراجع أول (Senior Reviewer)" },
+  { value: "marketing_director", label: "مدير تسويق (Marketing Director)" },
+  { value: "strategy_lead", label: "قائد فريق استراتيجية (Strategy Lead)" },
+  { value: "strategist", label: "استراتيجي (Strategist)" },
+  { value: "content_writer", label: "كاتب محتوى (Content Writer)" },
+  { value: "video_editor", label: "مونتير (Video Editor)" },
+  { value: "business_owner_viewer", label: "مالك الشركة (مشاهد فقط)" },
+];
+
+function getMemberStatus(member: WorkloadMember, invitations: InvitationRecord[]) {
+  if (member.isActive === false) {
+    return {
+      key: "deactivated" as const,
+      label: "معطل مؤقتاً",
+      badgeClass: "bg-rose-50 text-rose-700 border-rose-200",
+    };
+  }
+  if (member.hasJoined) {
+    return {
+      key: "joined" as const,
+      label: "انضم للعمل",
+      badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    };
+  }
+  const hasPendingInvite = invitations.some(
+    (inv) => inv.roster_person?.id === member.id && ["pending", "draft"].includes(inv.status)
+  );
+  if (hasPendingInvite) {
+    return {
+      key: "pending_invite" as const,
+      label: "دعوة معلقة",
+      badgeClass: "bg-amber-50 text-amber-800 border-amber-200",
+    };
+  }
+  return {
+    key: "not_invited" as const,
+    label: "لم تتم دعوته",
+    badgeClass: "bg-slate-100 text-slate-600 border-slate-200",
+  };
+}
 
 export default function TeamPage() {
   const [teamMembers, setTeamMembers] = useState<WorkloadMember[]>([]);
@@ -80,6 +130,37 @@ export default function TeamPage() {
   const [invitationsPaused, setInvitationsPaused] = useState<boolean>(true);
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isViewer, setIsViewer] = useState<boolean>(false);
+  const [copySuccessId, setCopySuccessId] = useState<string | null>(null);
+
+  // Add Member Modal State
+  const [showAddMemberModal, setShowAddMemberModal] = useState(false);
+  const [newMemberName, setNewMemberName] = useState("");
+  const [newMemberJobTitle, setNewMemberJobTitle] = useState("");
+  const [newMemberRole, setNewMemberRole] = useState("designer");
+  const [newMemberSpecialties, setNewMemberSpecialties] = useState<string[]>(["design"]);
+  const [newMemberWeeklyHours, setNewMemberWeeklyHours] = useState(40);
+  const [newMemberMaxLoad, setNewMemberMaxLoad] = useState(15);
+  const [submittingMember, setSubmittingMember] = useState(false);
+  const [memberError, setMemberError] = useState<string | null>(null);
+
+  // Edit Member Modal State
+  const [editingMember, setEditingMember] = useState<WorkloadMember | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editJobTitle, setEditJobTitle] = useState("");
+  const [editRole, setEditRole] = useState("designer");
+  const [editSpecialties, setEditSpecialties] = useState<string[]>([]);
+  const [editWeeklyHours, setEditWeeklyHours] = useState(40);
+  const [editMaxLoad, setEditMaxLoad] = useState(15);
+  const [savingMember, setSavingMember] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  // Deactivation Impact Modal State
+  const [deactivatingMember, setDeactivatingMember] = useState<WorkloadMember | null>(null);
+  const [deactivationImpact, setDeactivationImpact] = useState<any | null>(null);
+  const [loadingImpact, setLoadingImpact] = useState(false);
+  const [confirmingDeactivate, setConfirmingDeactivate] = useState(false);
+  const [deactivationError, setDeactivationError] = useState<string | null>(null);
 
   // Invite Modal State
   const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
@@ -105,6 +186,9 @@ export default function TeamPage() {
         if (typeof data.invitationsPaused === "boolean") {
           setInvitationsPaused(data.invitationsPaused);
         }
+        if (typeof data.isViewer === "boolean") {
+          setIsViewer(data.isViewer);
+        }
       }
 
       if (invitesRes.ok) {
@@ -112,6 +196,9 @@ export default function TeamPage() {
         setInvitations(iData.invitations || []);
         if (typeof iData.invitationsPaused === "boolean") {
           setInvitationsPaused(iData.invitationsPaused);
+        }
+        if (typeof iData.isViewer === "boolean") {
+          setIsViewer(iData.isViewer);
         }
       }
     } catch (err: any) {
@@ -125,12 +212,191 @@ export default function TeamPage() {
     fetchTeamData();
   }, []);
 
+  // Listen for persona changes
+  useEffect(() => {
+    const handlePersonaChange = (e: any) => {
+      if (e.detail?.role === "business_owner_viewer") {
+        setIsViewer(true);
+      } else if (e.detail) {
+        setIsViewer(false);
+      }
+    };
+    window.addEventListener("persona_changed", handlePersonaChange);
+    return () => window.removeEventListener("persona_changed", handlePersonaChange);
+  }, []);
+
+  // Handler for adding a new member
+  const handleAddMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMemberName.trim() || !newMemberJobTitle.trim()) {
+      setMemberError("يرجى كتابة الاسم والمسمى الوظيفي.");
+      return;
+    }
+
+    setSubmittingMember(true);
+    setMemberError(null);
+
+    try {
+      const res = await fetch("/api/team/members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          displayName: newMemberName.trim(),
+          jobTitle: newMemberJobTitle.trim(),
+          role: newMemberRole,
+          specialties: newMemberSpecialties,
+          weeklyHours: Number(newMemberWeeklyHours) || 40,
+          maxWeightedLoad: Number(newMemberMaxLoad) || 15,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "فشل إضافة العضو.");
+      }
+
+      setShowAddMemberModal(false);
+      setNewMemberName("");
+      setNewMemberJobTitle("");
+      setNewMemberRole("designer");
+      setNewMemberSpecialties(["design"]);
+      fetchTeamData();
+    } catch (err: any) {
+      setMemberError(err.message || "حدث خطأ أثناء إضافة العضو.");
+    } finally {
+      setSubmittingMember(false);
+    }
+  };
+
+  // Handler for editing an existing member
+  const handleOpenEditMember = (member: WorkloadMember) => {
+    setEditingMember(member);
+    setEditName(member.displayName);
+    setEditJobTitle(member.jobTitle);
+    setEditRole(member.role);
+    setEditSpecialties(member.specialties || []);
+    setEditWeeklyHours(member.weeklyHours || 40);
+    setEditMaxLoad(member.maxWeightedLoad || 15);
+    setEditError(null);
+  };
+
+  const handleSaveEditMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingMember) return;
+
+    if (!editName.trim() || !editJobTitle.trim()) {
+      setEditError("يرجى كتابة الاسم والمسمى الوظيفي.");
+      return;
+    }
+
+    setSavingMember(true);
+    setEditError(null);
+
+    try {
+      const res = await fetch(`/api/team/members/${editingMember.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          displayName: editName.trim(),
+          jobTitle: editJobTitle.trim(),
+          role: editRole,
+          specialties: editSpecialties,
+          weeklyHours: Number(editWeeklyHours) || 40,
+          maxWeightedLoad: Number(editMaxLoad) || 15,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "فشل حفظ التعديلات.");
+      }
+
+      setEditingMember(null);
+      fetchTeamData();
+    } catch (err: any) {
+      setEditError(err.message || "حدث خطأ أثناء حفظ التعديلات.");
+    } finally {
+      setSavingMember(false);
+    }
+  };
+
+  // Handler for opening safe deactivation impact check
+  const handleOpenDeactivation = async (member: WorkloadMember) => {
+    if (member.role === "owner") {
+      alert("لا يمكن تعطيل حساب المدير العام (المالك) حفاظاً على استقرار مساحة العمل.");
+      return;
+    }
+
+    // If currently inactive, allow direct reactivation
+    if (member.isActive === false) {
+      if (confirm(`هل ترغب في إعادة تفعيل حساب "${member.displayName}"؟`)) {
+        try {
+          const res = await fetch(`/api/team/members/${member.id}/toggle-active`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ isActive: true }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "فشل إعادة التفعيل.");
+          fetchTeamData();
+        } catch (e: any) {
+          alert(e.message);
+        }
+      }
+      return;
+    }
+
+    // Active member: fetch deactivation impact
+    setDeactivatingMember(member);
+    setLoadingImpact(true);
+    setDeactivationImpact(null);
+    setDeactivationError(null);
+
+    try {
+      const res = await fetch(`/api/team/members/${member.id}/impact`);
+      const data = await res.json();
+      if (res.ok && data.impact) {
+        setDeactivationImpact(data.impact);
+      } else {
+        setDeactivationError(data.error || "تعذر قراءة أثر التعطيل.");
+      }
+    } catch (err: any) {
+      setDeactivationError(err.message || "حدث خطأ أثناء الاتصال.");
+    } finally {
+      setLoadingImpact(false);
+    }
+  };
+
+  const handleConfirmDeactivation = async () => {
+    if (!deactivatingMember) return;
+
+    setConfirmingDeactivate(true);
+    setDeactivationError(null);
+
+    try {
+      const res = await fetch(`/api/team/members/${deactivatingMember.id}/toggle-active`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: false }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "فشل تعطيل حساب العضو.");
+      }
+
+      setDeactivatingMember(null);
+      fetchTeamData();
+    } catch (err: any) {
+      setDeactivationError(err.message || "حدث خطأ أثناء تعطيل العضو.");
+    } finally {
+      setConfirmingDeactivate(false);
+    }
+  };
+
   const handleSelectRosterPerson = (personId: string) => {
     setSelectedRosterId(personId);
     const person = teamMembers.find((m) => m.id === personId);
-    if (person && DEFAULT_EMAILS[person.displayName]) {
-      setInviteEmail(DEFAULT_EMAILS[person.displayName]);
-    }
     if (person?.role) {
       setInviteRole(person.role);
     }
@@ -196,85 +462,16 @@ export default function TeamPage() {
     }
   };
 
-  const handleToggleMemberActive = async (member: WorkloadMember) => {
-    if (member.role === "owner") {
-      alert("لا يمكن تعطيل حساب المدير العام (المالك) حفاظاً على استقرار مساحة العمل.");
-      return;
-    }
-
-    const nextState = member.isActive === false;
-    const confirmMsg = nextState
-      ? `هل أنت متأكد من إعادة تفعيل حساب "${member.displayName}"؟`
-      : `هل أنت متأكد من تعطيل حساب "${member.displayName}"؟ لن يتمكن من تسجيل ساعات أو استلام مهام جديدة.`;
-
-    if (!confirm(confirmMsg)) return;
-
-    try {
-      const res = await fetch(`/api/team/members/${member.id}/toggle-active`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive: nextState }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "فشل تغيير حالة تفعيل العضو.");
-      }
-
-      fetchTeamData();
-    } catch (err: any) {
-      alert(err.message || "حدث خطأ أثناء تعديل حالة العضو.");
-    }
-  };
-
-  const handleSendInvite = async (invitationId: string) => {
-    if (invitationsPaused) {
-      alert("الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. تم منع إرسال الدعوة حفاظًا على أمان النظام.");
-      return;
-    }
-
-    if (!confirm("هل ترغب في إرسال الدعوة الآن لهذا العضو؟")) return;
-
-    try {
-      const res = await fetch("/api/team/invitations", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: invitationId, action: "send" }),
-      });
-
-      const data = await res.json();
-      if (res.status === 403) {
-        alert("الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. تم منع الإرسال.");
-        return;
-      }
-      if (res.status === 429) {
-        alert(data.error || "يرجى الانتظار دقيقة واحدة قبل إعادة الإرسال (Cooldown).");
-        return;
-      }
-      if (!res.ok) {
-        throw new Error(data.error || "فشل إرسال الدعوة.");
-      }
-
-      alert("تم إرسال الدعوة بنجاح.");
-      fetchTeamData();
-    } catch (err: any) {
-      alert(err.message || "حدث خطأ أثناء إرسال الدعوة.");
-    }
-  };
-
   const handleCopyLink = (inv: InvitationRecord) => {
-    if (inv.status === "draft" || invitationsPaused) {
-      alert("لا يمكن نسخ الرابط لمسودة غير مرسلة أثناء توقف استقبال الدعوات.");
-      return;
-    }
-
     const host = window.location.host;
-    const baseOrigin = host.includes("localhost") || host.includes("127.0.0.1")
-      ? window.location.origin
-      : "https://omg-creative-workspace.vercel.app";
+    const baseOrigin =
+      host.includes("localhost") || host.includes("127.0.0.1")
+        ? window.location.origin
+        : "https://omg-creative-workspace.vercel.app";
     const inviteUrl = `${baseOrigin}/accept-invite?id=${inv.id}`;
     navigator.clipboard.writeText(inviteUrl);
-    alert("تم نسخ رابط الدعوة إلى الحافظة.");
+    setCopySuccessId(inv.id);
+    setTimeout(() => setCopySuccessId(null), 2500);
   };
 
   return (
@@ -282,13 +479,19 @@ export default function TeamPage() {
       {/* Page Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">فريق العمل والطاقة الاستيعابية</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">إدارة الفريق والطاقة الاستيعابية</h1>
           <p className="text-sm text-slate-500 mt-1">
-            إدارة أعضاء الفريق، الساعات المتاحة، معدل الحمل الموزون (Weighted Load)، ومتابعة تسليمات 7 و 14 يوم
+            إضافة أعضاء الفريق، توزيع التخصصات، تتبع حالات الانضمام، وإدارة الدعوات بأمان
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {isViewer && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl text-xs font-semibold">
+              <ShieldAlert className="w-4 h-4 text-amber-600" />
+              <span>مالك الشركة (مشاهد فقط)</span>
+            </div>
+          )}
           <button
             onClick={fetchTeamData}
             disabled={loading}
@@ -297,17 +500,31 @@ export default function TeamPage() {
           >
             <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
           </button>
-          <button
-            onClick={() => {
-              setInviteModalError(null);
-              setInviteModalSuccess(null);
-              setShowInviteModal(true);
-            }}
-            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-          >
-            <Mail className="w-4 h-4" />
-            <span>دعوة عضو جديد (مسودة)</span>
-          </button>
+          {!isViewer && (
+            <>
+              <button
+                onClick={() => {
+                  setMemberError(null);
+                  setShowAddMemberModal(true);
+                }}
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4" />
+                <span>إضافة عضو جديد</span>
+              </button>
+              <button
+                onClick={() => {
+                  setInviteModalError(null);
+                  setInviteModalSuccess(null);
+                  setShowInviteModal(true);
+                }}
+                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+              >
+                <Mail className="w-4 h-4" />
+                <span>تجهيز مسودة دعوة</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -320,13 +537,13 @@ export default function TeamPage() {
             </div>
             <div>
               <div className="font-bold text-slate-900 flex items-center gap-2">
-                <span>حالة قبول الدعوات: متوقفة مؤقتًا (بقرار المدير العام)</span>
+                <span>حالة إرسال الإيميلات التلقائية: متوقفة مؤقتًا</span>
                 <span className="px-2 py-0.5 bg-amber-200/80 text-amber-900 font-bold rounded-md text-[10px]">
                   وضع الحماية نشط
                 </span>
               </div>
               <p className="text-slate-600 text-[11px] mt-0.5 leading-relaxed">
-                إرسال الدعوات معطل ومقفل حالياً للحفاظ على استقرار النظام وعدم إزعاج الفريق. يمكنك تجهيز مسودات الدعوات دون إرسال أي إيميلات فعلية.
+                لمنع إرسال إيميلات عشوائية، يتم إنشاء الدعوات كمسودات، ويمكنك نسخ رابط الدعوة يدويًا وإرساله مباشرة لعضو الفريق عبر واتساب أو تليجرام.
               </p>
             </div>
           </div>
@@ -344,11 +561,29 @@ export default function TeamPage() {
 
         {loading && teamMembers.length === 0 ? (
           <div className="text-center py-16 text-slate-400 text-xs">جاري تحميل بيانات الفريق والطاقة الاستيعابية...</div>
+        ) : teamMembers.length === 0 ? (
+          <div className="p-12 text-center bg-surface rounded-2xl border-2 border-dashed border-slate-200 space-y-3 max-w-md mx-auto my-4">
+            <Users className="w-10 h-10 text-slate-300 mx-auto" />
+            <h3 className="font-bold text-slate-700">لا يوجد أعضاء في الفريق حالياً</h3>
+            <p className="text-xs text-slate-400">
+              ابدأ بإضافة أول عضو في الفريق وتحديد اختصاصاته وساعات العمل.
+            </p>
+            {!isViewer && (
+              <button
+                onClick={() => setShowAddMemberModal(true)}
+                className="mt-2 px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-xs"
+              >
+                <Plus className="w-4 h-4" />
+                <span>إضافة عضو جديد</span>
+              </button>
+            )}
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {teamMembers.map((member) => {
               const isHighLoad = member.status === "overloaded";
               const isBalanced = member.status === "balanced";
+              const memberStatus = getMemberStatus(member, invitations);
 
               return (
                 <div
@@ -356,7 +591,7 @@ export default function TeamPage() {
                   className="bg-surface rounded-2xl border border-slate-200/90 p-5 shadow-xs hover:border-sky-300 hover:shadow-sm transition-all flex flex-col justify-between text-xs space-y-4"
                 >
                   <div className="space-y-3">
-                    {/* Header: Avatar, Name & Role */}
+                    {/* Header: Avatar, Name, Status Badge & Role */}
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-xl bg-slate-900 text-white font-bold flex items-center justify-center text-sm shadow-xs">
@@ -370,10 +605,32 @@ export default function TeamPage() {
                         </div>
                       </div>
 
-                      <span className="px-2 py-0.5 rounded-md font-semibold text-[10px] bg-slate-100 text-slate-700">
-                        {ROSTER_ROLE_LABELS[member.role as keyof typeof ROSTER_ROLE_LABELS] || member.role}
-                      </span>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className={cn("px-2 py-0.5 rounded-md font-bold text-[10px] border", memberStatus.badgeClass)}>
+                          {memberStatus.label}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-md font-semibold text-[10px] bg-slate-100 text-slate-700">
+                          {ROSTER_ROLE_LABELS[member.role as keyof typeof ROSTER_ROLE_LABELS] || member.role}
+                        </span>
+                      </div>
                     </div>
+
+                    {/* Specialties Tags */}
+                    {member.specialties && member.specialties.length > 0 && (
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {member.specialties.map((spec) => {
+                          const specObj = AVAILABLE_SPECIALTIES.find((s) => s.key === spec);
+                          return (
+                            <span
+                              key={spec}
+                              className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-100 text-[9px] font-medium"
+                            >
+                              {specObj?.label || spec}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     {/* Operational Metrics */}
                     <div className="space-y-2 text-slate-600 text-[11px] pt-3 border-t border-slate-100">
@@ -455,28 +712,28 @@ export default function TeamPage() {
                         </div>
                       </div>
 
-                      {/* Active status & Deactivation toggle */}
+                      {/* Member Actions */}
                       <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className={cn(
-                              "w-2 h-2 rounded-full",
-                              member.isActive !== false ? "bg-emerald-500" : "bg-slate-400"
-                            )}
-                          />
-                          <span className="text-[11px] font-semibold text-slate-600">
-                            {member.isActive !== false ? "حساب نشط" : "معطل مؤقتاً"}
-                          </span>
-                        </div>
+                        {!isViewer ? (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditMember(member)}
+                            className="px-2.5 py-1 rounded-lg text-[10px] font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 transition-colors flex items-center gap-1"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                            <span>تعديل</span>
+                          </button>
+                        ) : <div />}
+
                         {member.role === "owner" ? (
                           <span className="text-[10px] text-slate-400 flex items-center gap-1">
                             <Lock className="w-3 h-3 text-slate-400" />
                             <span>حساب المالك محمي</span>
                           </span>
-                        ) : (
+                        ) : !isViewer ? (
                           <button
                             type="button"
-                            onClick={() => handleToggleMemberActive(member)}
+                            onClick={() => handleOpenDeactivation(member)}
                             className={cn(
                               "px-2.5 py-1 rounded-lg text-[10px] font-semibold transition-colors flex items-center gap-1",
                               member.isActive !== false
@@ -496,7 +753,7 @@ export default function TeamPage() {
                               </>
                             )}
                           </button>
-                        )}
+                        ) : null}
                       </div>
 
                       {member.notes && (
@@ -519,21 +776,23 @@ export default function TeamPage() {
           <div>
             <h2 className="font-bold text-base text-slate-900 flex items-center gap-2">
               <Mail className="w-4 h-4 text-indigo-600" />
-              مركز دعوات الفريق والربط الأمني (Owner Team Invitations Center)
+              مركز دعوات الفريق والربط الأمني (Team Invitations Center)
             </h2>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              إعداد مسودات الدعوات للأعضاء الستة المعتمدين دون إنشاء حسابات وهمية أو إرسال إيميلات عشوائية
+              إدارة مسودات الدعوات ونسخ روابط الانضمام للمشاركين المعتمدين دون إرسال إيميلات عشوائية
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setShowInviteModal(true)}
-            className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-bold flex items-center gap-1.5 transition-colors self-start sm:self-auto"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>إنشاء مسودة دعوة</span>
-          </button>
+          {!isViewer && (
+            <button
+              type="button"
+              onClick={() => setShowInviteModal(true)}
+              className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-bold flex items-center gap-1.5 transition-colors self-start sm:self-auto"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>إنشاء مسودة دعوة</span>
+            </button>
+          )}
         </div>
 
         {/* Invitations Table */}
@@ -605,37 +864,27 @@ export default function TeamPage() {
                           onClick={() => handleCopyLink(inv)}
                           className={cn(
                             "p-1.5 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors",
-                            inv.status === "draft" || invitationsPaused
-                              ? "text-slate-400 hover:text-slate-500 hover:bg-slate-100"
+                            copySuccessId === inv.id
+                              ? "bg-emerald-50 text-emerald-700 font-bold"
                               : "text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
                           )}
-                          title={
-                            inv.status === "draft" || invitationsPaused
-                              ? "نسخ الرابط معطل (مسودة غير مرسلة / الدعوات متوقفة)"
-                              : "نسخ رابط الدعوة"
-                          }
+                          title="نسخ رابط الانضمام المباشر"
                         >
-                          <Copy className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">نسخ الرابط</span>
+                          {copySuccessId === inv.id ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>تم النسخ!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">نسخ الرابط</span>
+                            </>
+                          )}
                         </button>
 
-                        {/* Send / Resend button */}
-                        {(inv.status === "draft" || inv.status === "pending") && (
-                          <button
-                            type="button"
-                            onClick={() => handleSendInvite(inv.id)}
-                            className="text-emerald-600 hover:text-emerald-800 p-1.5 hover:bg-emerald-50 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors"
-                            title="إرسال الدعوة"
-                          >
-                            <Send className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">
-                              {inv.status === "draft" ? "إرسال" : "إعادة إرسال"}
-                            </span>
-                          </button>
-                        )}
-
                         {/* Revoke button */}
-                        {inv.status !== "revoked" && inv.status !== "accepted" && (
+                        {!isViewer && inv.status !== "revoked" && inv.status !== "accepted" && (
                           <button
                             type="button"
                             onClick={() => handleRevokeInvite(inv.id)}
@@ -656,7 +905,389 @@ export default function TeamPage() {
         </div>
       </div>
 
-      {/* Draft Invitation Modal */}
+      {/* Modal 1: Add Team Member Modal */}
+      {showAddMemberModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <form
+            onSubmit={handleAddMember}
+            className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                <Plus className="w-5 h-5 text-sky-600" />
+                إضافة عضو جديد للفريق
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowAddMemberModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  الاسم بالعربية <span className="text-rose-500">*</span>:
+                </label>
+                <input
+                  type="text"
+                  value={newMemberName}
+                  onChange={(e) => setNewMemberName(e.target.value)}
+                  placeholder="مثال: أحمد محمود"
+                  required
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold focus:outline-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  المسمى الوظيفي <span className="text-rose-500">*</span>:
+                </label>
+                <input
+                  type="text"
+                  value={newMemberJobTitle}
+                  onChange={(e) => setNewMemberJobTitle(e.target.value)}
+                  placeholder="مثال: Senior Graphic Designer / كاتب محتوى إبداعي"
+                  required
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">الدور والصلاحيات في النظام:</label>
+                <select
+                  value={newMemberRole}
+                  onChange={(e) => setNewMemberRole(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold"
+                >
+                  {AVAILABLE_ROLES.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">التخصصات المعتمدة:</label>
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  {AVAILABLE_SPECIALTIES.map((spec) => {
+                    const isChecked = newMemberSpecialties.includes(spec.key);
+                    return (
+                      <label
+                        key={spec.key}
+                        className={cn(
+                          "flex items-center gap-2 p-2 rounded-xl border cursor-pointer text-[11px] transition-colors",
+                          isChecked
+                            ? "bg-sky-50 border-sky-300 text-sky-900 font-bold"
+                            : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setNewMemberSpecialties([...newMemberSpecialties, spec.key]);
+                            } else {
+                              setNewMemberSpecialties(newMemberSpecialties.filter((k) => k !== spec.key));
+                            }
+                          }}
+                          className="rounded text-sky-600"
+                        />
+                        <span>{spec.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">الساعات الأسبوعية:</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={80}
+                    value={newMemberWeeklyHours}
+                    onChange={(e) => setNewMemberWeeklyHours(Number(e.target.value))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">أقصى حمل موزون:</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={newMemberMaxLoad}
+                    onChange={(e) => setNewMemberMaxLoad(Number(e.target.value))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {memberError && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-[11px]">
+                {memberError}
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setShowAddMemberModal(false)}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold"
+              >
+                إلغاء
+              </button>
+
+              <button
+                type="submit"
+                disabled={submittingMember}
+                className="px-5 py-2 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 text-white rounded-xl font-bold shadow-xs transition-colors flex items-center gap-1.5"
+              >
+                {submittingMember ? "جاري الإضافة..." : "حفظ وإضافة العضو"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Modal 2: Edit Team Member Modal */}
+      {editingMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <form
+            onSubmit={handleSaveEditMember}
+            className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                <Edit2 className="w-5 h-5 text-indigo-600" />
+                تعديل بيانات العضو: {editingMember.displayName}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingMember(null)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  الاسم بالعربية <span className="text-rose-500">*</span>:
+                </label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold focus:outline-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  المسمى الوظيفي <span className="text-rose-500">*</span>:
+                </label>
+                <input
+                  type="text"
+                  value={editJobTitle}
+                  onChange={(e) => setEditJobTitle(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">الدور والصلاحيات:</label>
+                <select
+                  value={editRole}
+                  onChange={(e) => setEditRole(e.target.value)}
+                  disabled={editingMember.role === "owner"}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold disabled:bg-slate-100"
+                >
+                  {editingMember.role === "owner" ? (
+                    <option value="owner">المدير العام المالك (Owner - محمي)</option>
+                  ) : (
+                    AVAILABLE_ROLES.map((r) => (
+                      <option key={r.value} value={r.value}>
+                        {r.label}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">التخصصات المعتمدة:</label>
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  {AVAILABLE_SPECIALTIES.map((spec) => {
+                    const isChecked = editSpecialties.includes(spec.key);
+                    return (
+                      <label
+                        key={spec.key}
+                        className={cn(
+                          "flex items-center gap-2 p-2 rounded-xl border cursor-pointer text-[11px] transition-colors",
+                          isChecked
+                            ? "bg-sky-50 border-sky-300 text-sky-900 font-bold"
+                            : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setEditSpecialties([...editSpecialties, spec.key]);
+                            } else {
+                              setEditSpecialties(editSpecialties.filter((k) => k !== spec.key));
+                            }
+                          }}
+                          className="rounded text-sky-600"
+                        />
+                        <span>{spec.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">الساعات الأسبوعية:</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={80}
+                    value={editWeeklyHours}
+                    onChange={(e) => setEditWeeklyHours(Number(e.target.value))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">أقصى حمل موزون:</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={editMaxLoad}
+                    onChange={(e) => setEditMaxLoad(Number(e.target.value))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {editError && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-[11px]">
+                {editError}
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setEditingMember(null)}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold"
+              >
+                إلغاء
+              </button>
+
+              <button
+                type="submit"
+                disabled={savingMember}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-xl font-bold shadow-xs transition-colors"
+              >
+                {savingMember ? "جاري الحفظ..." : "حفظ التعديلات"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Modal 3: Safe Deactivation Impact Modal */}
+      {deactivatingMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100 text-rose-700">
+              <div className="p-2 rounded-xl bg-rose-100 text-rose-700">
+                <AlertTriangle className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-slate-900">
+                  فحص أثر تعطيل الحساب: {deactivatingMember.displayName}
+                </h3>
+                <p className="text-[11px] text-slate-500">مراجعة المهام المفتوحة والحسابات المسندة قبل التعطيل</p>
+              </div>
+            </div>
+
+            {loadingImpact ? (
+              <div className="py-8 text-center text-slate-400 space-y-2">
+                <RefreshCw className="w-5 h-5 animate-spin mx-auto text-sky-600" />
+                <p>جاري احتساب أثر التعطيل وفحص المهام المرتبطة...</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">المهام المفتوحة المسندة:</span>
+                    <span className={cn("font-bold font-mono text-sm", (deactivationImpact?.open_tasks_count || 0) > 0 ? "text-rose-600" : "text-emerald-700")}>
+                      {deactivationImpact?.open_tasks_count || 0} مهام
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">العملاء المسندون:</span>
+                    <span className={cn("font-bold font-mono text-sm", (deactivationImpact?.assigned_clients_count || 0) > 0 ? "text-amber-700" : "text-emerald-700")}>
+                      {deactivationImpact?.assigned_clients_count || 0} عملاء
+                    </span>
+                  </div>
+                </div>
+
+                {(deactivationImpact?.open_tasks_count > 0 || deactivationImpact?.assigned_clients_count > 0) && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 space-y-1 text-[11px] leading-relaxed">
+                    <strong>تنبيه للحفاظ على سير العمل:</strong> هذا العضو لديه مهام مفتوحة أو عملاء مسندين. لن يتم حذف هذه المهام بل ستبقى مرتبطة بالعضو، ولكن يوصى بإعادة إسنادها من صفحة العملاء والمهام لتفادي تأخر التسليمات.
+                  </div>
+                )}
+
+                {deactivationError && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-[11px]">
+                    {deactivationError}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                disabled={confirmingDeactivate}
+                onClick={() => setDeactivatingMember(null)}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold"
+              >
+                إلغاء
+              </button>
+
+              <button
+                type="button"
+                disabled={loadingImpact || confirmingDeactivate}
+                onClick={handleConfirmDeactivation}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 text-white rounded-xl font-bold shadow-xs transition-colors"
+              >
+                {confirmingDeactivate ? "جاري التعطيل..." : "تأكيد التعطيل المؤقت"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 4: Draft Invitation Modal */}
       {showInviteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
           <form
@@ -677,9 +1308,8 @@ export default function TeamPage() {
               </button>
             </div>
 
-            {/* Paused Alert Inside Modal */}
             <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-[11px] leading-relaxed">
-              <strong>تنبيه أمان للمدير العام:</strong> الدعوات متوقفة مؤقتًا في مساحة العمل. سيتم حفظ هذا السجل كمسودة معتمدة دون إرسال أي إيميل للمستخدم أو إنشاء حساب وهمي.
+              <strong>تنبيه أمان للمدير العام:</strong> إرسال الإيميلات التلقائي متوقف. سيتم حفظ هذا السجل كمسودة معتمدة، ويمكنك نسخ الرابط مباشرة ومشاركته مع العضو.
             </div>
 
             <div className="space-y-3">
@@ -710,7 +1340,7 @@ export default function TeamPage() {
                   type="email"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
-                  placeholder="name@gmail.com"
+                  placeholder="name@company.com"
                   required
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-mono focus:outline-sky-500"
                 />
@@ -723,13 +1353,11 @@ export default function TeamPage() {
                   onChange={(e) => setInviteRole(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs"
                 >
-                  <option value="designer">مصمم (Designer)</option>
-                  <option value="senior_reviewer">مراجع أول (Senior Reviewer)</option>
-                  <option value="marketing_director">مدير تسويق (Marketing Director)</option>
-                  <option value="strategy_lead">قائد فريق استراتيجية (Strategy Lead)</option>
-                  <option value="strategist">استراتيجي (Strategist)</option>
-                  <option value="content_writer">كاتب محتوى (Content Writer)</option>
-                  <option value="video_editor">مونتير (Video Editor)</option>
+                  {AVAILABLE_ROLES.filter((r) => r.value !== "owner").map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -755,26 +1383,13 @@ export default function TeamPage() {
                 إلغاء
               </button>
 
-              <div className="flex items-center gap-2">
-                {/* Live send button is intentionally disabled while paused */}
-                <button
-                  type="button"
-                  disabled
-                  className="px-3 py-2 bg-slate-100 text-slate-400 rounded-xl font-bold text-[11px] flex items-center gap-1 cursor-not-allowed border border-slate-200"
-                  title="الإرسال المباشر متوقف بأمر المدير العام"
-                >
-                  <Lock className="w-3.5 h-3.5" />
-                  <span>إرسال فوري (معطل)</span>
-                </button>
-
-                <button
-                  type="submit"
-                  disabled={submittingInvite || !selectedRosterId || !inviteEmail.trim()}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-xl font-bold shadow-xs transition-colors"
-                >
-                  {submittingInvite ? "جاري الحفظ..." : "حفظ كمسودة دعوة"}
-                </button>
-              </div>
+              <button
+                type="submit"
+                disabled={submittingInvite || !selectedRosterId || !inviteEmail.trim()}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-xl font-bold shadow-xs transition-colors"
+              >
+                {submittingInvite ? "جاري الحفظ..." : "حفظ كمسودة دعوة"}
+              </button>
             </div>
           </form>
         </div>

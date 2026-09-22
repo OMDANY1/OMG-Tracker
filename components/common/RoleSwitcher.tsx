@@ -28,7 +28,7 @@ export const PRESET_PERSONAS: ActivePersona[] = [
   { id: "alaa-id", displayName: "آلاء", jobTitle: "Midlevel Graphic Designer", role: "designer", specialty: "design" },
   { id: "shahd-id", displayName: "شهد", jobTitle: "Midlevel Graphic Designer", role: "designer", specialty: "design" },
   { id: "aya-id", displayName: "آية", jobTitle: "Junior Graphic Designer", role: "designer", specialty: "design" },
-  { id: "video-id", displayName: "فيديو إيديتور (تجريبي)", jobTitle: "Video Editor", role: "video_editor", specialty: "video_editing" },
+  { id: "viewer-id", displayName: "مالك الشركة (مشاهد)", jobTitle: "Business Owner Viewer", role: "business_owner_viewer" },
 ];
 
 export function RoleSwitcher() {

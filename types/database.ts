@@ -9,7 +9,8 @@ export type RosterRole =
   | 'strategy_lead'
   | 'strategist'
   | 'content_writer'
-  | 'video_editor';
+  | 'video_editor'
+  | 'business_owner_viewer';
 
 export type WorkStage = 'strategy' | 'copywriting' | 'design' | 'video_editing' | 'video_cover';
 export type ClientDifficulty = 'Easy' | 'Medium' | 'Hard' | 'Unknown';

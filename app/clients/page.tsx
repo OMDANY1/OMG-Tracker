@@ -32,6 +32,7 @@ import {
 } from "@/lib/utils";
 import { ClientTeamModal } from "@/components/clients/ClientTeamModal";
 import { ClientBriefModal } from "@/components/clients/ClientBriefModal";
+import { AddClientModal } from "@/components/clients/AddClientModal";
 
 interface Designer {
   id: string;
@@ -52,6 +53,8 @@ export default function ClientsPage() {
   const [videoEditors, setVideoEditors] = useState<any[]>([]);
   const [managers, setManagers] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState(false);
+  const [isViewer, setIsViewer] = useState(false);
+  const [isAddClientModalOpen, setIsAddClientModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -92,6 +95,7 @@ export default function ClientsPage() {
       if (data.videoEditors) setVideoEditors(data.videoEditors);
       if (data.managers) setManagers(data.managers);
       if (typeof data.isOwner === "boolean") setIsOwner(data.isOwner);
+      if (typeof data.isViewer === "boolean") setIsViewer(data.isViewer);
     } catch (e: any) {
       console.error(e);
       setFetchError(e.message || "حدث خطأ غير متوقع أثناء الاتصال بالخادم");
@@ -109,8 +113,13 @@ export default function ClientsPage() {
     const handlePersonaChange = (e: any) => {
       if (e.detail?.role === "owner") {
         setIsOwner(true);
+        setIsViewer(false);
+      } else if (e.detail?.role === "business_owner_viewer") {
+        setIsOwner(false);
+        setIsViewer(true);
       } else if (e.detail) {
         setIsOwner(false);
+        setIsViewer(false);
       }
     };
     window.addEventListener("persona_changed", handlePersonaChange);
@@ -323,11 +332,26 @@ export default function ClientsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {isOwner && (
+          {isViewer && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl text-xs font-semibold">
+              <ShieldAlert className="w-4 h-4 text-amber-600" />
+              <span>مالك الشركة (مشاهد فقط - بدون صلاحيات تعديل)</span>
+            </div>
+          )}
+          {isOwner && !isViewer && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-semibold">
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
               <span>صلاحية إدارة وتوزيع فرق العملاء نشطة (Owner)</span>
             </div>
+          )}
+          {!isViewer && (
+            <button
+              onClick={() => setIsAddClientModalOpen(true)}
+              className="px-3.5 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>إضافة عميل جديد</span>
+            </button>
           )}
           <button
             onClick={fetchClients}
@@ -860,7 +884,30 @@ export default function ClientsPage() {
       </div>
 
       {/* Clients Cards Grid */}
-      {filteredClients.length === 0 ? (
+      {clients.length === 0 ? (
+        <div className="p-12 sm:p-16 text-center bg-surface rounded-2xl border-2 border-dashed border-slate-200 space-y-4 max-w-xl mx-auto my-6">
+          <div className="w-16 h-16 bg-sky-50 text-sky-600 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
+            <Building2 className="w-8 h-8" />
+          </div>
+          <div className="space-y-1.5">
+            <h3 className="text-base sm:text-lg font-bold text-slate-800">مساحة العمل جاهزة ونظيفة للتشغيل الفعلي</h3>
+            <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
+              لم تتم إضافة أي عملاء بعد. يمكنك البدء الآن بتهيئة مساحة العمل عبر إضافة أول عميل، وتحديد الصعوبة وتوزيع أعضاء الفريق على التخصصات.
+            </p>
+          </div>
+          {!isViewer && (
+            <div className="pt-2">
+              <button
+                onClick={() => setIsAddClientModalOpen(true)}
+                className="px-5 py-2.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 transition-all shadow-sm"
+              >
+                <PlusCircle className="w-4 h-4" />
+                <span>إضافة أول عميل الآن</span>
+              </button>
+            </div>
+          )}
+        </div>
+      ) : filteredClients.length === 0 ? (
         <div className="p-12 text-center bg-surface rounded-2xl border border-slate-200 space-y-3">
           <Building2 className="w-10 h-10 text-slate-300 mx-auto" />
           <h3 className="font-bold text-slate-700">لا توجد حسابات عملاء مطابقة للفلاتر المحددة</h3>
@@ -994,32 +1041,40 @@ export default function ClientsPage() {
                 </div>
 
                 <div className="pt-2 border-t border-slate-100 space-y-1.5">
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <button
-                      onClick={() => setTeamModalClient(client)}
-                      className="px-2 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 rounded-xl font-bold flex items-center justify-center gap-1 transition-colors text-[10px]"
-                      title={isOwner ? "توزيع فريق العمل متعدد التخصصات" : "صلاحية حصرية للمدير العام"}
-                    >
-                      <Users className="w-3 h-3 text-sky-600" />
-                      <span>توزيع فريق العميل</span>
-                    </button>
-                    <button
-                      onClick={() => setBriefModalClient(client)}
-                      className="px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-semibold flex items-center justify-center gap-1 transition-colors text-[10px]"
-                    >
-                      <Compass className="w-3 h-3 text-emerald-600" />
-                      <span>الـ Brief</span>
-                    </button>
-                  </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        onClick={() => setTeamModalClient(client)}
+                        disabled={isViewer}
+                        className={cn(
+                          "px-2 py-1.5 rounded-xl font-bold flex items-center justify-center gap-1 transition-colors text-[10px]",
+                          isViewer
+                            ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                            : "bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200"
+                        )}
+                        title={isViewer ? "حساب مشاهد فقط" : isOwner ? "توزيع فريق العمل متعدد التخصصات" : "صلاحية حصرية للمدير العام"}
+                      >
+                        <Users className="w-3 h-3 text-sky-600" />
+                        <span>توزيع فريق العميل</span>
+                      </button>
+                      <button
+                        onClick={() => setBriefModalClient(client)}
+                        className="px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-semibold flex items-center justify-center gap-1 transition-colors text-[10px]"
+                      >
+                        <Compass className="w-3 h-3 text-emerald-600" />
+                        <span>الـ Brief</span>
+                      </button>
+                    </div>
 
-                  <button
-                    onClick={() => handleOpenReassignModal(client)}
-                    className="w-full px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-xl font-medium flex items-center justify-center gap-1.5 transition-colors text-[10px]"
-                    title={isOwner ? "نقل المصمم المسؤول" : "صلاحية حصرية للمدير العام"}
-                  >
-                    <ArrowRightLeft className="w-3 h-3 text-slate-500" />
-                    <span>إعادة إسناد المصمم</span>
-                  </button>
+                    {!isViewer && (
+                      <button
+                        onClick={() => handleOpenReassignModal(client)}
+                        className="w-full px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-xl font-medium flex items-center justify-center gap-1.5 transition-colors text-[10px]"
+                        title={isOwner ? "نقل المصمم المسؤول" : "صلاحية حصرية للمدير العام"}
+                      >
+                        <ArrowRightLeft className="w-3 h-3 text-slate-500" />
+                        <span>إعادة إسناد المصمم</span>
+                      </button>
+                    )}
                 </div>
               </div>
             );
@@ -1267,6 +1322,18 @@ export default function ClientsPage() {
         onClose={() => setBriefModalClient(null)}
         onSaved={fetchClients}
         isOwner={isOwner}
+      />
+
+      {/* Add Client Onboarding Modal */}
+      <AddClientModal
+        isOpen={isAddClientModalOpen}
+        onClose={() => setIsAddClientModalOpen(false)}
+        onSuccess={fetchClients}
+        designers={designers}
+        writers={writers}
+        strategists={strategists}
+        videoEditors={videoEditors}
+        allTeamMembers={allTeamMembers}
       />
     </div>
   );

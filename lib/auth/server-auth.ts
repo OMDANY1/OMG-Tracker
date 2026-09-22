@@ -215,6 +215,33 @@ export async function requireWorkspaceMembership(
 }
 
 /**
+ * Ensures caller is an active workspace member with mutation permissions (not a viewer).
+ */
+export async function requireWritableMembership(
+  req: NextRequest
+): Promise<
+  AuthResult<{
+    user: User;
+    membership: ActiveMembershipContext;
+    admin: SupabaseClient;
+    serverClient: SupabaseClient;
+  }>
+> {
+  const result = await requireWorkspaceMembership(req);
+  if (!result.success) return result;
+  if (result.data.membership.role === "business_owner_viewer") {
+    return {
+      success: false,
+      errorResponse: NextResponse.json(
+        { error: "غير مصرح: حساب مالك الشركة للمشاهدة فقط ولا يملك صلاحية التعديل أو الإنشاء." },
+        { status: 403 }
+      ),
+    };
+  }
+  return result;
+}
+
+/**
  * Ensures caller is specifically the Workspace Owner.
  */
 export async function requireOwner(
@@ -232,6 +259,22 @@ export async function requireOwner(
     return result;
   }
   return result;
+}
+
+/**
+ * Ensures caller is Owner or Business Owner Viewer.
+ */
+export async function requireOwnerOrViewer(
+  req: NextRequest
+): Promise<
+  AuthResult<{
+    user: User;
+    membership: ActiveMembershipContext;
+    admin: SupabaseClient;
+    serverClient: SupabaseClient;
+  }>
+> {
+  return requireWorkspaceMembership(req, { allowedRoles: ["owner", "business_owner_viewer"] });
 }
 
 /**
@@ -310,6 +353,23 @@ export async function requireTaskAccess(
 
   // Owner has universal access within the workspace
   if (membership.role === "owner") {
+    return {
+      success: true,
+      data: { user, membership, task, admin, serverClient },
+    };
+  }
+
+  // Business Owner Viewer has read-only access to all workspace tasks
+  if (membership.role === "business_owner_viewer") {
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+      return {
+        success: false,
+        errorResponse: NextResponse.json(
+          { error: "غير مصرح: حساب مالك الشركة للمشاهدة فقط ولا يملك صلاحية التعديل." },
+          { status: 403 }
+        ),
+      };
+    }
     return {
       success: true,
       data: { user, membership, task, admin, serverClient },

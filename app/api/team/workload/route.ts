@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireOwner } from "@/lib/auth/server-auth";
+import { requireOwner, requireOwnerOrViewer } from "@/lib/auth/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +8,8 @@ export interface DesignerWorkloadMetric {
   displayName: string;
   jobTitle: string;
   role: string;
+  specialties?: string[];
+  hasJoined?: boolean;
   weeklyHours: number;
   reservedHours: number;
   activeClientsCount: number;
@@ -24,13 +26,15 @@ export interface DesignerWorkloadMetric {
 
 export async function GET(req: NextRequest) {
   try {
-    const authResult = await requireOwner(req);
+    // Protected by requireOwner with read access for business_owner_viewer
+    const authResult = await requireOwnerOrViewer(req);
     if (!authResult.success) {
       return authResult.errorResponse;
     }
 
     const { membership, admin } = authResult.data;
     const workspaceId = membership.workspaceId;
+    const isViewer = membership.role === "business_owner_viewer";
 
     // 1. Get Workspace & Invitations Status
     const { data: ws } = await admin
@@ -43,12 +47,12 @@ export async function GET(req: NextRequest) {
     const [rosterRes, membershipsRes, capacitiesRes, clientsRes, tasksRes] = await Promise.all([
       admin
         .from("roster_people")
-        .select("id, display_name, job_title, is_active")
+        .select("id, display_name, job_title, is_active, specialties")
         .eq("workspace_id", workspaceId)
         .order("display_name", { ascending: true }),
       admin
         .from("workspace_memberships")
-        .select("roster_person_id, role")
+        .select("roster_person_id, role, user_id")
         .eq("workspace_id", workspaceId)
         .eq("is_active", true),
       admin
@@ -92,9 +96,11 @@ export async function GET(req: NextRequest) {
     const tasks = tasksRes.data || [];
 
     const membershipRoleMap = new Map<string, string>();
+    const membershipUserMap = new Map<string, string | null>();
     for (const m of memberships) {
-      if (m.roster_person_id && m.role) {
-        membershipRoleMap.set(m.roster_person_id, m.role);
+      if (m.roster_person_id) {
+        if (m.role) membershipRoleMap.set(m.roster_person_id, m.role);
+        membershipUserMap.set(m.roster_person_id, m.user_id || null);
       }
     }
 
@@ -178,11 +184,16 @@ export async function GET(req: NextRequest) {
       if (loadRatio < 60) status = "underutilized";
       else if (loadRatio > 90) status = "overloaded";
 
+      const userId = membershipUserMap.get(person.id);
+      const hasJoined = Boolean(userId);
+
       return {
         id: person.id,
         displayName: person.display_name,
         jobTitle: person.job_title || "Graphic Designer",
         role: role || "designer",
+        specialties: (person as any).specialties || [],
+        hasJoined,
         isActive: person.is_active !== false,
         weeklyHours,
         reservedHours,
@@ -211,6 +222,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       workspaceId,
+      isViewer,
       invitationsPaused: Boolean(ws?.invitations_paused),
       members: metrics,
     });

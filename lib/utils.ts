@@ -142,6 +142,7 @@ export const ROSTER_ROLE_LABELS: Record<RosterRole, string> = {
   strategist: "استراتيجيست (Strategist)",
   content_writer: "كونتنت رايتر (Content Writer)",
   video_editor: "فيديو إيديتور (Video Editor)",
+  business_owner_viewer: "مالك الشركة (مشاهد فقط)",
 };
 
 export function formatDurationSeconds(seconds: number): string {

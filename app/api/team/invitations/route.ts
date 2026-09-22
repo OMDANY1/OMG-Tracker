@@ -1,17 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
+import { requireWorkspaceMembership, requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
 import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
-    const authRes = await requireOwner(req);
+    const authRes = await requireWorkspaceMembership(req, {
+      allowedRoles: ["owner", "business_owner_viewer"],
+    });
     if (!authRes.success) {
       return authRes.errorResponse;
     }
 
     const { membership, admin } = authRes.data;
+    const isViewer = membership.role === "business_owner_viewer";
 
     const { data: ws } = await admin
       .from("workspaces")
@@ -44,15 +47,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Augment with safe UI indicators (e.g. can_copy_link is false for draft or paused)
+    // Augment with safe UI indicators: canCopyLink is true for active/pending invitations
     const augmentedInvitations = (invitations || []).map((inv: any) => ({
       ...inv,
-      canCopyLink: inv.status !== "draft" && !ws.invitations_paused,
+      canCopyLink: inv.status !== "revoked",
       isDraft: inv.status === "draft",
     }));
 
     return NextResponse.json({
       success: true,
+      isViewer,
       invitationsPaused: ws.invitations_paused,
       invitations: augmentedInvitations,
     });
