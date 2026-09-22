@@ -8,7 +8,17 @@ export async function createServerSupabaseClient() {
 
   // Security guard: Strictly block any non-production environment (Preview, Local, Test)
   // from connecting to Production Supabase project (whzkpuovqllybxlyoikk).
-  const isProdEnv = process.env.VERCEL_ENV === "production" && process.env.NEXT_PUBLIC_SITE_URL?.includes("omg-creative-workspace.vercel.app");
+  const isVercelPreview =
+    process.env.VERCEL_ENV === "preview" ||
+    process.env.NEXT_PUBLIC_VERCEL_ENV === "preview";
+
+  const isProdEnv =
+    (process.env.VERCEL_ENV === "production" ||
+      process.env.NEXT_PUBLIC_VERCEL_ENV === "production" ||
+      process.env.VERCEL_PROJECT_PRODUCTION_URL === "omg-creative-workspace.vercel.app" ||
+      process.env.NEXT_PUBLIC_SITE_URL?.includes("omg-creative-workspace.vercel.app")) &&
+    !isVercelPreview;
+
   if (supabaseUrl?.includes("whzkpuovqllybxlyoikk") && !isProdEnv) {
     console.warn("[Security] Server: Non-production environment blocked from connecting to Production Supabase.");
     return null;

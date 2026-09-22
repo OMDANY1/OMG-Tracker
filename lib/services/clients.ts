@@ -180,7 +180,7 @@ export async function archiveClient(params: {
 }
 
 export async function upsertClientTeamAssignment(params: {
-  workspaceId: string;
+  workspaceId?: string;
   clientId: string;
   primaryStrategistId?: string | null;
   primaryCopywriterId?: string | null;
@@ -192,13 +192,33 @@ export async function upsertClientTeamAssignment(params: {
   videoReviewerId?: string | null;
   marketingDirectorId?: string | null;
   strategyLeadId?: string | null;
+  requiresVideo?: boolean | null;
   idempotencyKey?: string;
 }) {
   const supabase = await getClient();
   if (!supabase) throw new Error("Supabase is not configured.");
 
+  let workspaceId = params.workspaceId;
+  if (!workspaceId || workspaceId === "00000000-0000-0000-0000-000000000000") {
+    const { data: c } = await supabase
+      .from("clients")
+      .select("workspace_id")
+      .eq("id", params.clientId)
+      .maybeSingle();
+    workspaceId = c?.workspace_id;
+  }
+
+  if (!workspaceId) {
+    const { data: ws } = await supabase.from("workspaces").select("id").limit(1).maybeSingle();
+    workspaceId = ws?.id;
+  }
+
+  if (!workspaceId) {
+    throw new Error("Workspace ID could not be determined for updating client team assignment.");
+  }
+
   const { data, error } = await supabase.rpc("upsert_client_team_assignment", {
-    p_workspace_id: params.workspaceId,
+    p_workspace_id: workspaceId,
     p_client_id: params.clientId,
     p_primary_strategist_id: params.primaryStrategistId || null,
     p_primary_copywriter_id: params.primaryCopywriterId || null,
@@ -211,6 +231,7 @@ export async function upsertClientTeamAssignment(params: {
     p_marketing_director_id: params.marketingDirectorId || null,
     p_strategy_lead_id: params.strategyLeadId || null,
     p_idempotency_key: params.idempotencyKey || null,
+    p_requires_video: params.requiresVideo !== undefined ? params.requiresVideo : null,
   });
 
   if (error) throw new Error(`فشل تحديث فريق العمل: ${error.message}`);
@@ -218,7 +239,7 @@ export async function upsertClientTeamAssignment(params: {
 }
 
 export async function upsertClientBrief(params: {
-  workspaceId: string;
+  workspaceId?: string;
   clientId: string;
   objectives?: string | null;
   targetAudience?: string | null;
@@ -234,8 +255,27 @@ export async function upsertClientBrief(params: {
   const supabase = await getClient();
   if (!supabase) throw new Error("Supabase is not configured.");
 
+  let workspaceId = params.workspaceId;
+  if (!workspaceId || workspaceId === "00000000-0000-0000-0000-000000000000") {
+    const { data: c } = await supabase
+      .from("clients")
+      .select("workspace_id")
+      .eq("id", params.clientId)
+      .maybeSingle();
+    workspaceId = c?.workspace_id;
+  }
+
+  if (!workspaceId) {
+    const { data: ws } = await supabase.from("workspaces").select("id").limit(1).maybeSingle();
+    workspaceId = ws?.id;
+  }
+
+  if (!workspaceId) {
+    throw new Error("Workspace ID could not be determined for updating client brief.");
+  }
+
   const { data, error } = await supabase.rpc("upsert_client_brief", {
-    p_workspace_id: params.workspaceId,
+    p_workspace_id: workspaceId,
     p_client_id: params.clientId,
     p_objectives: params.objectives || null,
     p_target_audience: params.targetAudience || null,
@@ -254,7 +294,7 @@ export async function upsertClientBrief(params: {
 }
 
 export async function reviewClientBriefOperational(params: {
-  workspaceId: string;
+  workspaceId?: string;
   clientId: string;
   decision?: "approved" | "changes_requested";
   feedback?: string | null;
@@ -263,8 +303,27 @@ export async function reviewClientBriefOperational(params: {
   const supabase = await getClient();
   if (!supabase) throw new Error("Supabase is not configured.");
 
+  let workspaceId = params.workspaceId;
+  if (!workspaceId || workspaceId === "00000000-0000-0000-0000-000000000000") {
+    const { data: c } = await supabase
+      .from("clients")
+      .select("workspace_id")
+      .eq("id", params.clientId)
+      .maybeSingle();
+    workspaceId = c?.workspace_id;
+  }
+
+  if (!workspaceId) {
+    const { data: ws } = await supabase.from("workspaces").select("id").limit(1).maybeSingle();
+    workspaceId = ws?.id;
+  }
+
+  if (!workspaceId) {
+    throw new Error("Workspace ID could not be determined for reviewing client brief.");
+  }
+
   const { data, error } = await supabase.rpc("review_client_brief_operational", {
-    p_workspace_id: params.workspaceId,
+    p_workspace_id: workspaceId,
     p_client_id: params.clientId,
     p_decision: params.decision || "approved",
     p_feedback: params.feedback || null,
@@ -276,7 +335,7 @@ export async function reviewClientBriefOperational(params: {
 }
 
 export async function approveClientBriefStrategy(params: {
-  workspaceId: string;
+  workspaceId?: string;
   clientId: string;
   approvedContent: string;
   idempotencyKey?: string;
@@ -284,8 +343,27 @@ export async function approveClientBriefStrategy(params: {
   const supabase = await getClient();
   if (!supabase) throw new Error("Supabase is not configured.");
 
+  let workspaceId = params.workspaceId;
+  if (!workspaceId || workspaceId === "00000000-0000-0000-0000-000000000000") {
+    const { data: c } = await supabase
+      .from("clients")
+      .select("workspace_id")
+      .eq("id", params.clientId)
+      .maybeSingle();
+    workspaceId = c?.workspace_id;
+  }
+
+  if (!workspaceId) {
+    const { data: ws } = await supabase.from("workspaces").select("id").limit(1).maybeSingle();
+    workspaceId = ws?.id;
+  }
+
+  if (!workspaceId) {
+    throw new Error("Workspace ID could not be determined for approving client brief.");
+  }
+
   const { data, error } = await supabase.rpc("approve_client_brief_strategy", {
-    p_workspace_id: params.workspaceId,
+    p_workspace_id: workspaceId,
     p_client_id: params.clientId,
     p_approved_content: params.approvedContent,
     p_idempotency_key: params.idempotencyKey || null,

@@ -60,6 +60,10 @@ export default function TasksPage() {
   const [createPriority, setCreatePriority] = useState<TaskPriority>("Normal");
   const [createBrief, setCreateBrief] = useState("");
   const [createDueAt, setCreateDueAt] = useState("");
+  const [createWorkStage, setCreateWorkStage] = useState("design");
+  const [createAssigneeId, setCreateAssigneeId] = useState("");
+  const [createReviewerId, setCreateReviewerId] = useState("");
+  const [allTeamMembers, setAllTeamMembers] = useState<any[]>([]);
 
   // Task Details Drawer
   const [selectedTask, setSelectedTask] = useState<any>(null);
@@ -86,6 +90,7 @@ export default function TasksPage() {
       if (clientsRes.ok) {
         const cData = await clientsRes.json();
         setClients(cData.clients || []);
+        if (cData.allTeamMembers) setAllTeamMembers(cData.allTeamMembers);
       }
     } catch (e) {
       console.error(e);
@@ -97,6 +102,30 @@ export default function TasksPage() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // Auto-suggest specialty assignee and reviewer when client or stage changes
+  useEffect(() => {
+    if (!createClientId) {
+      setCreateAssigneeId("");
+      setCreateReviewerId("");
+      return;
+    }
+    const client = clients.find((c) => c.id === createClientId);
+    const team = client?.team_assignment;
+    if (createWorkStage === "strategy") {
+      setCreateAssigneeId(team?.primary_strategist_id || "");
+      setCreateReviewerId(team?.strategy_reviewer_id || "");
+    } else if (createWorkStage === "copywriting") {
+      setCreateAssigneeId(team?.primary_copywriter_id || "");
+      setCreateReviewerId(team?.copywriting_reviewer_id || "");
+    } else if (createWorkStage === "video_editing") {
+      setCreateAssigneeId(team?.primary_video_editor_id || "");
+      setCreateReviewerId(team?.video_reviewer_id || "");
+    } else {
+      setCreateAssigneeId(team?.primary_designer_id || client?.owner_roster_id || "");
+      setCreateReviewerId(team?.design_reviewer_id || "");
+    }
+  }, [createClientId, createWorkStage, clients]);
 
   const filteredTasks = tasks.filter((t) => {
     if (selectedClient && t.client_id !== selectedClient) return false;
@@ -131,6 +160,9 @@ export default function TasksPage() {
           priority: createPriority,
           brief: createBrief,
           dueAt: createDueAt ? new Date(createDueAt).toISOString() : null,
+          workStage: createWorkStage,
+          primaryAssigneeId: createAssigneeId || undefined,
+          reviewerId: createReviewerId || undefined,
         }),
       });
 
@@ -560,8 +592,71 @@ export default function TasksPage() {
                 />
               </div>
 
-              <div className="p-3 bg-sky-50 border border-sky-100 rounded-xl text-[11px] text-sky-800">
-                💡 <strong>التوجيه التلقائي للمراجعة:</strong> إذا كان العميل صعباً (Hard) فستوجه المراجعة لعماد، وإذا كانت المصممة آية فستوجه لندى.
+              {/* Work Stage Selector */}
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">مرحلة وتخصص المهمة:</label>
+                <div className="grid grid-cols-4 gap-1.5 p-1 bg-slate-100 rounded-xl text-[11px] font-bold text-center">
+                  {[
+                    { id: "design", label: "🎨 تصميم" },
+                    { id: "copywriting", label: "✍️ محتوى" },
+                    { id: "strategy", label: "🧭 استراتيجية" },
+                    { id: "video_editing", label: "🎬 فيديو" },
+                  ].map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setCreateWorkStage(s.id)}
+                      className={cn(
+                        "py-1.5 rounded-lg transition-all",
+                        createWorkStage === s.id ? "bg-white text-slate-900 shadow-xs" : "text-slate-500 hover:text-slate-800"
+                      )}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Suggested Assignee & Reviewer from Client Team */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                <div className="text-[11px] font-bold text-slate-700">فريق التنفيذ والمراجعة (مقترح تلقائياً من فريق العميل):</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-500 block mb-0.5">المنفذ الأساسي:</label>
+                    <select
+                      value={createAssigneeId}
+                      onChange={(e) => setCreateAssigneeId(e.target.value)}
+                      className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-xs bg-white font-medium"
+                    >
+                      <option value="">-- توجيه تلقائي --</option>
+                      {allTeamMembers.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.displayName} ({m.jobTitle})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 block mb-0.5">المراجع المعتمد:</label>
+                    <select
+                      value={createReviewerId}
+                      onChange={(e) => setCreateReviewerId(e.target.value)}
+                      className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-xs bg-white font-medium"
+                    >
+                      <option value="">-- توجيه تلقائي وفق القواعد --</option>
+                      {allTeamMembers
+                        .filter((m) => !m.displayName.includes("عطا") && m.jobTitle !== "Marketing Director")
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.displayName} ({m.jobTitle})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="text-[10px] text-slate-400">
+                  * يتم اقتراح المسؤول تلقائياً وفق تخصص المهمة دون تغيير المهام السابقة أو نسب الوقت التاريخية.
+                </div>
               </div>
             </div>
 

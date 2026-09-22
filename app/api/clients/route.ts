@@ -13,7 +13,7 @@ import {
 export async function GET() {
   const admin = createAdminClient();
   if (!admin) {
-    return NextResponse.json({ clients: [], error: "Database unconfigured" });
+    return NextResponse.json({ error: "Database unconfigured" }, { status: 503 });
   }
 
   // Determine caller role if session exists
@@ -36,15 +36,27 @@ export async function GET() {
     }
   }
 
-  // Fetch clients
-  const { data: clients, error } = await admin
+  // Fetch clients with full relations
+  const { data: rawClients, error } = await admin
     .from("clients")
     .select(`
       *,
       owner:roster_people!fk_client_owner(id, display_name, job_title),
       campaigns(id, title, status),
       tasks(id, status, primary_assignee_id, work_stage),
-      team_assignment:client_team_assignments(*),
+      team_assignment:client_team_assignments(
+        *,
+        primary_strategist:roster_people!client_team_assignments_primary_strategist_id_fkey(id, display_name, job_title),
+        primary_copywriter:roster_people!client_team_assignments_primary_copywriter_id_fkey(id, display_name, job_title),
+        primary_designer:roster_people!client_team_assignments_primary_designer_id_fkey(id, display_name, job_title),
+        primary_video_editor:roster_people!client_team_assignments_primary_video_editor_id_fkey(id, display_name, job_title),
+        strategy_reviewer:roster_people!client_team_assignments_strategy_reviewer_id_fkey(id, display_name, job_title),
+        copywriting_reviewer:roster_people!client_team_assignments_copywriting_reviewer_id_fkey(id, display_name, job_title),
+        design_reviewer:roster_people!client_team_assignments_design_reviewer_id_fkey(id, display_name, job_title),
+        video_reviewer:roster_people!client_team_assignments_video_reviewer_id_fkey(id, display_name, job_title),
+        marketing_director:roster_people!client_team_assignments_marketing_director_id_fkey(id, display_name, job_title),
+        strategy_lead:roster_people!client_team_assignments_strategy_lead_id_fkey(id, display_name, job_title)
+      ),
       brief_data:client_briefs(*)
     `)
     .order("name", { ascending: true });
@@ -52,6 +64,13 @@ export async function GET() {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  // Normalize array relations to single objects
+  const clients = (rawClients || []).map((c: any) => ({
+    ...c,
+    team_assignment: Array.isArray(c.team_assignment) ? c.team_assignment[0] || null : c.team_assignment,
+    brief_data: Array.isArray(c.brief_data) ? c.brief_data[0] || null : c.brief_data,
+  }));
 
   // Fetch active roster people (excluding generic owner)
   const { data: roster } = await admin
@@ -174,6 +193,7 @@ export async function PUT(req: NextRequest) {
         videoReviewerId,
         marketingDirectorId,
         strategyLeadId,
+        requiresVideo: body.requiresVideo !== undefined ? body.requiresVideo : null,
         idempotencyKey: `cta-${clientId}-${Date.now()}`,
       });
       return NextResponse.json({ success: true, result });

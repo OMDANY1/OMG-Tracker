@@ -146,6 +146,7 @@ export interface ClientTeamAssignment {
   video_reviewer_id?: string | null;
   marketing_director_id?: string | null;
   strategy_lead_id?: string | null;
+  requires_video?: boolean;
   created_at: string;
   updated_at: string;
   primary_strategist?: RosterPerson | null;

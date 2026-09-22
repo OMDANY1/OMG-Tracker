@@ -5,7 +5,7 @@ import { createCampaign } from "@/lib/services/campaigns";
 export async function GET(req: NextRequest) {
   const supabase = createAdminClient();
   if (!supabase) {
-    return NextResponse.json({ campaigns: [], error: "Database unconfigured" });
+    return NextResponse.json({ error: "Database unconfigured" }, { status: 503 });
   }
 
   const { searchParams } = new URL(req.url);

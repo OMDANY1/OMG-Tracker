@@ -116,18 +116,31 @@ export async function POST(req: NextRequest) {
       estimatedMinutes,
     } = body;
 
-    // Fetch client to know difficulty and owner if assignee/reviewer not explicitly provided
+    // Fetch client and team assignment to know difficulty and specialty leads if not provided
     let finalAssigneeId = primaryAssigneeId;
     let finalReviewerId = reviewerId;
+    const workStage = body.workStage || "design";
 
     const { data: client } = await admin
       .from("clients")
-      .select("owner_roster_id, difficulty")
+      .select("owner_roster_id, difficulty, team_assignment:client_team_assignments(*)")
       .eq("id", clientId)
       .maybeSingle();
 
-    if (!finalAssigneeId && client?.owner_roster_id) {
-      finalAssigneeId = client.owner_roster_id;
+    const team = Array.isArray(client?.team_assignment) ? client.team_assignment[0] : client?.team_assignment;
+
+    if (!finalAssigneeId) {
+      if (workStage === "strategy") finalAssigneeId = team?.primary_strategist_id;
+      else if (workStage === "copywriting") finalAssigneeId = team?.primary_copywriter_id;
+      else if (workStage === "video_editing") finalAssigneeId = team?.primary_video_editor_id;
+      else finalAssigneeId = team?.primary_designer_id || client?.owner_roster_id;
+    }
+
+    if (!finalReviewerId) {
+      if (workStage === "strategy") finalReviewerId = team?.strategy_reviewer_id;
+      else if (workStage === "copywriting") finalReviewerId = team?.copywriting_reviewer_id;
+      else if (workStage === "video_editing") finalReviewerId = team?.video_reviewer_id;
+      else finalReviewerId = team?.design_reviewer_id;
     }
 
     if (!finalReviewerId) {
@@ -155,7 +168,13 @@ export async function POST(req: NextRequest) {
       idempotencyKey: body.idempotencyKey,
     });
 
-    return NextResponse.json({ task: task?.task || task });
+    const createdTask = task?.task || task;
+    if (createdTask?.id && workStage !== "design") {
+      await admin.from("tasks").update({ work_stage: workStage }).eq("id", createdTask.id);
+      createdTask.work_stage = workStage;
+    }
+
+    return NextResponse.json({ task: createdTask });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 400 });
   }

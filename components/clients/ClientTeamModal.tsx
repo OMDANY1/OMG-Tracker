@@ -42,6 +42,7 @@ export function ClientTeamModal({
   const [designReviewerId, setDesignReviewerId] = useState("");
   const [primaryVideoEditorId, setPrimaryVideoEditorId] = useState("");
   const [videoReviewerId, setVideoReviewerId] = useState("");
+  const [requiresVideo, setRequiresVideo] = useState(false);
   const [marketingDirectorId, setMarketingDirectorId] = useState("");
   const [strategyLeadId, setStrategyLeadId] = useState("");
 
@@ -55,6 +56,7 @@ export function ClientTeamModal({
       setDesignReviewerId(team?.design_reviewer_id || "");
       setPrimaryVideoEditorId(team?.primary_video_editor_id || "");
       setVideoReviewerId(team?.video_reviewer_id || "");
+      setRequiresVideo(Boolean(team?.requires_video || team?.primary_video_editor_id || team?.video_reviewer_id));
       setMarketingDirectorId(team?.marketing_director_id || "");
       setStrategyLeadId(team?.strategy_lead_id || "");
       setError(null);
@@ -86,8 +88,9 @@ export function ClientTeamModal({
           copywritingReviewerId: copywritingReviewerId || null,
           primaryDesignerId: primaryDesignerId || null,
           designReviewerId: designReviewerId || null,
-          primaryVideoEditorId: primaryVideoEditorId || null,
-          videoReviewerId: videoReviewerId || null,
+          primaryVideoEditorId: requiresVideo ? (primaryVideoEditorId || null) : null,
+          videoReviewerId: requiresVideo ? (videoReviewerId || null) : null,
+          requiresVideo,
           marketingDirectorId: marketingDirectorId || null,
           strategyLeadId: strategyLeadId || null,
         }),
@@ -269,43 +272,106 @@ export function ClientTeamModal({
 
           {/* Section 4: مسار الفيديو والمونتاج */}
           <div className="p-3.5 bg-amber-50/40 rounded-xl border border-amber-100 space-y-3">
-            <div className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
-              <Video className="w-4 h-4 text-amber-600" />
-              مسار إنتاج ومونتاج الفيديو (Video Editing)
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">الإيديتور الأساسي:</label>
-                <select
-                  value={primaryVideoEditorId}
-                  onChange={(e) => setPrimaryVideoEditorId(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-amber-500"
-                >
-                  <option value="">-- غير محدد (حسب الحاجة) --</option>
-                  {(videoEditors.length ? videoEditors : allTeamMembers).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
-                    </option>
-                  ))}
-                </select>
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                <Video className="w-4 h-4 text-amber-600" />
+                مسار إنتاج ومونتاج الفيديو (Video Editing)
               </div>
+              <span className="text-[10px] text-amber-700 bg-amber-100/60 px-2 py-0.5 rounded-full font-semibold">
+                {requiresVideo ? "مطلوب فيديو" : "لا يحتاج حالياً"}
+              </span>
+            </div>
 
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">مراجع الفيديو المعتمد:</label>
-                <select
-                  value={videoReviewerId}
-                  onChange={(e) => setVideoReviewerId(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-amber-500"
-                >
-                  <option value="">-- يحتاج تعيين مراجع --</option>
-                  {reviewerCandidates.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {/* Video Requirement Radio Options */}
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <label
+                className={`p-2.5 rounded-xl border cursor-pointer flex items-center gap-2 transition-all ${
+                  !requiresVideo
+                    ? "bg-white border-amber-400 font-bold text-slate-800 shadow-xs"
+                    : "bg-amber-50/30 border-amber-200/60 text-slate-600 hover:bg-white"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="modalRequiresVideo"
+                  checked={!requiresVideo}
+                  onChange={() => {
+                    setRequiresVideo(false);
+                    setPrimaryVideoEditorId("");
+                    setVideoReviewerId("");
+                  }}
+                  className="text-amber-600 focus:ring-amber-500"
+                />
+                <div>
+                  <div className="text-[11px]">العميل لا يحتاج فيديو حالياً</div>
+                  <div className="text-[9px] text-slate-400 font-normal">لا يُعتبر ناقص إسناد في تقارير الفيديو</div>
+                </div>
+              </label>
+
+              <label
+                className={`p-2.5 rounded-xl border cursor-pointer flex items-center gap-2 transition-all ${
+                  requiresVideo
+                    ? "bg-white border-amber-400 font-bold text-slate-800 shadow-xs"
+                    : "bg-amber-50/30 border-amber-200/60 text-slate-600 hover:bg-white"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="modalRequiresVideo"
+                  checked={requiresVideo}
+                  onChange={() => setRequiresVideo(true)}
+                  className="text-amber-600 focus:ring-amber-500"
+                />
+                <div>
+                  <div className="text-[11px]">يتطلب إنتاج ومونتاج فيديو</div>
+                  <div className="text-[9px] text-slate-400 font-normal">تفعيل مسار المونتاج وتعيين الإيديتور</div>
+                </div>
+              </label>
             </div>
+
+            {requiresVideo && (
+              <div className="space-y-3 pt-1 border-t border-amber-100">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">الإيديتور الأساسي:</label>
+                    <select
+                      value={primaryVideoEditorId}
+                      onChange={(e) => setPrimaryVideoEditorId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-amber-500"
+                    >
+                      <option value="">-- يحتاج فيديو (لم يُعيّن إيديتور بعد) --</option>
+                      {(videoEditors.length ? videoEditors : allTeamMembers).map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.displayName} ({p.jobTitle})
+                        </option>
+                      ))}
+                    </select>
+                    {!primaryVideoEditorId && (
+                      <p className="text-[10px] text-amber-600 font-medium mt-1">⚠️ مسجل كـ «يحتاج فيديو» وبانتظار تعيين الإيديتور</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">مراجع الفيديو المعتمد:</label>
+                    <select
+                      value={videoReviewerId}
+                      onChange={(e) => setVideoReviewerId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-amber-500"
+                    >
+                      <option value="">-- يحتاج تعيين مراجع فيديو --</option>
+                      {reviewerCandidates.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.displayName} ({p.jobTitle})
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-slate-400 font-normal mt-1">
+                      * مستقل عن مراجع التصميم (اختر مراجعاً مؤهلاً أو الإدارة/الآرت دايركتور)
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Section 5: الإشراف والمتابعة الإدارية (عطا واروى) */}
