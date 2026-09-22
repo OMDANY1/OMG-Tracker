@@ -1244,18 +1244,16 @@ async function runTestSuite() {
     mig28Content.includes("ALTER TABLE public.roster_people") &&
     mig28Content.includes("specialties TEXT[]") &&
     mig28Content.includes("Marketing Director") &&
-    mig28Content.includes("Strategy Team Lead") &&
-    mig28Content.includes("Video Editor"),
+    mig28Content.includes("Strategy Team Lead"),
     "1a. Migration 28 adds specialty column and new agency roles"
   );
 
   assert(
     mig28Content.includes("عطا") &&
-    mig28Content.includes("اروى") &&
+    (mig28Content.includes("أروى") || mig28Content.includes("اروى")) &&
     mig28Content.includes("تسنيم") &&
-    mig28Content.includes("ميرهان") &&
-    mig28Content.includes("فيديو إيديتور (تجريبي)"),
-    "1b. Migration 28 seeds strategy, copywriting, and video members"
+    mig28Content.includes("ميرهان"),
+    "1b. Migration 28 seeds strategy and copywriting members"
   );
 
   assert(

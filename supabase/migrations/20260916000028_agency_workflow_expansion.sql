@@ -35,9 +35,10 @@ BEGIN
         ON CONFLICT (workspace_id, display_name) 
         DO UPDATE SET job_title = 'Marketing Director', specialties = '{management,strategy}';
 
-        -- اروى — Strategy Team Lead
+        -- أروى — Strategy Team Lead
+        UPDATE public.roster_people SET display_name = 'أروى' WHERE workspace_id = v_workspace_id AND display_name = 'اروى';
         INSERT INTO public.roster_people (workspace_id, display_name, job_title, specialties)
-        VALUES (v_workspace_id, 'اروى', 'Strategy Team Lead', '{strategy}')
+        VALUES (v_workspace_id, 'أروى', 'Strategy Team Lead', '{strategy}')
         ON CONFLICT (workspace_id, display_name) 
         DO UPDATE SET job_title = 'Strategy Team Lead', specialties = '{strategy}';
 
@@ -76,12 +77,6 @@ BEGIN
         VALUES (v_workspace_id, 'ريهام', 'Content Writer', '{copywriting}')
         ON CONFLICT (workspace_id, display_name) 
         DO UPDATE SET job_title = 'Content Writer', specialties = '{copywriting}';
-
-        -- فيديو إيديتور (تجريبي) — Video Editor Staging Fixture
-        INSERT INTO public.roster_people (workspace_id, display_name, job_title, specialties)
-        VALUES (v_workspace_id, 'فيديو إيديتور (تجريبي)', 'Video Editor', '{video_editing}')
-        ON CONFLICT (workspace_id, display_name) 
-        DO UPDATE SET job_title = 'Video Editor', specialties = '{video_editing}';
     END IF;
 END $$;
 

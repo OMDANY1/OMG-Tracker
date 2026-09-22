@@ -79,15 +79,15 @@ async function main() {
 
   assert(mirhanWriting, "Found Mirhan content writing entry (category: content_writing)");
   assert(mirhanWriting.duration_seconds === 1800, `Mirhan writing duration is exactly 1800s / 30m (found: ${mirhanWriting.duration_seconds}s)`);
-  assert(mirhanWriting.person?.display_name === "ميرهان", "Writing session attributed to Mirhan");
+  assert((mirhanWriting as any).person?.display_name === "ميرهان" || (mirhanWriting as any).person?.[0]?.display_name === "ميرهان", "Writing session attributed to Mirhan");
 
   assert(tasneemReview, "Found Tasneem review entry (category: review)");
   assert(tasneemReview.duration_seconds === 600, `Tasneem review duration is exactly 600s / 10m (found: ${tasneemReview.duration_seconds}s)`);
-  assert(tasneemReview.person?.display_name === "تسنيم", "Review session attributed to Tasneem");
+  assert((tasneemReview as any).person?.display_name === "تسنيم" || (tasneemReview as any).person?.[0]?.display_name === "تسنيم", "Review session attributed to Tasneem");
 
   assert(mirhanRevision, "Found Mirhan revision entry (category: internal_revision)");
   assert(mirhanRevision.duration_seconds === 300, `Mirhan revision duration is exactly 300s / 5m (found: ${mirhanRevision.duration_seconds}s)`);
-  assert(mirhanRevision.person?.display_name === "ميرهان", "Revision session attributed to Mirhan");
+  assert((mirhanRevision as any).person?.display_name === "ميرهان" || (mirhanRevision as any).person?.[0]?.display_name === "ميرهان", "Revision session attributed to Mirhan");
 
   assert(waitingEntry, "Found separate waiting entry (category: waiting)");
   assert(waitingEntry.duration_seconds === 3600, `Waiting duration is exactly 3600s / 60m (found: ${waitingEntry.duration_seconds}s)`);

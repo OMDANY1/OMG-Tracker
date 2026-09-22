@@ -6,6 +6,8 @@ ALTER TYPE public.time_category ADD VALUE IF NOT EXISTS 'strategy_research';
 ALTER TYPE public.time_category ADD VALUE IF NOT EXISTS 'video_editing';
 ALTER TYPE public.time_category ADD VALUE IF NOT EXISTS 'waiting';
 
+BEGIN;
+
 -- 2. Remap legacy test data in copywriting tasks to correct activity categories
 -- Remap initial copywriting sessions from initial_design to content_writing
 UPDATE public.time_entries te
@@ -116,3 +118,5 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
 GRANT EXECUTE ON FUNCTION public.set_task_waiting_state(UUID, BOOLEAN, TEXT, UUID, TEXT) TO authenticated;
+
+COMMIT;
