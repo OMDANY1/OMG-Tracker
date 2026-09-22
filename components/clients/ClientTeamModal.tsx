@@ -61,6 +61,11 @@ export function ClientTeamModal({
     }
   }, [client, team]);
 
+  // Reviewers must exclude Marketing Director (Ata)
+  const reviewerCandidates = allTeamMembers.filter(
+    (p) => !p.displayName.includes("عطا") && p.jobTitle !== "Marketing Director"
+  );
+
   if (!isOpen || !client) return null;
 
   const handleSave = async (e: React.FormEvent) => {
@@ -164,7 +169,7 @@ export function ClientTeamModal({
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-sky-500"
                 >
                   <option value="">-- يحتاج تعيين مراجع --</option>
-                  {allTeamMembers.map((p) => (
+                  {reviewerCandidates.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.displayName} ({p.jobTitle})
                     </option>
@@ -208,7 +213,7 @@ export function ClientTeamModal({
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-emerald-500"
                 >
                   <option value="">-- يحتاج تعيين مراجع --</option>
-                  {allTeamMembers.map((p) => (
+                  {reviewerCandidates.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.displayName} ({p.jobTitle})
                     </option>
@@ -252,7 +257,7 @@ export function ClientTeamModal({
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-purple-500"
                 >
                   <option value="">-- يحتاج تعيين مراجع --</option>
-                  {allTeamMembers.map((p) => (
+                  {reviewerCandidates.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.displayName} ({p.jobTitle})
                     </option>
@@ -293,7 +298,7 @@ export function ClientTeamModal({
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-amber-500"
                 >
                   <option value="">-- يحتاج تعيين مراجع --</option>
-                  {allTeamMembers.map((p) => (
+                  {reviewerCandidates.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.displayName} ({p.jobTitle})
                     </option>

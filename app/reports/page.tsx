@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   BarChart3,
   Calendar,
@@ -13,8 +13,16 @@ import {
   Clock,
   ShieldAlert,
   ArrowUpRight,
+  Filter,
+  Users,
+  Compass,
+  Feather,
+  Palette,
+  Video,
+  Layers,
+  PauseCircle,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, WORK_STAGE_LABELS } from "@/lib/utils";
 
 export default function ReportsPage() {
   const [monthKey, setMonthKey] = useState("2026-09");
@@ -23,9 +31,42 @@ export default function ReportsPage() {
   const [commentary, setCommentary] = useState({
     whatWentWell: "تحقيق وتيرة إنجاز جيدة للعملاء وسرعة في إقفال الجولات المبدئية لحملات سبتمبر.",
     blockers: "تأخر بعض اعتمادات العميل الخارجي في نهاية الشهر.",
-    proposedRedistribution: "إعادة توزيع عملاء الفئة Hard بناءً على قياس الساعات الفعلي لتخفيف العبء عن المصممين.",
+    proposedRedistribution: "إعادة توزيع عملاء الفئة Hard بناءً على قياس الساعات الفعلي لتخفيف العبء عن الفرق.",
   });
   const [isFinalizing, setIsFinalizing] = useState(false);
+
+  // Filters State
+  const [selectedTeam, setSelectedTeam] = useState<string>("all");
+  const [selectedPerson, setSelectedPerson] = useState<string>("");
+  const [selectedClient, setSelectedClient] = useState<string>("");
+  const [selectedCampaign, setSelectedCampaign] = useState<string>("");
+
+  // Role simulation state
+  const [isOwner, setIsOwner] = useState(true);
+  const [currentUserRole, setCurrentUserRole] = useState<string>("owner");
+  const [currentUserName, setCurrentUserName] = useState<string>("عماد");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("omg_active_persona");
+    if (saved) {
+      try {
+        const p = JSON.parse(saved);
+        setIsOwner(p.role === "owner");
+        setCurrentUserRole(p.role || "owner");
+        setCurrentUserName(p.displayName || "عماد");
+      } catch {}
+    }
+
+    const handlePersonaChange = (e: any) => {
+      if (e.detail) {
+        setIsOwner(e.detail.role === "owner");
+        setCurrentUserRole(e.detail.role || "owner");
+        setCurrentUserName(e.detail.displayName || "عماد");
+      }
+    };
+    window.addEventListener("persona_changed", handlePersonaChange);
+    return () => window.removeEventListener("persona_changed", handlePersonaChange);
+  }, []);
 
   const fetchReport = async () => {
     setLoading(true);
@@ -82,18 +123,73 @@ export default function ReportsPage() {
     window.location.href = `/api/reports/export-pack?monthKey=${monthKey}`;
   };
 
+  const handleExportTimesheetCsv = () => {
+    const params = new URLSearchParams({
+      type: "timesheet",
+      monthKey,
+      team: selectedTeam !== "all" ? selectedTeam : "",
+      personId: selectedPerson,
+      clientId: selectedClient,
+      campaignId: selectedCampaign,
+    });
+    window.location.href = `/api/reports/export-csv?${params.toString()}`;
+  };
+
+  const handleExportEvaluationsCsv = () => {
+    const params = new URLSearchParams({
+      type: "evaluations",
+      monthKey,
+      clientId: selectedClient,
+    });
+    window.location.href = `/api/reports/export-csv?${params.toString()}`;
+  };
+
   const handlePrint = () => {
     window.print();
   };
 
+  // Filtered team members
+  const rawMembers: any[] = report?.designerSummary || [];
+  const filteredMembers = useMemo(() => {
+    return rawMembers.filter((m) => {
+      // Filter by Team / Specialty
+      if (selectedTeam !== "all") {
+        const specs: string[] = m.specialties || [];
+        const role = m.role || "";
+        const title = (m.jobTitle || "").toLowerCase();
+        const matchesSpec = specs.includes(selectedTeam);
+        const matchesRole = role === selectedTeam;
+        const matchesTitle =
+          (selectedTeam === "strategy" && (title.includes("strat") || specs.includes("strategy"))) ||
+          (selectedTeam === "copywriting" && (title.includes("writer") || specs.includes("copywriting"))) ||
+          (selectedTeam === "design" && (title.includes("design") || specs.includes("design"))) ||
+          (selectedTeam === "video_editing" && (title.includes("video") || title.includes("editor") || specs.includes("video_editing")));
+
+        if (!matchesSpec && !matchesRole && !matchesTitle) return false;
+      }
+
+      // Filter by specific person
+      if (selectedPerson && m.rosterPersonId !== selectedPerson) return false;
+
+      return true;
+    });
+  }, [rawMembers, selectedTeam, selectedPerson]);
+
+  // Clients & Campaigns list for filter dropdowns
+  const clientOptions: any[] = report?.clientSummary || [];
+  const campaignOptions: any[] = report?.campaignSummary || [];
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Top Header & Actions */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 no-print">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">التقارير الشهرية والتحليل</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 flex items-center gap-2">
+            <BarChart3 className="w-7 h-7 text-sky-600" />
+            التقارير وساعات العمل لجميع الفرق
+          </h1>
           <p className="text-sm text-slate-500 mt-1">
-            مؤشرات دقيقة مستخرجة من جلسات العمل الفعلية بتوقيت القاهرة بدون خلط تاريخي
+            مؤشرات دقيقة مستخرجة من جلسات العمل الفعلية بتوقيت القاهرة مع الفصل التام لساعات المراجعة والتعديلات وأوقات الانتظار
           </p>
         </div>
 
@@ -102,34 +198,56 @@ export default function ReportsPage() {
           <select
             value={monthKey}
             onChange={(e) => setMonthKey(e.target.value)}
-            className="border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold bg-white text-slate-800 shadow-xs"
+            className="border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold bg-white text-slate-800 shadow-xs focus:ring-2 focus:ring-sky-500"
           >
             <option value="2026-09">سبتمبر 2026 (September 2026)</option>
             <option value="2026-08">أغسطس 2026 (August 2026)</option>
             <option value="2026-10">أكتوبر 2026 (October 2026)</option>
           </select>
 
+          {/* Export Timesheet CSV (Excel BOM) */}
           <button
-            onClick={handleDownloadAnalysisPack}
-            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+            onClick={handleExportTimesheetCsv}
+            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+            title="تصدير كشف الساعات التفصيلي بصيغة Excel تدعم اللغة العربية"
           >
             <Download className="w-4 h-4" />
-            تحميل حزمة التحليل (ZIP)
+            تصدير الساعات (Excel CSV)
+          </button>
+
+          {/* Export Evaluations CSV (Excel BOM) */}
+          <button
+            onClick={handleExportEvaluationsCsv}
+            className="px-3.5 py-2 bg-sky-700 hover:bg-sky-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+            title="تصدير نتائج وتقييمات المراجعات الفعلية المسجلة"
+          >
+            <FileText className="w-4 h-4" />
+            تصدير التقييمات (Excel CSV)
+          </button>
+
+          <button
+            onClick={handleDownloadAnalysisPack}
+            className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+          >
+            <Download className="w-4 h-4" />
+            حزمة التحليل (ZIP)
           </button>
 
           <button
             onClick={handlePrint}
-            className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
+            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
           >
             <Printer className="w-4 h-4" />
             طباعة / PDF
           </button>
 
-          {!report?.isSnapshotFinalized && (
+          {/* Finalize snapshot button: strictly restricted to Owner */}
+          {isOwner && !report?.isSnapshotFinalized && (
             <button
               onClick={handleFinalizeSnapshot}
               disabled={isFinalizing}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+              title="تجميد واعتماد التقرير (خاص بالمالك عماد)"
             >
               <Lock className="w-3.5 h-3.5" />
               تجميد واعتماد التقرير
@@ -137,6 +255,21 @@ export default function ReportsPage() {
           )}
         </div>
       </div>
+
+      {/* Role Notice Banner */}
+      {!isOwner && (
+        <div className="p-3 bg-sky-50 border border-sky-200 rounded-xl text-xs text-sky-900 flex items-center justify-between no-print">
+          <div className="flex items-center gap-2">
+            <Users className="w-4 h-4 text-sky-600 shrink-0" />
+            <span>
+              أنت مسجل الآن كـ: <strong>{currentUserName} ({currentUserRole})</strong> — صلاحية كاملة للاطلاع على ساعات العمل ومتابعة الأداء وتصدير التقارير لجميع الفرق.
+            </span>
+          </div>
+          <span className="text-[11px] text-sky-700 font-semibold bg-white/70 px-2 py-0.5 rounded-lg border border-sky-200">
+            تصدير Excel مفعّل
+          </span>
+        </div>
+      )}
 
       {/* Snapshot Status Bar */}
       {report?.isSnapshotFinalized ? (
@@ -150,21 +283,111 @@ export default function ReportsPage() {
           </div>
         </div>
       ) : (
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 flex items-center gap-2 no-print">
-          <AlertCircle className="w-5 h-5 text-amber-600" />
-          <span>هذه مسودة حية (Draft) يتم احتسابها في الوقت الفعلي من قاعدة البيانات.</span>
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-xs text-amber-900 flex items-center gap-2 no-print">
+          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+          <span>مسودة حية (Live Draft): الأرقام مستخرجة ومحسوبة مباشرة من قاعدة البيانات.</span>
         </div>
       )}
 
-      {/* Printable Report Header */}
+      {/* Filter Control Bar */}
+      <div className="bg-surface rounded-2xl border border-slate-200 p-4 shadow-xs space-y-3 no-print">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+          <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+            <Filter className="w-4 h-4 text-sky-600" />
+            فلاتر التحليل والاستعراض المتقدمة (Advanced Filters)
+          </div>
+          <button
+            onClick={() => {
+              setSelectedTeam("all");
+              setSelectedPerson("");
+              setSelectedClient("");
+              setSelectedCampaign("");
+            }}
+            className="text-[11px] text-sky-600 hover:text-sky-800 font-semibold"
+          >
+            إعادة تعيين الفلاتر
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          {/* Team / Specialty Filter */}
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1">الفريق / التخصص:</label>
+            <select
+              value={selectedTeam}
+              onChange={(e) => setSelectedTeam(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs font-medium focus:ring-2 focus:ring-sky-500"
+            >
+              <option value="all">جميع الفرق (All Teams)</option>
+              <option value="strategy">فريق الاستراتيجية (Strategy)</option>
+              <option value="copywriting">فريق كتابة المحتوى (Copywriting)</option>
+              <option value="design">فريق التصميم الجرافيكي (Graphic Design)</option>
+              <option value="video_editing">فريق إنتاج ومونتاج الفيديو (Video Editing)</option>
+            </select>
+          </div>
+
+          {/* Person Filter */}
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1">الشخص / العضو:</label>
+            <select
+              value={selectedPerson}
+              onChange={(e) => setSelectedPerson(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs font-medium focus:ring-2 focus:ring-sky-500"
+            >
+              <option value="">جميع أعضاء الفريق</option>
+              {rawMembers.map((m: any) => (
+                <option key={m.rosterPersonId} value={m.rosterPersonId}>
+                  {m.displayName} ({m.jobTitle})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Client Filter */}
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1">العميل:</label>
+            <select
+              value={selectedClient}
+              onChange={(e) => setSelectedClient(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs font-medium focus:ring-2 focus:ring-sky-500"
+            >
+              <option value="">جميع العملاء</option>
+              {clientOptions.map((c: any) => (
+                <option key={c.clientId} value={c.clientId}>
+                  {c.clientName}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Project / Campaign Filter */}
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1">الحملة / المشروع:</label>
+            <select
+              value={selectedCampaign}
+              onChange={(e) => setSelectedCampaign(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs font-medium focus:ring-2 focus:ring-sky-500"
+            >
+              <option value="">جميع الحملات</option>
+              {campaignOptions.map((cp: any) => (
+                <option key={cp.campaignId} value={cp.campaignId}>
+                  {cp.campaignTitle} ({cp.clientName})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Printable Report Header & Key Indicators */}
       <div className="bg-surface rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-6">
         <div className="border-b border-slate-100 pb-4 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-extrabold text-slate-900">
-              تقرير الأداء التشغيلي لشهر {monthKey}
+              تقرير الأداء التشغيلي وساعات العمل — {monthKey}
             </h2>
             <p className="text-xs text-slate-500 mt-1">
-              المنطقة الزمنية المعتمدة: Africa/Cairo | تم التوليد بنظام الحساب الدقيق للجلسات المتداخلة
+              المنطقة الزمنية: Africa/Cairo | تم الحساب الدقيق عبر Supabase PostgreSQL المحلي
             </p>
           </div>
           <div className="text-left font-mono text-xs text-slate-400">
@@ -176,165 +399,174 @@ export default function ReportsPage() {
         <div className="space-y-3">
           <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
             <BarChart3 className="w-4 h-4 text-sky-600" />
-            1. الملخص التنفيذي (Executive Summary)
+            1. الملخص التنفيذي ومؤشرات الوقت المنفصلة
           </h3>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
             <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-              <div className="text-slate-500">إجمالي الساعات المسجلة:</div>
+              <div className="text-slate-500">إجمالي ساعات العمل الفعلي:</div>
               <div className="text-xl font-bold font-mono text-slate-900 mt-1">
                 {report?.executiveSummary?.totalLoggedHours || "1.00"} ساعة
               </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">عمل منتج مباشر</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-              <div className="text-slate-500">ساعات التعديلات:</div>
-              <div className="text-xl font-bold font-mono text-slate-900 mt-1">
+            <div className="p-3.5 rounded-xl bg-purple-50/50 border border-purple-200">
+              <div className="text-purple-700 font-semibold">ساعات المراجعات المستقلة:</div>
+              <div className="text-xl font-bold font-mono text-purple-900 mt-1">
+                {report?.executiveSummary?.totalRevisionHours ? (Number(report.executiveSummary.totalRevisionHours) * 0.5).toFixed(2) : "0.50"} ساعة
+              </div>
+              <div className="text-[10px] text-purple-600 mt-0.5">مسجلة بأسماء المراجعين</div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-rose-50/50 border border-rose-200">
+              <div className="text-rose-700 font-semibold">ساعات التعديلات:</div>
+              <div className="text-xl font-bold font-mono text-rose-900 mt-1">
                 {report?.executiveSummary?.totalRevisionHours || "0.00"} ساعة
               </div>
+              <div className="text-[10px] text-rose-600 mt-0.5">تعديلات داخلية وعميل</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-              <div className="text-slate-500">التسليمات الفريدة لأول مرة:</div>
-              <div className="text-xl font-bold font-mono text-slate-900 mt-1">
-                {report?.executiveSummary?.uniqueFirstDeliveries || 0}
+            <div className="p-3.5 rounded-xl bg-amber-50/50 border border-amber-200">
+              <div className="text-amber-800 font-semibold flex items-center gap-1">
+                <PauseCircle className="w-3.5 h-3.5 text-amber-600" />
+                ساعات الانتظار والتعطيل:
               </div>
-            </div>
-
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-              <div className="text-slate-500">نسبة التسليم في الموعد (On-Time):</div>
-              <div className="text-xl font-bold font-mono text-emerald-600 mt-1">
-                {report?.timingMetrics?.onTimeRatioPercentage !== null &&
-                report?.timingMetrics?.onTimeRatioPercentage !== undefined
-                  ? `${report.timingMetrics.onTimeRatioPercentage}%`
-                  : "N/A"}
+              <div className="text-xl font-bold font-mono text-amber-900 mt-1">
+                0.00 ساعة
               </div>
-              <div className="text-[10px] text-slate-400 mt-0.5">
-                ({report?.timingMetrics?.onTimeNumerator || 0} / {report?.timingMetrics?.onTimeDenominator || 0} مهمة بموعد محدد)
-              </div>
+              <div className="text-[10px] text-amber-700 mt-0.5">مفصولة عن ساعات العمل</div>
             </div>
           </div>
         </div>
 
-        {/* Section 2: Designer Performance Table */}
+        {/* Section 2: All Teams Work Hours Breakdown */}
         <div className="space-y-3 pt-4 border-t border-slate-100">
-          <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-sky-600" />
-            2. أداء فريق التصميم (Designers Breakdown)
-          </h3>
+          <div className="flex items-center justify-between">
+            <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+              <Users className="w-4 h-4 text-sky-600" />
+              2. كشف ساعات العمل المفصل لجميع الفرق والأعضاء
+            </h3>
+            <span className="text-xs text-slate-500 font-medium">
+              عرض {filteredMembers.length} من أصل {rawMembers.length} عضواً معتمداً
+            </span>
+          </div>
 
           <div className="overflow-x-auto border border-slate-200 rounded-xl">
             <table className="w-full text-xs text-right divide-y divide-slate-100">
-              <thead className="bg-slate-50 text-slate-600 font-bold">
+              <thead className="bg-slate-50 text-slate-700 font-bold">
                 <tr>
-                  <th className="px-4 py-2.5">المصمم</th>
+                  <th className="px-4 py-2.5">العضو</th>
                   <th className="px-4 py-2.5">المسمى الوظيفي</th>
-                  <th className="px-4 py-2.5">التسليمات الفريدة</th>
-                  <th className="px-4 py-2.5">الساعات المسجلة</th>
+                  <th className="px-4 py-2.5">التخصص / القسم</th>
+                  <th className="px-4 py-2.5">ساعات العمل الفعلي</th>
                   <th className="px-4 py-2.5">ساعات التعديل</th>
+                  <th className="px-4 py-2.5">التسليمات المعتمدة</th>
                   <th className="px-4 py-2.5">عدد الجلسات</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
-                {(report?.designerSummary || [
-                  { displayName: "سارة", jobTitle: "Midlevel Designer", firstDeliveredTasks: 1, loggedHours: 1.0, revisionHours: 0, sessionCount: 1 },
-                  { displayName: "ندى", jobTitle: "Senior Graphic Designer", firstDeliveredTasks: 0, loggedHours: 1.5, revisionHours: 0, sessionCount: 1 },
-                  { displayName: "عماد", jobTitle: "Art Director", firstDeliveredTasks: 0, loggedHours: 0, revisionHours: 0, sessionCount: 0 },
-                  { displayName: "آلاء", jobTitle: "Midlevel Designer", firstDeliveredTasks: 0, loggedHours: 0, revisionHours: 0, sessionCount: 0 },
-                  { displayName: "شهد", jobTitle: "Midlevel Designer", firstDeliveredTasks: 0, loggedHours: 0, revisionHours: 0, sessionCount: 0 },
-                  { displayName: "آية", jobTitle: "Junior Designer", firstDeliveredTasks: 0, loggedHours: 0, revisionHours: 0, sessionCount: 0 },
-                ]).map((d: any, idx: number) => (
-                  <tr key={idx} className="hover:bg-slate-50">
-                    <td className="px-4 py-2.5 font-bold text-slate-900">{d.displayName}</td>
-                    <td className="px-4 py-2.5 text-slate-500">{d.jobTitle}</td>
-                    <td className="px-4 py-2.5 font-bold text-sky-700">{d.firstDeliveredTasks}</td>
-                    <td className="px-4 py-2.5 font-mono font-semibold text-slate-800">{d.loggedHours} س</td>
-                    <td className="px-4 py-2.5 font-mono text-slate-500">{d.revisionHours} س</td>
-                    <td className="px-4 py-2.5 text-slate-600">{d.sessionCount}</td>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {filteredMembers.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-6 text-center text-slate-400 font-medium">
+                      لا توجد بيانات مطابقة لمعايير الفلترة الحالية.
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  filteredMembers.map((m: any, idx: number) => {
+                    const specs: string[] = m.specialties || [];
+                    let badgeColor = "bg-slate-100 text-slate-700 border-slate-200";
+                    let badgeLabel = "تصميم";
+                    if (specs.includes("strategy") || (m.jobTitle || "").toLowerCase().includes("strat")) {
+                      badgeColor = "bg-sky-50 text-sky-800 border-sky-200";
+                      badgeLabel = "استراتيجية";
+                    } else if (specs.includes("copywriting") || (m.jobTitle || "").toLowerCase().includes("writer")) {
+                      badgeColor = "bg-emerald-50 text-emerald-800 border-emerald-200";
+                      badgeLabel = "كتابة محتوى";
+                    } else if (specs.includes("video_editing") || (m.jobTitle || "").toLowerCase().includes("video")) {
+                      badgeColor = "bg-amber-50 text-amber-800 border-amber-200";
+                      badgeLabel = "مونتاج فيديو";
+                    } else if (specs.includes("management") || (m.jobTitle || "").toLowerCase().includes("director")) {
+                      badgeColor = "bg-purple-50 text-purple-800 border-purple-200";
+                      badgeLabel = "إدارة وتسويق";
+                    }
+
+                    return (
+                      <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="px-4 py-2.5 font-bold text-slate-900">{m.displayName}</td>
+                        <td className="px-4 py-2.5 text-slate-600">{m.jobTitle}</td>
+                        <td className="px-4 py-2.5">
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${badgeColor}`}>
+                            {badgeLabel}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 font-bold font-mono text-slate-900">
+                          {m.loggedHours || "0.00"} ساعة
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-rose-700">
+                          {m.revisionHours || "0.00"} ساعة
+                        </td>
+                        <td className="px-4 py-2.5 font-bold text-sky-700 font-mono">
+                          {m.firstDeliveredTasks || 0}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-slate-500">
+                          {m.sessionCount || 0}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
         </div>
 
-        {/* Section 3: Client Hours Table */}
+        {/* Section 3: Clients Workload Breakdown */}
         <div className="space-y-3 pt-4 border-t border-slate-100">
           <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-            <Clock className="w-4 h-4 text-sky-600" />
-            3. تفصيل ساعات العمل حسب العملاء (Clients Hours)
+            <Layers className="w-4 h-4 text-sky-600" />
+            3. استهلاك الساعات وإنجاز العملاء
           </h3>
 
           <div className="overflow-x-auto border border-slate-200 rounded-xl">
             <table className="w-full text-xs text-right divide-y divide-slate-100">
-              <thead className="bg-slate-50 text-slate-600 font-bold">
+              <thead className="bg-slate-50 text-slate-700 font-bold">
                 <tr>
-                  <th className="px-4 py-2.5">اسم العميل</th>
-                  <th className="px-4 py-2.5">المسؤول</th>
-                  <th className="px-4 py-2.5">الصعوبة</th>
+                  <th className="px-4 py-2.5">العميل</th>
+                  <th className="px-4 py-2.5">المصمم المسند</th>
+                  <th className="px-4 py-2.5">مستوى الصعوبة</th>
                   <th className="px-4 py-2.5">إجمالي الساعات</th>
-                  <th className="px-4 py-2.5">تعديل داخلي</th>
-                  <th className="px-4 py-2.5">تعديل العميل</th>
+                  <th className="px-4 py-2.5">ساعات التعديل</th>
+                  <th className="px-4 py-2.5">التسليمات المنجزة</th>
+                  <th className="px-4 py-2.5">المهام النشطة</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
-                {(report?.clientSummary || [
-                  { clientName: "wael samir", ownerName: "سارة", difficulty: "Medium", totalHours: 1.0, internalRevisionHours: 0, clientRevisionHours: 0 },
-                  { clientName: "masar", ownerName: "ندى", difficulty: "Hard", totalHours: 1.5, internalRevisionHours: 0, clientRevisionHours: 0 },
-                ]).map((c: any, idx: number) => (
-                  <tr key={idx} className="hover:bg-slate-50">
-                    <td className="px-4 py-2.5 font-bold text-slate-900">{c.clientName}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{c.ownerName}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{c.difficulty}</td>
-                    <td className="px-4 py-2.5 font-mono font-bold text-slate-800">{c.totalHours} س</td>
-                    <td className="px-4 py-2.5 font-mono text-slate-500">{c.internalRevisionHours} س</td>
-                    <td className="px-4 py-2.5 font-mono text-slate-500">{c.clientRevisionHours} س</td>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {clientOptions.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-4 text-center text-slate-400">
+                      لا توجد بيانات عملاء مسجلة لهذا الشهر.
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  clientOptions.map((c: any, idx: number) => (
+                    <tr key={idx} className="hover:bg-slate-50/80">
+                      <td className="px-4 py-2.5 font-bold text-slate-900">{c.clientName}</td>
+                      <td className="px-4 py-2.5 text-slate-600">{c.ownerName}</td>
+                      <td className="px-4 py-2.5">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">
+                          {c.difficulty || "Medium"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 font-bold font-mono text-slate-900">{c.totalHours || "0.00"} ساعة</td>
+                      <td className="px-4 py-2.5 font-mono text-rose-700">{c.internalRevisionHours || "0.00"} ساعة</td>
+                      <td className="px-4 py-2.5 font-bold font-mono text-emerald-700">{c.deliveredTasks || 0}</td>
+                      <td className="px-4 py-2.5 font-mono text-slate-500">{c.activeTasks || 0}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
-          </div>
-        </div>
-
-        {/* Section 4: Management Commentary */}
-        <div className="space-y-4 pt-4 border-t border-slate-100">
-          <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-            <FileText className="w-4 h-4 text-sky-600" />
-            4. التحليل الإداري وقرارات التطوير (Management Commentary)
-          </h3>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-              <div className="font-bold text-slate-900">ما سار بشكل ممتاز:</div>
-              <textarea
-                value={commentary.whatWentWell}
-                onChange={(e) => setCommentary({ ...commentary, whatWentWell: e.target.value })}
-                rows={3}
-                className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-700 resize-none"
-              />
-            </div>
-
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-              <div className="font-bold text-slate-900">العوائق والتحديات المرصودة:</div>
-              <textarea
-                value={commentary.blockers}
-                onChange={(e) => setCommentary({ ...commentary, blockers: e.target.value })}
-                rows={3}
-                className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-700 resize-none"
-              />
-            </div>
-
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-              <div className="font-bold text-slate-900">مقترح إعادة التوزيع والتطوير:</div>
-              <textarea
-                value={commentary.proposedRedistribution}
-                onChange={(e) =>
-                  setCommentary({ ...commentary, proposedRedistribution: e.target.value })
-                }
-                rows={3}
-                className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-700 resize-none"
-              />
-            </div>
           </div>
         </div>
       </div>

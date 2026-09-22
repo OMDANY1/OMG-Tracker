@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireOwner } from "@/lib/auth/server-auth";
+import { requireWorkspaceMembership } from "@/lib/auth/server-auth";
+import { getMonthIntervalUtc, toCairoDate, formatCairoDate } from "@/lib/timezone";
+import { WORK_STAGE_LABELS, TIME_CATEGORY_LABELS } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +20,10 @@ function escapeCsvField(val: any): string {
 
 export async function GET(req: NextRequest) {
   try {
-    const authRes = await requireOwner(req);
+    // Marketing Director (Ata), Owner (Emad), and Manager are authorized to export reports
+    const authRes = await requireWorkspaceMembership(req, {
+      allowedRoles: ["owner", "manager", "marketing_director"],
+    });
     if (!authRes.success) {
       return authRes.errorResponse;
     }
@@ -28,16 +33,250 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url);
     const type = searchParams.get("type") || "tasks";
+    const monthKey = searchParams.get("monthKey") || "2026-09";
+    const personId = searchParams.get("personId") || "";
+    const teamSpecialty = searchParams.get("team") || "";
+    const clientId = searchParams.get("clientId") || "";
+    const campaignId = searchParams.get("campaignId") || "";
 
     let csvContent = "";
     let fileName = `export_${type}_${new Date().toISOString().slice(0, 10)}.csv`;
 
-    if (type === "tasks") {
+    if (type === "timesheet") {
+      // 1. Timesheet Export with clear separation of work, review, revision, and waiting times
+      let query = admin
+        .from("time_entries")
+        .select(`
+          id,
+          roster_person_id,
+          task_id,
+          category,
+          source,
+          duration_seconds,
+          started_at,
+          ended_at,
+          note,
+          is_voided,
+          person:roster_people!fk_time_person(id, display_name, job_title, specialties),
+          task:tasks!fk_time_task(
+            id,
+            title,
+            work_stage,
+            status,
+            client_id,
+            campaign_id,
+            estimated_hours,
+            waiting_reason,
+            waiting_since,
+            client:clients(id, name),
+            campaign:campaigns(id, title)
+          )
+        `)
+        .eq("workspace_id", ws.id)
+        .eq("is_voided", false)
+        .order("started_at", { ascending: false });
+
+      if (personId) {
+        query = query.eq("roster_person_id", personId);
+      }
+
+      const { data: rawEntries, error } = await query;
+      if (error) throw new Error(error.message);
+
+      let entries = rawEntries || [];
+
+      // Filter by team specialty if requested
+      if (teamSpecialty) {
+        entries = entries.filter((e: any) => {
+          const specs = e.person?.specialties || [];
+          return specs.includes(teamSpecialty);
+        });
+      }
+
+      // Filter by client if requested
+      if (clientId) {
+        entries = entries.filter((e: any) => e.task?.client_id === clientId);
+      }
+
+      // Filter by campaign if requested
+      if (campaignId) {
+        entries = entries.filter((e: any) => e.task?.campaign_id === campaignId);
+      }
+
+      const headers = [
+        "معرف الجلسة",
+        "اسم العضو",
+        "المسمى الوظيفي",
+        "التخصص / الفريق",
+        "العميل",
+        "المشروع / الحملة",
+        "عنوان التكليف",
+        "مرحلة العمل",
+        "فئة النشاط",
+        "الوقت التقديري (ساعة)",
+        "ساعات العمل الفعلي (ساعة)",
+        "ساعات المراجعة (ساعة)",
+        "ساعات التعديل (ساعة)",
+        "ساعات الانتظار والتعطيل (مفصولة)",
+        "سبب التعطيل / الانتظار",
+        "وقت البدء (توقيت القاهرة)",
+        "وقت الانتهاء (توقيت القاهرة)",
+        "ملاحظات الجلسة",
+      ];
+
+      const rows = entries.map((e: any) => {
+        const p = e.person || {};
+        const t = e.task || {};
+        const cl = Array.isArray(t.client) ? t.client[0] : t.client;
+        const cp = Array.isArray(t.campaign) ? t.campaign[0] : t.campaign;
+
+        const durationSec = e.duration_seconds || 0;
+        const durationHours = (durationSec / 3600).toFixed(2);
+        const estimatedHours = t.estimated_hours ? Number(t.estimated_hours).toFixed(2) : "0.00";
+
+        // Separate work time, review time, revision time, and waiting time
+        const isReview = e.category === "review";
+        const isRevision = e.category === "internal_revision" || e.category === "client_revision";
+        const reviewHours = isReview ? durationHours : "0.00";
+        const revisionHours = isRevision ? durationHours : "0.00";
+        const workHours = (!isReview && !isRevision) ? durationHours : "0.00";
+
+        // Waiting time calculation if task is waiting
+        let waitingHours = "0.00";
+        if (t.status === "blocked" && t.waiting_since) {
+          const waitMs = Date.now() - new Date(t.waiting_since).getTime();
+          if (waitMs > 0) {
+            waitingHours = (waitMs / 3600000).toFixed(2);
+          }
+        }
+
+        const workStageLabel = WORK_STAGE_LABELS[t.work_stage] || t.work_stage || "تصميم";
+        const categoryLabel = TIME_CATEGORY_LABELS[e.category as keyof typeof TIME_CATEGORY_LABELS] || e.category || "";
+
+        const startTimeStr = e.started_at ? toCairoDate(e.started_at).toLocaleString("ar-EG") : "";
+        const endTimeStr = e.ended_at ? toCairoDate(e.ended_at).toLocaleString("ar-EG") : "مفتوح";
+
+        return [
+          e.id,
+          p.display_name || "",
+          p.job_title || "",
+          (p.specialties || []).join(" | "),
+          cl?.name || "",
+          cp?.title || "",
+          t.title || "",
+          workStageLabel,
+          categoryLabel,
+          estimatedHours,
+          workHours,
+          reviewHours,
+          revisionHours,
+          waitingHours,
+          t.waiting_reason || "",
+          startTimeStr,
+          endTimeStr,
+          e.note || "",
+        ].map(escapeCsvField).join(",");
+      });
+
+      csvContent = [headers.join(","), ...rows].join("\n");
+      fileName = `omg_timesheet_${monthKey}_${new Date().toISOString().slice(0, 10)}.csv`;
+    } else if (type === "evaluations") {
+      // 2. Real evaluations & reviews report (based strictly on verified review rounds and turnaround)
+      const { data: rawRounds, error } = await admin
+        .from("review_rounds")
+        .select(`
+          id,
+          round_number,
+          round_type,
+          decision,
+          feedback,
+          created_at,
+          decided_at,
+          reviewer:roster_people!fk_round_reviewer(display_name, job_title),
+          submitter:roster_people!fk_round_submitter(display_name, job_title),
+          task:tasks!fk_round_task(
+            id,
+            title,
+            work_stage,
+            status,
+            client_id,
+            client:clients(name)
+          )
+        `)
+        .eq("workspace_id", ws.id)
+        .order("created_at", { ascending: false });
+
+      if (error) throw new Error(error.message);
+
+      let rounds = rawRounds || [];
+      if (clientId) {
+        rounds = rounds.filter((r: any) => r.task?.client_id === clientId);
+      }
+
+      const headers = [
+        "معرف جولة المراجعة",
+        "العميل",
+        "عنوان المهمة",
+        "مرحلة العمل",
+        "رقم الجولة",
+        "نوع المراجعة",
+        "المنفذ / مقدم التسليم",
+        "المراجع",
+        "القرار والتقييم الفعلي",
+        "ملاحظات وتقييم المراجع",
+        "تاريخ تقديم المراجعة",
+        "تاريخ اتخاذ القرار",
+        "وقت الاستجابة للمراجعة (بالساعات)",
+      ];
+
+      const rows = rounds.map((r: any) => {
+        const t = r.task || {};
+        const cl = Array.isArray(t.client) ? t.client[0] : t.client;
+        const rev = Array.isArray(r.reviewer) ? r.reviewer[0] : r.reviewer;
+        const sub = Array.isArray(r.submitter) ? r.submitter[0] : r.submitter;
+
+        let turnaroundHours = "";
+        if (r.created_at && r.decided_at) {
+          const diffMs = new Date(r.decided_at).getTime() - new Date(r.created_at).getTime();
+          turnaroundHours = (diffMs / 3600000).toFixed(2);
+        }
+
+        const decisionLabel =
+          r.decision === "approved"
+            ? "معتمد (Approved)"
+            : r.decision === "changes_requested"
+            ? "مطلوب تعديلات (Changes Requested)"
+            : "قيد المراجعة (Pending)";
+
+        const roundTypeLabel = r.round_type === "internal" ? "مراجعة داخلية" : "مراجعة العميل";
+        const stageLabel = WORK_STAGE_LABELS[t.work_stage] || t.work_stage || "";
+
+        return [
+          r.id,
+          cl?.name || "",
+          t.title || "",
+          stageLabel,
+          r.round_number || 1,
+          roundTypeLabel,
+          sub?.display_name || "",
+          rev?.display_name || "",
+          decisionLabel,
+          r.feedback || "",
+          r.created_at ? toCairoDate(r.created_at).toLocaleString("ar-EG") : "",
+          r.decided_at ? toCairoDate(r.decided_at).toLocaleString("ar-EG") : "",
+          turnaroundHours,
+        ].map(escapeCsvField).join(",");
+      });
+
+      csvContent = [headers.join(","), ...rows].join("\n");
+      fileName = `omg_evaluations_${monthKey}_${new Date().toISOString().slice(0, 10)}.csv`;
+    } else if (type === "tasks") {
       const { data: tasks, error } = await admin
         .from("tasks")
         .select(`
           id,
           title,
+          work_stage,
           status,
           priority,
           deliverable_format,
@@ -56,13 +295,14 @@ export async function GET(req: NextRequest) {
       const headers = [
         "معرف المهمة (ID)",
         "عنوان المهمة",
+        "مرحلة العمل",
         "العميل",
         "صعوبة العميل",
         "رقم البوست / التسليمة",
         "نوع المحتوى",
         "الحالة",
         "الأولوية",
-        "المصمم المسند",
+        "المسند إليه",
         "المراجع الداخلي",
         "موعد التسليم",
         "تاريخ الإنشاء",
@@ -76,6 +316,7 @@ export async function GET(req: NextRequest) {
         return [
           t.id,
           t.title,
+          WORK_STAGE_LABELS[t.work_stage] || t.work_stage || "تصميم",
           clientObj?.name || "",
           clientObj?.difficulty || "",
           t.deliverable_number || "",
@@ -145,11 +386,10 @@ export async function GET(req: NextRequest) {
 
       csvContent = [headers.join(","), ...rows].join("\n");
     } else if (type === "workload") {
-      // Return team members and capacities safely
       const [rosterRes, membershipsRes, capacitiesRes] = await Promise.all([
         admin
           .from("roster_people")
-          .select("id, display_name, job_title, is_active")
+          .select("id, display_name, job_title, specialties, is_active")
           .eq("workspace_id", ws.id)
           .eq("is_active", true)
           .order("display_name", { ascending: true }),
@@ -188,31 +428,22 @@ export async function GET(req: NextRequest) {
         "معرف العضو (ID)",
         "اسم العضو",
         "المسمى الوظيفي",
-        "الدور",
+        "الدور التقني",
+        "التخصصات",
         "ساعات العمل الأسبوعية",
         "الساعات المحجوزة للمراجعة",
         "السعة القصوى للحمل الموزون",
       ];
 
       const rows = roster.map((r: any) => {
-        let role = membershipRoleMap.get(r.id);
-        if (!role) {
-          const title = (r.job_title || "").toLowerCase();
-          const name = (r.display_name || "").toLowerCase();
-          if (name.includes("عماد") || title.includes("owner") || title.includes("art director")) {
-            role = "owner";
-          } else if (name.includes("ندى") || title.includes("senior") || title.includes("reviewer")) {
-            role = "senior_reviewer";
-          } else {
-            role = "designer";
-          }
-        }
+        const role = membershipRoleMap.get(r.id) || "designer";
         const cap = capacityMap.get(r.id);
         return [
           r.id,
           r.display_name,
           r.job_title || "",
           role,
+          (r.specialties || []).join(" | "),
           cap?.weekly_hours_limit || 40,
           role === "owner" ? 15 : role === "senior_reviewer" ? 8 : 0,
           cap?.max_weighted_load || 15.0,
@@ -224,10 +455,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "نوع التقرير غير مدعوم." }, { status: 400 });
     }
 
-    // Prepend UTF-8 Byte Order Mark (BOM) so Arabic renders cleanly in Microsoft Excel
-    const bomCsv = "\uFEFF" + csvContent;
+    // Prepend UTF-8 Byte Order Mark (BOM: 0xEF, 0xBB, 0xBF) so Arabic renders cleanly in Microsoft Excel
+    const bomBuffer = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from(csvContent, "utf-8"),
+    ]);
 
-    return new Response(bomCsv, {
+    return new Response(bomBuffer, {
       status: 200,
       headers: {
         "Content-Type": "text/csv; charset=utf-8",

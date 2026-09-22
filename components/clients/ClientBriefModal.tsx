@@ -127,7 +127,7 @@ export function ClientBriefModal({
         throw new Error(data.error || "فشل تسجيل المراجعة التشغيلية");
       }
 
-      setSuccess("تم اجتياز المراجعة التشغيلية بنجاح! الاستراتيجية الآن بانتظار الاعتماد التسويقي لمدير التسويق.");
+      setSuccess("تم اجتياز المراجعة التشغيلية بنجاح! الاستراتيجية الآن جاهزة للاعتماد النهائي لمساحة العمل (عماد).");
       onSaved();
     } catch (err: any) {
       setError(err.message || "فشل تسجيل المراجعة التشغيلية");
@@ -142,7 +142,7 @@ export function ClientBriefModal({
       return;
     }
 
-    if (!confirm("هل أنت متأكد من الاعتماد التسويقي النهائي للنسخة الحالية للاستراتيجية؟")) return;
+    if (!confirm("هل أنت متأكد من الاعتماد النهائي لمسودة الاستراتيجية على مستوى مساحة العمل (المالك عماد)؟")) return;
 
     setApproving(true);
     setError(null);
@@ -164,7 +164,7 @@ export function ClientBriefModal({
         throw new Error(data.error || "فشل اعتماد الاستراتيجية");
       }
 
-      setSuccess("تم الاعتماد التسويقي النهائي للاستراتيجية وتحديث النسخة بنجاح!");
+      setSuccess("تم الاعتماد النهائي للاستراتيجية لمساحة العمل وتحديث النسخة المعتمدة بنجاح!");
       onSaved();
     } catch (err: any) {
       setError(err.message || "فشل اعتماد الاستراتيجية");
@@ -190,12 +190,12 @@ export function ClientBriefModal({
               {isApproved ? (
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3" />
-                  معتمدة تسويقياً (نسخة {brief?.strategy_version || 1})
+                  معتمدة لمساحة العمل (نسخة {brief?.strategy_version || 1})
                 </span>
               ) : isReviewed ? (
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-sky-100 text-sky-800 border border-sky-300 flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3" />
-                  اجتازت المراجعة التشغيلية (أروى) - بانتظار الاعتماد التسويقي
+                  اجتازت المراجعة التشغيلية (أروى) - بانتظار اعتماد مساحة العمل
                 </span>
               ) : (
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
@@ -420,16 +420,16 @@ export function ClientBriefModal({
                 </span>
               </button>
 
-              {/* Step 2: Final Marketing Strategy Approval (Ata / Owner) */}
+              {/* Step 2: Final Workspace Strategy Approval (Owner Emad) */}
               <button
                 type="button"
                 onClick={handleApproveStrategy}
                 disabled={approving || reviewing || loading}
                 className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-                title="الاعتماد التسويقي النهائي للاستراتيجية (خاص بمدير التسويق عطا / المالك عماد)"
+                title="الاعتماد النهائي للاستراتيجية لمساحة العمل (خاص بالمالك عماد)"
               >
                 <ShieldCheck className="w-4 h-4" />
-                <span>{approving ? "جارٍ الاعتماد..." : "الاعتماد التسويقي (عطا - مدير التسويق)"}</span>
+                <span>{approving ? "جارٍ الاعتماد..." : "اعتماد مساحة العمل (عماد - Owner)"}</span>
               </button>
             </div>
 

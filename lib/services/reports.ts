@@ -280,6 +280,7 @@ export async function generateMonthlyReportDraft(params: {
         rosterPersonId: person.id,
         displayName: person.display_name,
         jobTitle: person.job_title,
+        specialties: person.specialties || [],
         role: person.workspace_memberships?.[0]?.role || "designer",
         firstDeliveredTasks: designerDeliveriesMap.get(person.id) || 0,
         loggedHours: Math.round(((stat?.seconds || 0) / 3600) * 100) / 100,
