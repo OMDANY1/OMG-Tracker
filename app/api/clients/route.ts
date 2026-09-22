@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { updateClient, updateClientAssignment } from "@/lib/services/clients";
+import {
+  updateClient,
+  updateClientAssignment,
+  upsertClientTeamAssignment,
+  upsertClientBrief,
+  reviewClientBriefOperational,
+  approveClientBriefStrategy,
+} from "@/lib/services/clients";
 
 export async function GET() {
   const admin = createAdminClient();
@@ -36,7 +43,9 @@ export async function GET() {
       *,
       owner:roster_people!fk_client_owner(id, display_name, job_title),
       campaigns(id, title, status),
-      tasks(id, status, primary_assignee_id)
+      tasks(id, status, primary_assignee_id, work_stage),
+      team_assignment:client_team_assignments(*),
+      brief_data:client_briefs(*)
     `)
     .order("name", { ascending: true });
 
@@ -47,7 +56,7 @@ export async function GET() {
   // Fetch active roster people (excluding generic owner)
   const { data: roster } = await admin
     .from("roster_people")
-    .select("id, display_name, job_title, is_active")
+    .select("id, display_name, job_title, specialties, is_active")
     .eq("is_active", true)
     .order("display_name", { ascending: true });
 
@@ -57,8 +66,8 @@ export async function GET() {
     .select("*")
     .order("priority", { ascending: false });
 
-  // Calculate stats for each designer
-  const designers = (roster || []).map((designer) => {
+  // Calculate stats for each team member
+  const allTeamMembers = (roster || []).map((designer) => {
     const clientCount = (clients || []).filter((c) => c.owner_roster_id === designer.id).length;
     let openTasksCount = 0;
     (clients || []).forEach((c) => {
@@ -75,6 +84,7 @@ export async function GET() {
       display_name: designer.display_name,
       jobTitle: designer.job_title,
       job_title: designer.job_title,
+      specialties: designer.specialties || [],
       isActive: designer.is_active,
       is_active: designer.is_active,
       clientCount,
@@ -82,9 +92,22 @@ export async function GET() {
     };
   });
 
+  const designers = allTeamMembers.filter(
+    (m) => !m.specialties.length || m.specialties.includes("design")
+  );
+  const strategists = allTeamMembers.filter((m) => m.specialties.includes("strategy"));
+  const writers = allTeamMembers.filter((m) => m.specialties.includes("copywriting"));
+  const videoEditors = allTeamMembers.filter((m) => m.specialties.includes("video_editing"));
+  const managers = allTeamMembers.filter((m) => m.specialties.includes("management"));
+
   return NextResponse.json({
     clients: clients || [],
     designers,
+    allTeamMembers,
+    strategists,
+    writers,
+    videoEditors,
+    managers,
     reviewRules: reviewRules || [],
     isOwner,
     callerRosterId,
@@ -108,12 +131,100 @@ export async function PUT(req: NextRequest) {
       brandGuideUrl,
       briefUrl,
       actorId,
+      // Team assignment fields
+      primaryStrategistId,
+      primaryCopywriterId,
+      primaryDesignerId,
+      primaryVideoEditorId,
+      strategyReviewerId,
+      copywritingReviewerId,
+      designReviewerId,
+      videoReviewerId,
+      marketingDirectorId,
+      strategyLeadId,
+      // Brief fields
+      objectives,
+      targetAudience,
+      productsServices,
+      toneOfVoice,
+      contentPillars,
+      dosAndDonts,
+      brandGuidelinesUrl,
+      assetsDriveUrl,
+      strategySummary,
+      approvedContent,
     } = body;
 
     if (!clientId) {
       return NextResponse.json({ error: "clientId is required" }, { status: 400 });
     }
 
+    // 1. Update Team Assignment
+    if (action === "update_team") {
+      const result = await upsertClientTeamAssignment({
+        workspaceId: "00000000-0000-0000-0000-000000000000",
+        clientId,
+        primaryStrategistId,
+        primaryCopywriterId,
+        primaryDesignerId,
+        primaryVideoEditorId,
+        strategyReviewerId,
+        copywritingReviewerId,
+        designReviewerId,
+        videoReviewerId,
+        marketingDirectorId,
+        strategyLeadId,
+        idempotencyKey: `cta-${clientId}-${Date.now()}`,
+      });
+      return NextResponse.json({ success: true, result });
+    }
+
+    // 2. Update Client Brief
+    if (action === "update_brief") {
+      const result = await upsertClientBrief({
+        workspaceId: "00000000-0000-0000-0000-000000000000",
+        clientId,
+        objectives,
+        targetAudience,
+        productsServices,
+        toneOfVoice,
+        contentPillars,
+        dosAndDonts,
+        brandGuidelinesUrl,
+        assetsDriveUrl,
+        strategySummary,
+        idempotencyKey: `cb-${clientId}-${Date.now()}`,
+      });
+      return NextResponse.json({ success: true, result });
+    }
+
+    // 2.1 Operational Review (Arwa - Strategy Lead / Designated Reviewer)
+    if (action === "review_strategy_operational") {
+      const result = await reviewClientBriefOperational({
+        workspaceId: "00000000-0000-0000-0000-000000000000",
+        clientId,
+        decision: body.decision || "approved",
+        feedback: body.feedback || null,
+        idempotencyKey: `rev-strat-${clientId}-${Date.now()}`,
+      });
+      return NextResponse.json({ success: true, result });
+    }
+
+    // 3. Marketing Strategy Approval (Ata - Marketing Director / Owner Emad)
+    if (action === "approve_strategy") {
+      if (!approvedContent || !approvedContent.trim()) {
+        return NextResponse.json({ error: "Approved content cannot be empty" }, { status: 400 });
+      }
+      const result = await approveClientBriefStrategy({
+        workspaceId: "00000000-0000-0000-0000-000000000000",
+        clientId,
+        approvedContent,
+        idempotencyKey: `appr-strat-${clientId}-${Date.now()}`,
+      });
+      return NextResponse.json({ success: true, result });
+    }
+
+    // 4. Legacy Reassign
     if (action === "reassign" || newOwnerRosterId !== undefined) {
       const result = await updateClientAssignment({
         clientId,

@@ -1,6 +1,17 @@
 // TypeScript Types for OMG Creative Workspace (V3)
 
-export type RosterRole = 'owner' | 'manager' | 'senior_reviewer' | 'designer';
+export type RosterRole =
+  | 'owner'
+  | 'manager'
+  | 'senior_reviewer'
+  | 'designer'
+  | 'marketing_director'
+  | 'strategy_lead'
+  | 'strategist'
+  | 'content_writer'
+  | 'video_editor';
+
+export type WorkStage = 'strategy' | 'copywriting' | 'design' | 'video_editing' | 'video_cover';
 export type ClientDifficulty = 'Easy' | 'Medium' | 'Hard' | 'Unknown';
 export type ClientExtraWorkload = 'None' | 'Many requests' | 'Many revisions' | 'Unknown';
 export type ClientState = 'Active' | 'Not started' | 'Archived';
@@ -23,7 +34,12 @@ export type TimeCategory =
   | 'initial_design'
   | 'internal_revision'
   | 'client_revision'
-  | 'final_preparation_export';
+  | 'final_preparation_export'
+  | 'strategy_research'
+  | 'content_writing'
+  | 'video_editing'
+  | 'review'
+  | 'waiting';
 
 export type TimeEntrySource = 'timer' | 'manual' | 'on_behalf';
 export type ReviewRoundType = 'internal' | 'client';
@@ -44,6 +60,7 @@ export interface RosterPerson {
   workspace_id: string;
   display_name: string;
   job_title: string;
+  specialties?: string[];
   created_at: string;
   updated_at: string;
   membership?: WorkspaceMembership | null;
@@ -115,6 +132,76 @@ export interface LeaveDay {
   roster_person?: RosterPerson | null;
 }
 
+export interface ClientTeamAssignment {
+  id: string;
+  workspace_id: string;
+  client_id: string;
+  primary_strategist_id?: string | null;
+  primary_copywriter_id?: string | null;
+  primary_designer_id?: string | null;
+  primary_video_editor_id?: string | null;
+  strategy_reviewer_id?: string | null;
+  copywriting_reviewer_id?: string | null;
+  design_reviewer_id?: string | null;
+  video_reviewer_id?: string | null;
+  marketing_director_id?: string | null;
+  strategy_lead_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  primary_strategist?: RosterPerson | null;
+  primary_copywriter?: RosterPerson | null;
+  primary_designer?: RosterPerson | null;
+  primary_video_editor?: RosterPerson | null;
+  strategy_reviewer?: RosterPerson | null;
+  copywriting_reviewer?: RosterPerson | null;
+  design_reviewer?: RosterPerson | null;
+  video_reviewer?: RosterPerson | null;
+  marketing_director?: RosterPerson | null;
+  strategy_lead?: RosterPerson | null;
+}
+
+export interface ClientBrief {
+  id: string;
+  workspace_id: string;
+  client_id: string;
+  objectives?: string | null;
+  target_audience?: string | null;
+  products_services?: string | null;
+  tone_of_voice?: string | null;
+  content_pillars?: string[];
+  dos_and_donts?: string | null;
+  brand_guidelines_url?: string | null;
+  assets_drive_url?: string | null;
+  strategy_summary?: string | null;
+  approved_strategy_content?: string | null;
+  strategy_version: number;
+  status: 'draft' | 'in_review' | 'reviewed' | 'approved';
+  operational_review_by?: string | null;
+  operational_review_at?: string | null;
+  operational_feedback?: string | null;
+  approved_by_roster_id?: string | null;
+  approved_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  approved_by?: RosterPerson | null;
+}
+
+export interface TaskDeliverable {
+  id: string;
+  workspace_id: string;
+  task_id: string;
+  version_number: number;
+  deliverable_type: 'strategy' | 'copywriting' | 'design' | 'video' | 'video_cover' | 'text';
+  title?: string | null;
+  body_content?: string | null;
+  payload?: any;
+  deliverable_url?: string | null;
+  notes?: string | null;
+  submitted_by_id: string;
+  created_at: string;
+  submitted_by?: RosterPerson | null;
+}
+
 export interface Client {
   id: string;
   workspace_id: string;
@@ -130,6 +217,8 @@ export interface Client {
   created_at: string;
   updated_at: string;
   owner?: RosterPerson | null;
+  team_assignment?: ClientTeamAssignment | null;
+  brief_data?: ClientBrief | null;
 }
 
 export interface Campaign {
@@ -159,15 +248,24 @@ export interface Task {
   deliverable_number: string;
   priority: TaskPriority;
   status: TaskStatus;
+  work_stage?: WorkStage;
+  content_version_used?: number;
+  dependency_task_id?: string | null;
+  waiting_reason?: string | null;
+  waiting_since?: string | null;
+  waiting_on_roster_id?: string | null;
+  is_waiting?: boolean;
   primary_assignee_id?: string | null;
   reviewer_id?: string | null;
   due_date?: string | null;
   due_at?: string | null;
+  design_due_date?: string | null;
   estimated_hours?: number | null;
   estimated_minutes?: number | null;
   working_file_url?: string | null;
   final_deliverable_url?: string | null;
   final_deliverable_attachment_id?: string | null;
+  content_calendar_item_id?: string | null;
   block_reason?: string | null;
   cancel_reason?: string | null;
   reopen_reason?: string | null;
@@ -179,6 +277,8 @@ export interface Task {
   client?: Client | null;
   assignee?: RosterPerson | null;
   reviewer?: RosterPerson | null;
+  content_calendar_item?: any;
+  deliverables?: TaskDeliverable[];
   checklist_items?: TaskChecklistItem[];
   collaborators?: RosterPerson[];
   review_rounds?: ReviewRound[];

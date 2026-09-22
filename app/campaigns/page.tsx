@@ -205,6 +205,10 @@ export default function CampaignsPage() {
   const [newPostCaption, setNewPostCaption] = useState("");
   const [newPostDueDate, setNewPostDueDate] = useState("");
   const [newPostAssignee, setNewPostAssignee] = useState("");
+  const [newPostHook, setNewPostHook] = useState("");
+  const [newPostOnDesignText, setNewPostOnDesignText] = useState("");
+  const [newPostCta, setNewPostCta] = useState("");
+  const [newPostReelScript, setNewPostReelScript] = useState("");
 
   // Check AI consent on mount
   useEffect(() => {
@@ -736,6 +740,31 @@ export default function CampaignsPage() {
     setReviewItems(updated);
   };
 
+  // Create a manual campaign without PDF
+  const handleCreateManualPlan = async (client: any) => {
+    try {
+      setLoading(true);
+      const res = await fetch("/api/campaigns/create-manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientId: client.id,
+          monthKey: selectedMonth,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "فشل إنشاء الخطة اليدوية");
+      await fetchData();
+      if (data.campaign?.id) {
+        await openReviewMatrix(client.id, data.campaign.id);
+      }
+    } catch (e: any) {
+      alert(e.message || "حدث خطأ أثناء إنشاء الخطة");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Add manual post item to calendar
   const handleAddManualPost = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -756,6 +785,10 @@ export default function CampaignsPage() {
           contentFormat: newPostFormat,
           designDueDate: newPostDueDate || null,
           suggestedAssigneeId: newPostAssignee || reviewCampaign.client?.owner_roster_id || null,
+          hook: newPostHook || null,
+          onDesignText: newPostOnDesignText || null,
+          cta: newPostCta || null,
+          reelScript: newPostReelScript || null,
         }),
       });
 
@@ -771,6 +804,10 @@ export default function CampaignsPage() {
       setNewPostCaption("");
       setNewPostDueDate("");
       setNewPostNumber("");
+      setNewPostHook("");
+      setNewPostOnDesignText("");
+      setNewPostCta("");
+      setNewPostReelScript("");
     } catch (err: any) {
       alert(err.message);
     }
@@ -1165,15 +1202,22 @@ export default function CampaignsPage() {
                       )}
                     </>
                   ) : (
-                    isOwner && (
+                    <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                       <button
                         onClick={() => handleOpenUpload(row.client)}
-                        className="w-full py-2 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 text-slate-700 rounded-xl text-xs font-bold border border-slate-200 transition-colors flex items-center justify-center gap-1.5"
+                        className="py-2 px-2 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 text-slate-700 rounded-xl text-xs font-bold border border-slate-200 transition-colors flex items-center justify-center gap-1"
                       >
                         <Upload className="w-3.5 h-3.5 text-sky-600" />
-                        <span>رفع تقويم المحتوى (PDF)</span>
+                        <span>رفع تقويم (PDF)</span>
                       </button>
-                    )
+                      <button
+                        onClick={() => handleCreateManualPlan(row.client)}
+                        className="py-2 px-2 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-xl text-xs font-bold border border-sky-200 transition-colors flex items-center justify-center gap-1"
+                      >
+                        <Plus className="w-3.5 h-3.5 text-sky-600" />
+                        <span>بدء خطة يدويًا</span>
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1982,8 +2026,8 @@ export default function CampaignsPage() {
                         <thead>
                           <tr className="bg-amber-100/60 border-b border-amber-200/80 text-[11px] font-bold text-amber-950">
                             <th className="p-2 w-20">البوست</th>
-                            <th className="p-2">العنوان</th>
-                            <th className="p-2 w-36">المصمم المسؤول</th>
+                            <th className="p-2">العنوان والنوع</th>
+                            <th className="p-2 w-48">المصمم المسؤول ومسار المهام</th>
                             <th className="p-2 w-36">المراجع الداخلي</th>
                             <th className="p-2 w-24 text-center">الحالة الأولية</th>
                             <th className="p-2 w-28 text-center">موعد التصميم</th>
@@ -2014,19 +2058,50 @@ export default function CampaignsPage() {
                                 designers
                               );
 
+                              const team = reviewCampaign?.client?.team_assignment;
+                              const isReel = item.content_format === "Reel";
+
                               return (
                                 <tr key={item.id || idx} className="hover:bg-amber-50/40">
                                   <td className="p-2 font-mono font-bold text-amber-950">
                                     {item.post_number}
                                   </td>
                                   <td className="p-2 text-slate-800 line-clamp-1 max-w-[220px]">
-                                    {item.title}
+                                    <div className="font-semibold">{item.title}</div>
+                                    <span className="text-[10px] text-slate-500 bg-slate-100 px-1 rounded">
+                                      {item.content_format || "Static"} • {item.platform || "Instagram"}
+                                    </span>
                                   </td>
                                   <td className="p-2">
-                                    <span className="inline-flex items-center gap-1 font-semibold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md">
-                                      <User className="w-3 h-3 text-slate-500" />
-                                      {designerName}
-                                    </span>
+                                    <div className="space-y-1">
+                                      <span className="inline-flex items-center gap-1 font-semibold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md text-[11px]">
+                                        <User className="w-3 h-3 text-slate-500" />
+                                        {designerName}
+                                      </span>
+                                      {/* Agency expansion missing assignments alerts */}
+                                      <div className="flex flex-wrap gap-1">
+                                        {!team?.primary_copywriter_id && (
+                                          <span className="text-[9px] font-bold text-amber-800 bg-amber-100/80 px-1 py-0.5 rounded">
+                                            ⚠️ يحتاج تعيين كاتب محتوى
+                                          </span>
+                                        )}
+                                        {!team?.strategy_reviewer_id && (
+                                          <span className="text-[9px] font-bold text-amber-800 bg-amber-100/80 px-1 py-0.5 rounded">
+                                            ⚠️ يحتاج تعيين استراتيجيست
+                                          </span>
+                                        )}
+                                        {isReel && !team?.primary_video_editor_id && (
+                                          <span className="text-[9px] font-bold text-purple-800 bg-purple-100/80 px-1 py-0.5 rounded">
+                                            ⚠️ يحتاج تعيين إيديتور
+                                          </span>
+                                        )}
+                                        {!reviewerRes.id && !reviewerRes.isBypass && (
+                                          <span className="text-[9px] font-bold text-amber-800 bg-amber-100/80 px-1 py-0.5 rounded">
+                                            ⚠️ يحتاج تعيين مراجع معتمد
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
                                   </td>
                                   <td className="p-2">
                                     <span
@@ -2340,6 +2415,53 @@ export default function CampaignsPage() {
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl resize-none"
                 />
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">الخطاف / Hook:</label>
+                  <input
+                    type="text"
+                    value={newPostHook}
+                    onChange={(e) => setNewPostHook(e.target.value)}
+                    placeholder="العبارة الافتتاحية الجاذبة..."
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">الدعوة للتفاعل / CTA:</label>
+                  <input
+                    type="text"
+                    value={newPostCta}
+                    onChange={(e) => setNewPostCta(e.target.value)}
+                    placeholder="الدعوة للتفاعل (CTA)..."
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">النص على التصميم (On-Design Text):</label>
+                <textarea
+                  rows={2}
+                  value={newPostOnDesignText}
+                  onChange={(e) => setNewPostOnDesignText(e.target.value)}
+                  placeholder="النصوص والكلمات المكتوبة داخل التصميم حرفيًا..."
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl resize-none"
+                />
+              </div>
+
+              {newPostFormat === "Reel" && (
+                <div>
+                  <label className="font-bold text-rose-800 block mb-1">اسكريبت وتوجيهات الريل (Reel Script):</label>
+                  <textarea
+                    rows={3}
+                    value={newPostReelScript}
+                    onChange={(e) => setNewPostReelScript(e.target.value)}
+                    placeholder="المشهد 1: حركة الكاميرا... الصوت: فويس أوفر..."
+                    className="w-full px-3 py-2 border border-rose-200 rounded-xl resize-none bg-rose-50/40"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="pt-3 border-t border-slate-100 flex items-center justify-between">

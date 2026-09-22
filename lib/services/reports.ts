@@ -12,7 +12,9 @@ export interface MonthlyReportData {
   revisionNumber: number;
   executiveSummary: {
     totalLoggedHours: number;
+    totalReviewHours: number;
     totalRevisionHours: number;
+    totalWaitingHours: number;
     uniqueFirstDeliveries: number;
     redeliveries: number;
     activeProvisionalTimers: number;
@@ -138,10 +140,20 @@ export async function generateMonthlyReportDraft(params: {
 
   // Process Time Entries
   let totalLoggedSeconds = 0;
+  let totalReviewSeconds = 0;
   let totalRevisionSeconds = 0;
+  let totalWaitingSeconds = 0;
   let activeProvisionalTimers = 0;
 
-  const designerStats = new Map<string, { seconds: number; revSeconds: number; sessions: number; campaigns: Set<string> }>();
+  const designerStats = new Map<string, {
+    seconds: number;
+    initialSeconds: number;
+    reviewSeconds: number;
+    revSeconds: number;
+    waitingSeconds: number;
+    sessions: number;
+    campaigns: Set<string>;
+  }>();
   const clientStats = new Map<string, { seconds: number; intRevSeconds: number; cliRevSeconds: number; tasks: Set<string> }>();
   const campaignStats = new Map<string, { seconds: number }>();
 
@@ -157,42 +169,67 @@ export async function generateMonthlyReportDraft(params: {
     const overlapSec = calculateSessionOverlapSeconds(entry.started_at, entry.ended_at, startUtc, endUtc);
     if (overlapSec <= 0) return;
 
-    totalLoggedSeconds += overlapSec;
+    const isWaiting = entry.category === "waiting";
+    const isReview = entry.category === "review";
     const isRevision = entry.category === "internal_revision" || entry.category === "client_revision";
-    if (isRevision) totalRevisionSeconds += overlapSec;
+
+    if (isWaiting) {
+      totalWaitingSeconds += overlapSec;
+    } else {
+      // Direct productive work includes initial work, review, and revisions (excluding waiting)
+      totalLoggedSeconds += overlapSec;
+      if (isReview) totalReviewSeconds += overlapSec;
+      if (isRevision) totalRevisionSeconds += overlapSec;
+    }
 
     // By designer
     const dStat = designerStats.get(entry.roster_person_id) || {
       seconds: 0,
+      initialSeconds: 0,
+      reviewSeconds: 0,
       revSeconds: 0,
+      waitingSeconds: 0,
       sessions: 0,
       campaigns: new Set(),
     };
-    dStat.seconds += overlapSec;
-    if (isRevision) dStat.revSeconds += overlapSec;
+
+    if (isWaiting) {
+      dStat.waitingSeconds += overlapSec;
+    } else {
+      dStat.seconds += overlapSec;
+      if (isReview) {
+        dStat.reviewSeconds += overlapSec;
+      } else if (isRevision) {
+        dStat.revSeconds += overlapSec;
+      } else {
+        dStat.initialSeconds += overlapSec;
+      }
+    }
     dStat.sessions += 1;
 
     const taskObj = taskMap.get(entry.task_id);
     if (taskObj) {
       dStat.campaigns.add(taskObj.campaign_id);
 
-      // By client
-      const cStat = clientStats.get(taskObj.client_id) || {
-        seconds: 0,
-        intRevSeconds: 0,
-        cliRevSeconds: 0,
-        tasks: new Set(),
-      };
-      cStat.seconds += overlapSec;
-      if (entry.category === "internal_revision") cStat.intRevSeconds += overlapSec;
-      if (entry.category === "client_revision") cStat.cliRevSeconds += overlapSec;
-      cStat.tasks.add(taskObj.id);
-      clientStats.set(taskObj.client_id, cStat);
+      // By client (direct work hours only)
+      if (!isWaiting) {
+        const cStat = clientStats.get(taskObj.client_id) || {
+          seconds: 0,
+          intRevSeconds: 0,
+          cliRevSeconds: 0,
+          tasks: new Set(),
+        };
+        cStat.seconds += overlapSec;
+        if (entry.category === "internal_revision") cStat.intRevSeconds += overlapSec;
+        if (entry.category === "client_revision") cStat.cliRevSeconds += overlapSec;
+        cStat.tasks.add(taskObj.id);
+        clientStats.set(taskObj.client_id, cStat);
 
-      // By campaign
-      const campStat = campaignStats.get(taskObj.campaign_id) || { seconds: 0 };
-      campStat.seconds += overlapSec;
-      campaignStats.set(taskObj.campaign_id, campStat);
+        // By campaign
+        const campStat = campaignStats.get(taskObj.campaign_id) || { seconds: 0 };
+        campStat.seconds += overlapSec;
+        campaignStats.set(taskObj.campaign_id, campStat);
+      }
     }
 
     designerStats.set(entry.roster_person_id, dStat);
@@ -280,14 +317,18 @@ export async function generateMonthlyReportDraft(params: {
         rosterPersonId: person.id,
         displayName: person.display_name,
         jobTitle: person.job_title,
+        specialties: person.specialties || [],
         role: person.workspace_memberships?.[0]?.role || "designer",
         firstDeliveredTasks: designerDeliveriesMap.get(person.id) || 0,
         loggedHours: Math.round(((stat?.seconds || 0) / 3600) * 100) / 100,
-        designHours: Math.round((((stat?.seconds || 0) - (stat?.revSeconds || 0)) / 3600) * 100) / 100,
+        designHours: Math.round(((stat?.initialSeconds || 0) / 3600) * 100) / 100,
+        initialWorkHours: Math.round(((stat?.initialSeconds || 0) / 3600) * 100) / 100,
+        reviewHours: Math.round(((stat?.reviewSeconds || 0) / 3600) * 100) / 100,
         internalRevisionHours: Math.round(((stat?.revSeconds || 0) / 3600) * 100) / 100,
         clientRevisionHours: 0,
         totalRevisionHours: Math.round(((stat?.revSeconds || 0) / 3600) * 100) / 100,
         revisionHours: Math.round(((stat?.revSeconds || 0) / 3600) * 100) / 100,
+        waitingHours: Math.round(((stat?.waitingSeconds || 0) / 3600) * 100) / 100,
         sessionCount: stat?.sessions || 0,
         campaignsWorkedOn: stat?.campaigns.size || 0,
       };
@@ -333,7 +374,9 @@ export async function generateMonthlyReportDraft(params: {
     revisionNumber: currentRevision,
     executiveSummary: {
       totalLoggedHours: Math.round((totalLoggedSeconds / 3600) * 100) / 100,
+      totalReviewHours: Math.round((totalReviewSeconds / 3600) * 100) / 100,
       totalRevisionHours: Math.round((totalRevisionSeconds / 3600) * 100) / 100,
+      totalWaitingHours: Math.round((totalWaitingSeconds / 3600) * 100) / 100,
       uniqueFirstDeliveries,
       redeliveries,
       activeProvisionalTimers,

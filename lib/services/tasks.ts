@@ -346,3 +346,85 @@ export async function deleteTaskAttachment(params: {
   if (error) throw new Error(error.message);
   return data;
 }
+
+export async function submitTaskDeliverable(params: {
+  taskId: string;
+  deliverableType: string;
+  title?: string;
+  bodyContent?: string;
+  payload?: any;
+  deliverableUrl?: string;
+  notes?: string;
+  idempotencyKey?: string;
+}) {
+  const supabase = await getClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const { data, error } = await supabase.rpc("submit_task_deliverable", {
+    p_task_id: params.taskId,
+    p_deliverable_type: params.deliverableType,
+    p_title: params.title || null,
+    p_body_content: params.bodyContent || null,
+    p_payload: params.payload || {},
+    p_deliverable_url: params.deliverableUrl || null,
+    p_notes: params.notes || null,
+    p_idempotency_key: params.idempotencyKey || null,
+  });
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export async function setTaskWaitingState(params: {
+  taskId: string;
+  isWaiting: boolean;
+  waitingReason?: string;
+  waitingOnRosterId?: string;
+  idempotencyKey?: string;
+}) {
+  const supabase = await getClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const { data, error } = await supabase.rpc("set_task_waiting_state", {
+    p_task_id: params.taskId,
+    p_is_waiting: params.isWaiting,
+    p_waiting_reason: params.waitingReason || null,
+    p_waiting_on_roster_id: params.waitingOnRosterId || null,
+    p_idempotency_key: params.idempotencyKey || null,
+  });
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export async function approveCopywritingAndUnlockDownstream(params: {
+  copyTaskId: string;
+  approvedCopy: string;
+  idempotencyKey?: string;
+}) {
+  const supabase = await getClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const { data, error } = await supabase.rpc("approve_copywriting_and_unlock_downstream", {
+    p_copy_task_id: params.copyTaskId,
+    p_approved_copy: params.approvedCopy,
+    p_idempotency_key: params.idempotencyKey || null,
+  });
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export async function getTaskDeliverables(taskId: string) {
+  const supabase = await getClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const { data, error } = await supabase
+    .from("task_deliverables")
+    .select("*, submitted_by:roster_people(id, display_name, job_title)")
+    .eq("task_id", taskId)
+    .order("version_number", { ascending: false });
+
+  if (error) throw new Error(error.message);
+  return data || [];
+}

@@ -40,9 +40,40 @@ export async function POST(req: NextRequest) {
       effectiveTargetRosterId = undefined; // Self start
     }
 
+    // Determine and normalize activity category based on task work_stage and status
+    let effectiveCategory = category;
+    if (effectiveCategory === "copywriting") effectiveCategory = "content_writing";
+    if (effectiveCategory === "strategy") effectiveCategory = "strategy_research";
+
+    if (!effectiveCategory || effectiveCategory === "initial_design") {
+      const { data: taskData } = await serverClient
+        .from("tasks")
+        .select("work_stage, status")
+        .eq("id", taskId)
+        .maybeSingle();
+
+      if (taskData) {
+        if (taskData.status === "internal_review" || taskData.status === "client_review") {
+          effectiveCategory = "review";
+        } else if (taskData.status === "changes_requested") {
+          effectiveCategory = "internal_revision";
+        } else if (taskData.work_stage === "copywriting") {
+          effectiveCategory = "content_writing";
+        } else if (taskData.work_stage === "strategy") {
+          effectiveCategory = "strategy_research";
+        } else if (taskData.work_stage === "video_editing") {
+          effectiveCategory = "video_editing";
+        } else {
+          effectiveCategory = "initial_design";
+        }
+      } else {
+        effectiveCategory = effectiveCategory || "initial_design";
+      }
+    }
+
     const result = await startOrSwitchTimer({
       taskId,
-      category: category || "initial_design",
+      category: effectiveCategory,
       note,
       targetRosterId: effectiveTargetRosterId,
       idempotencyKey,

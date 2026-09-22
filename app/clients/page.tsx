@@ -14,12 +14,18 @@ import {
   ShieldCheck,
   Briefcase,
   Layers,
+  Compass,
+  Feather,
+  Video,
+  FileText,
 } from "lucide-react";
 import {
   CLIENT_DIFFICULTY_LABELS,
   CLIENT_EXTRA_WORKLOAD_LABELS,
   cn,
 } from "@/lib/utils";
+import { ClientTeamModal } from "@/components/clients/ClientTeamModal";
+import { ClientBriefModal } from "@/components/clients/ClientBriefModal";
 
 interface Designer {
   id: string;
@@ -32,11 +38,20 @@ interface Designer {
 export default function ClientsPage() {
   const [clients, setClients] = useState<any[]>([]);
   const [designers, setDesigners] = useState<Designer[]>([]);
+  const [allTeamMembers, setAllTeamMembers] = useState<any[]>([]);
+  const [strategists, setStrategists] = useState<any[]>([]);
+  const [writers, setWriters] = useState<any[]>([]);
+  const [videoEditors, setVideoEditors] = useState<any[]>([]);
+  const [managers, setManagers] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDifficulty, setSelectedDifficulty] = useState("");
   const [selectedOwner, setSelectedOwner] = useState("");
+
+  // Modals state
+  const [teamModalClient, setTeamModalClient] = useState<any | null>(null);
+  const [briefModalClient, setBriefModalClient] = useState<any | null>(null);
 
   // Edit / Reassignment Modal
   const [editingClient, setEditingClient] = useState<any>(null);
@@ -54,6 +69,11 @@ export default function ClientsPage() {
         const data = await res.json();
         setClients(data.clients || []);
         if (data.designers) setDesigners(data.designers);
+        if (data.allTeamMembers) setAllTeamMembers(data.allTeamMembers);
+        if (data.strategists) setStrategists(data.strategists);
+        if (data.writers) setWriters(data.writers);
+        if (data.videoEditors) setVideoEditors(data.videoEditors);
+        if (data.managers) setManagers(data.managers);
         if (typeof data.isOwner === "boolean") setIsOwner(data.isOwner);
       }
     } catch (e) {
@@ -327,10 +347,70 @@ export default function ClientsPage() {
                       {openTasks}
                     </span>
                   </div>
+
+                  {/* Team Assignment Snapshot */}
+                  <div className="pt-2 border-t border-slate-100 space-y-1">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-slate-400">الاستراتيجيست:</span>
+                      <span className="font-semibold text-slate-700">
+                        {client.team_assignment?.primary_strategist?.display_name || "غير محدد"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-slate-400">كاتب المحتوى:</span>
+                      <span className="font-semibold text-slate-700">
+                        {client.team_assignment?.primary_copywriter?.display_name || "غير محدد"}
+                      </span>
+                    </div>
+                    {client.team_assignment?.primary_video_editor && (
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className="text-slate-400">الفيديو:</span>
+                        <span className="font-semibold text-slate-700">
+                          {client.team_assignment.primary_video_editor.display_name}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-slate-400">الـ Brief:</span>
+                      <span
+                        className={cn(
+                          "px-1.5 py-0.5 rounded text-[9px] font-bold",
+                          client.brief_data?.status === "approved"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : client.brief_data?.status === "draft"
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-slate-100 text-slate-500"
+                        )}
+                      >
+                        {client.brief_data?.status === "approved"
+                          ? `معتمد (v${client.brief_data?.strategy_version || 1})`
+                          : client.brief_data?.status === "draft"
+                          ? "مسودة"
+                          : "غير محدد"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    onClick={() => setTeamModalClient(client)}
+                    className="px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-semibold flex items-center justify-center gap-1 transition-colors text-[10px]"
+                  >
+                    <Users className="w-3 h-3 text-sky-600" />
+                    <span>فريق العمل</span>
+                  </button>
+                  <button
+                    onClick={() => setBriefModalClient(client)}
+                    className="px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-semibold flex items-center justify-center gap-1 transition-colors text-[10px]"
+                  >
+                    <Compass className="w-3 h-3 text-emerald-600" />
+                    <span>الـ Brief</span>
+                  </button>
+                </div>
+
                 <button
                   onClick={() => handleOpenReassignModal(client)}
                   className="w-full px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-xl font-semibold flex items-center justify-center gap-1.5 transition-colors text-[11px]"
@@ -562,6 +642,29 @@ export default function ClientsPage() {
           </div>
         </div>
       )}
+
+      {/* Client Team Assignment Modal */}
+      <ClientTeamModal
+        client={teamModalClient}
+        isOpen={!!teamModalClient}
+        onClose={() => setTeamModalClient(null)}
+        onSaved={fetchClients}
+        allTeamMembers={allTeamMembers}
+        strategists={strategists}
+        writers={writers}
+        designers={designers}
+        videoEditors={videoEditors}
+        managers={managers}
+      />
+
+      {/* Client Brief & Strategy Modal */}
+      <ClientBriefModal
+        client={briefModalClient}
+        isOpen={!!briefModalClient}
+        onClose={() => setBriefModalClient(null)}
+        onSaved={fetchClients}
+        isOwner={isOwner}
+      />
     </div>
   );
 }

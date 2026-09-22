@@ -1231,6 +1231,210 @@ async function runTestSuite() {
     "3d. Campaign card renders partially_imported status badge"
   );
 
+  // ========================================================================  // =========================================================================
+  // Scenario 83: Agency Roster, Client Team Assignment & Brief Strategy Approval
+  // =========================================================================
+  console.log("\n[Scenario 83] Agency Roster, Client Team Assignment & Brief Strategy Approval...");
+
+  const mig28Path = path.join(__dirname, "../supabase/migrations/20260916000028_agency_workflow_expansion.sql");
+  assert(fs.existsSync(mig28Path), "1. Migration 28 file exists");
+  const mig28Content = fs.readFileSync(mig28Path, "utf-8");
+
+  assert(
+    mig28Content.includes("ALTER TABLE public.roster_people") &&
+    mig28Content.includes("specialties TEXT[]") &&
+    mig28Content.includes("Marketing Director") &&
+    mig28Content.includes("Strategy Team Lead"),
+    "1a. Migration 28 adds specialty column and new agency roles"
+  );
+
+  assert(
+    mig28Content.includes("عطا") &&
+    (mig28Content.includes("أروى") || mig28Content.includes("اروى")) &&
+    mig28Content.includes("تسنيم") &&
+    mig28Content.includes("ميرهان"),
+    "1b. Migration 28 seeds strategy and copywriting members"
+  );
+
+  assert(
+    mig28Content.includes("client_team_assignments") &&
+    mig28Content.includes("upsert_client_team_assignment"),
+    "1c. Migration 28 implements client_team_assignments table and upsert RPC"
+  );
+
+  assert(
+    mig28Content.includes("client_briefs") &&
+    mig28Content.includes("approve_client_brief_strategy"),
+    "1d. Migration 28 implements client_briefs and approve_client_brief_strategy RPC"
+  );
+
+  const dbTypesContent = fs.readFileSync(path.join(__dirname, "../types/database.ts"), "utf-8");
+  assert(
+    dbTypesContent.includes("ClientTeamAssignment") &&
+    dbTypesContent.includes("ClientBrief") &&
+    dbTypesContent.includes("TaskDeliverable"),
+    "2a. types/database.ts defines ClientTeamAssignment, ClientBrief, and TaskDeliverable interfaces"
+  );
+
+  assert(
+    dbTypesContent.includes("marketing_director") &&
+    dbTypesContent.includes("strategy_lead") &&
+    dbTypesContent.includes("content_writer") &&
+    dbTypesContent.includes("video_editor"),
+    "2b. types/database.ts extends RosterRole union"
+  );
+
+  const clientsServiceContent = fs.readFileSync(path.join(__dirname, "../lib/services/clients.ts"), "utf-8");
+  assert(
+    clientsServiceContent.includes("upsertClientTeamAssignment") &&
+    clientsServiceContent.includes("upsertClientBrief") &&
+    clientsServiceContent.includes("approveClientBriefStrategy"),
+    "3a. clients service implements team assignments and brief strategy RPC wrappers"
+  );
+
+  const serverAuthContent = fs.readFileSync(path.join(__dirname, "../lib/auth/server-auth.ts"), "utf-8");
+  assert(
+    serverAuthContent.includes("requireMarketingDirector") &&
+    serverAuthContent.includes("requireStrategyLead"),
+    "3b. server-auth implements requireMarketingDirector and requireStrategyLead RBAC helpers"
+  );
+
+  const teamModalPath = path.join(__dirname, "../components/clients/ClientTeamModal.tsx");
+  const briefModalPath = path.join(__dirname, "../components/clients/ClientBriefModal.tsx");
+  assert(fs.existsSync(teamModalPath), "4a. ClientTeamModal component exists");
+  assert(fs.existsSync(briefModalPath), "4b. ClientBriefModal component exists");
+
+  const clientsPageContent = fs.readFileSync(path.join(__dirname, "../app/clients/page.tsx"), "utf-8");
+  assert(
+    clientsPageContent.includes("ClientTeamModal") &&
+    clientsPageContent.includes("ClientBriefModal") &&
+    clientsPageContent.includes("فريق العمل") &&
+    clientsPageContent.includes("الـ Brief"),
+    "4c. Clients page integrates team assignment and brief modals"
+  );
+
+  // =========================================================================
+  // Scenario 84: Task Activation Matrix, Manual Plans, Copywriting & Downstream Unlock
+  // =========================================================================
+  console.log("\n[Scenario 84] Task Activation Matrix, Manual Plans, Copywriting & Downstream Unlock...");
+
+  const manualRoutePath = path.join(__dirname, "../app/api/campaigns/create-manual/route.ts");
+  assert(fs.existsSync(manualRoutePath), "1a. Manual calendar creation endpoint exists");
+  const manualRouteContent = fs.readFileSync(manualRoutePath, "utf-8");
+  assert(
+    manualRouteContent.includes("createManualContentCalendar") &&
+    manualRouteContent.includes("validateSameOrigin") &&
+    manualRouteContent.includes("requireWorkspaceMembership"),
+    "1b. Manual calendar endpoint enforces CSRF and workspace membership"
+  );
+
+  const campaignsPageActivationContent = fs.readFileSync(path.join(__dirname, "../app/campaigns/page.tsx"), "utf-8");
+  assert(
+    campaignsPageActivationContent.includes("بدء خطة يدويًا") &&
+    campaignsPageActivationContent.includes("showAddPostModal"),
+    "2a. Campaigns page enables manual plan and post creation without PDF"
+  );
+
+  assert(
+    campaignsPageActivationContent.includes("يحتاج تعيين كاتب محتوى") &&
+    campaignsPageActivationContent.includes("يحتاج تعيين مراجع معتمد"),
+    "2b. Campaigns page renders Pre-Import Task Activation Matrix with specialty alerts"
+  );
+
+  const itemsRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/items/route.ts"), "utf-8");
+  const itemDetailRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/items/[itemId]/route.ts"), "utf-8");
+  assert(
+    itemsRouteContent.includes("hook") &&
+    itemsRouteContent.includes("on_design_text") &&
+    itemsRouteContent.includes("reel_script") &&
+    itemDetailRouteContent.includes("on_design_text"),
+    "3. Campaigns items API endpoints support complete copywriting fields"
+  );
+
+  assert(
+    mig28Content.includes("approve_copywriting_and_unlock_downstream") &&
+    mig28Content.includes("set_task_waiting_state") &&
+    mig28Content.includes("work_stage") &&
+    mig28Content.includes("dependency_task_id"),
+    "4a. Migration 28 implements downstream task unlock and waiting state RPCs"
+  );
+
+  const copyApproveRoutePath = path.join(__dirname, "../app/api/tasks/[id]/copy-approve/route.ts");
+  const waitingRoutePath = path.join(__dirname, "../app/api/tasks/[id]/waiting/route.ts");
+  assert(fs.existsSync(copyApproveRoutePath), "4b. Task copy-approve API route exists");
+  assert(fs.existsSync(waitingRoutePath), "4c. Task waiting state API route exists");
+
+  const myWorkContent = fs.readFileSync(path.join(__dirname, "../app/my-work/page.tsx"), "utf-8");
+  assert(
+    myWorkContent.includes("تنتظر مدخلات") &&
+    myWorkContent.includes("waitingTasks") &&
+    myWorkContent.includes("handleResumeTask"),
+    "5a. My Work page provides dedicated 'تنتظر مدخلات' section and resume action"
+  );
+
+  assert(
+    myWorkContent.includes("التخصص:") &&
+    myWorkContent.includes("إشراف التخطيط والمدير التسويقي (عطا)") &&
+    myWorkContent.includes("قيادة فريق الاستراتيجية (أروى)"),
+    "5b. My Work page provides multi-team stage filter and leadership perspective views"
+  );
+
+  // =========================================================================
+  // Scenario 85: Video Production Blueprint, Deliverables Versioning & Anti-Self-Approval
+  // =========================================================================
+  console.log("\n[Scenario 85] Video Production Blueprint, Deliverables Versioning & Anti-Self-Approval...");
+
+  const deliverablesRoutePath = path.join(__dirname, "../app/api/tasks/[id]/deliverables/route.ts");
+  assert(fs.existsSync(deliverablesRoutePath), "1a. Task deliverables API endpoint exists");
+  const deliverablesRouteContent = fs.readFileSync(deliverablesRoutePath, "utf-8");
+  assert(
+    deliverablesRouteContent.includes("getTaskDeliverables") &&
+    deliverablesRouteContent.includes("submitTaskDeliverable"),
+    "1b. Task deliverables endpoint supports versioned retrieval and submission"
+  );
+
+  const taskDrawerContent = fs.readFileSync(path.join(__dirname, "../components/tasks/TaskDetailsDrawer.tsx"), "utf-8");
+  assert(
+    taskDrawerContent.includes("مواصفات إنتاج ومونتاج الفيديو (Video Production Blueprint)") &&
+    taskDrawerContent.includes("9:16 (Reels & Stories)") &&
+    taskDrawerContent.includes("assets_drive_url"),
+    "2a. TaskDetailsDrawer displays 9:16 Reel blueprint and Drive asset link"
+  );
+
+  assert(
+    taskDrawerContent.includes("showDeliverableModal") &&
+    taskDrawerContent.includes("handleSubmitVersionedDeliverable") &&
+    taskDrawerContent.includes("إصدارات التسليم السابقة"),
+    "2b. TaskDetailsDrawer displays versioned deliverable history and submission modal"
+  );
+
+  assert(
+    taskDrawerContent.includes("showWaitingModal") &&
+    taskDrawerContent.includes("handleToggleWaiting"),
+    "2c. TaskDetailsDrawer implements waiting state toggle modal and timer pause"
+  );
+
+  assert(
+    taskDrawerContent.includes("handleApproveCopywriting") &&
+    taskDrawerContent.includes("اعتماد الاسكربت وفتح مهام الإنتاج ✓"),
+    "2d. TaskDetailsDrawer provides copywriting stage approval with downstream trigger"
+  );
+
+  assert(
+    taskDrawerContent.includes("canDecideReview") &&
+    taskDrawerContent.includes("task.primary_assignee_id") &&
+    mig28Content.includes("Anti-Self-Approval violation: You cannot approve your own copywriting work."),
+    "3a. Anti-self-approval strictly enforced across database RPC and UI controls"
+  );
+
+  assert(
+    myWorkContent.includes("stageCategory =") &&
+    myWorkContent.includes("copywriting") &&
+    myWorkContent.includes("video_editing") &&
+    taskDrawerContent.includes("stageCategory ="),
+    "3b. Specialty time tracking dynamically maps work_stage across execution surfaces"
+  );
+
   console.log(`Results: ${passedCount} Passed | ${failedCount} Failed`);
   console.log("==========================================================");
 

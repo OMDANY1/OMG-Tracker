@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient, type User, type SupabaseClient } from "@supabase/supabase-js";
+import type { RosterRole } from "@/types/database";
 
 export interface ActiveMembershipContext {
   id: string;
   workspaceId: string;
   userId: string;
   rosterPersonId: string;
-  role: "owner" | "senior_reviewer" | "designer" | "manager";
+  role: RosterRole;
   displayName?: string;
 }
 
@@ -123,7 +124,7 @@ export async function requireAuthenticatedUser(
 export async function requireWorkspaceMembership(
   req: NextRequest,
   options?: {
-    allowedRoles?: ("owner" | "senior_reviewer" | "designer" | "manager")[];
+    allowedRoles?: RosterRole[];
   }
 ): Promise<
   AuthResult<{
@@ -231,6 +232,38 @@ export async function requireOwner(
     return result;
   }
   return result;
+}
+
+/**
+ * Ensures caller is Owner, Manager, or Marketing Director.
+ */
+export async function requireMarketingDirector(
+  req: NextRequest
+): Promise<
+  AuthResult<{
+    user: User;
+    membership: ActiveMembershipContext;
+    admin: SupabaseClient;
+    serverClient: SupabaseClient;
+  }>
+> {
+  return requireWorkspaceMembership(req, { allowedRoles: ["owner", "manager", "marketing_director"] });
+}
+
+/**
+ * Ensures caller is Owner, Manager, or Strategy Lead.
+ */
+export async function requireStrategyLead(
+  req: NextRequest
+): Promise<
+  AuthResult<{
+    user: User;
+    membership: ActiveMembershipContext;
+    admin: SupabaseClient;
+    serverClient: SupabaseClient;
+  }>
+> {
+  return requireWorkspaceMembership(req, { allowedRoles: ["owner", "manager", "strategy_lead"] });
 }
 
 /**

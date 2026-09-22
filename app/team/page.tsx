@@ -268,7 +268,11 @@ export default function TeamPage() {
       return;
     }
 
-    const inviteUrl = `${window.location.origin}/accept-invite?id=${inv.id}`;
+    const host = window.location.host;
+    const baseOrigin = host.includes("localhost") || host.includes("127.0.0.1")
+      ? window.location.origin
+      : "https://omg-creative-workspace.vercel.app";
+    const inviteUrl = `${baseOrigin}/accept-invite?id=${inv.id}`;
     navigator.clipboard.writeText(inviteUrl);
     alert("تم نسخ رابط الدعوة إلى الحافظة.");
   };
@@ -721,6 +725,11 @@ export default function TeamPage() {
                 >
                   <option value="designer">مصمم (Designer)</option>
                   <option value="senior_reviewer">مراجع أول (Senior Reviewer)</option>
+                  <option value="marketing_director">مدير تسويق (Marketing Director)</option>
+                  <option value="strategy_lead">قائد فريق استراتيجية (Strategy Lead)</option>
+                  <option value="strategist">استراتيجي (Strategist)</option>
+                  <option value="content_writer">كاتب محتوى (Content Writer)</option>
+                  <option value="video_editor">مونتير (Video Editor)</option>
                 </select>
               </div>
             </div>

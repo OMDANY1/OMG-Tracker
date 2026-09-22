@@ -42,6 +42,13 @@ export async function POST(req: NextRequest) {
       contentFormat,
       designDueDate,
       suggestedAssigneeId,
+      hook,
+      on_design_text,
+      onDesignText,
+      cta,
+      reel_script,
+      reelScript,
+      slides,
     } = body;
 
     if (!campaignId || !clientId || !title) {
@@ -75,6 +82,11 @@ export async function POST(req: NextRequest) {
         design_due_date: designDueDate || null,
         suggested_assignee_id: suggestedAssigneeId || null,
         approved_assignee_id: suggestedAssigneeId || null,
+        hook: hook || null,
+        on_design_text: on_design_text || onDesignText || null,
+        cta: cta || null,
+        reel_script: reel_script || reelScript || null,
+        slides: slides && Array.isArray(slides) ? slides : [],
         is_included: true,
       })
       .select()

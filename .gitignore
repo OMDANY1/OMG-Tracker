@@ -32,7 +32,9 @@ supabase/.temp/
 .env
 .env.local
 .env.*.local
+.env*.bak
 .owner-setup-token
+supabase/.branches/
 
 # Vercel
 .vercel

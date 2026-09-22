@@ -77,21 +77,68 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2. Resolve target roster person by verified email
-    // Pre-mapped emails of the 5 confirmed designers:
-    const DESIGNER_EMAILS: Record<string, { name: string; role: "senior_reviewer" | "designer" }> = {
-      "nadaabdulnabi513@gmail.com": { name: "ندى", role: "senior_reviewer" },
-      "sara95gd@gmail.com": { name: "سارة", role: "designer" },
-      "alaa.hossam16814@gmail.com": { name: "آلاء", role: "designer" },
-      "lasheeen178@gmail.com": { name: "شهد", role: "designer" },
-      "ayahamza318@gmail.com": { name: "آية", role: "designer" },
-    };
+    // 2. Resolve target roster person and role by invitation or verified email
+    let targetRosterId: string | null = null;
+    let targetRole: string = "designer";
+    let targetName: string = "";
+    let matchedInvitationId: string | null = null;
 
-    const targetDesigner = DESIGNER_EMAILS[userEmail];
-    if (!targetDesigner) {
+    // Check workspace_invitations table first
+    const { data: inviteRecord } = await admin
+      .from("workspace_invitations")
+      .select("id, workspace_id, invited_email, role, roster_person_id, status, expires_at")
+      .eq("invited_email", userEmail)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (inviteRecord) {
+      if (new Date(inviteRecord.expires_at).getTime() < Date.now()) {
+        return NextResponse.json(
+          { error: "انتهت صلاحية رابط الدعوة. يرجى التواصل مع الإدارة لتجديد الدعوة." },
+          { status: 410 }
+        );
+      }
+      targetRosterId = inviteRecord.roster_person_id;
+      targetRole = inviteRecord.role;
+      matchedInvitationId = inviteRecord.id;
+    } else {
+      // Pre-mapped fallback emails of the 5 confirmed designers
+      const DESIGNER_EMAILS: Record<string, { name: string; role: "senior_reviewer" | "designer" }> = {
+        "nadaabdulnabi513@gmail.com": { name: "ندى", role: "senior_reviewer" },
+        "sara95gd@gmail.com": { name: "سارة", role: "designer" },
+        "alaa.hossam16814@gmail.com": { name: "آلاء", role: "designer" },
+        "lasheeen178@gmail.com": { name: "شهد", role: "designer" },
+        "ayahamza318@gmail.com": { name: "آية", role: "designer" },
+      };
+
+      const targetDesigner = DESIGNER_EMAILS[userEmail];
+      if (!targetDesigner) {
+        return NextResponse.json(
+          { error: "هذا البريد الإلكتروني غير مسجل ضمن قائمة الدعوات المعتمدة للايجنسي." },
+          { status: 403 }
+        );
+      }
+
+      const { data: legacyRoster } = await admin
+        .from("roster_people")
+        .select("id, workspace_id, display_name, is_active")
+        .eq("display_name", targetDesigner.name)
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (legacyRoster) {
+        targetRosterId = legacyRoster.id;
+        targetRole = targetDesigner.role;
+        targetName = targetDesigner.name;
+      }
+    }
+
+    if (!targetRosterId) {
       return NextResponse.json(
-        { error: "هذا البريد الإلكتروني غير مسجل ضمن قائمة المصممين المدعوين للايجنسي." },
-        { status: 403 }
+        { error: "لم يتم العثور على سجل العضو في مساحة العمل." },
+        { status: 404 }
       );
     }
 
@@ -99,16 +146,17 @@ export async function POST(req: NextRequest) {
     const { data: rosterPerson, error: rosterErr } = await admin
       .from("roster_people")
       .select("id, workspace_id, display_name, is_active")
-      .eq("display_name", targetDesigner.name)
+      .eq("id", targetRosterId)
       .eq("is_active", true)
       .maybeSingle();
 
     if (rosterErr || !rosterPerson) {
       return NextResponse.json(
-        { error: "لم يتم العثور على سجل المصمم في مساحة العمل." },
+        { error: "لم يتم العثور على سجل العضو في مساحة العمل." },
         { status: 404 }
       );
     }
+    targetName = rosterPerson.display_name;
 
     // 4. Invariant: Ensure target roster person is NOT already bound to an active user
     const { data: rosterMembership } = await admin
@@ -121,7 +169,7 @@ export async function POST(req: NextRequest) {
 
     if (rosterMembership && rosterMembership.user_id !== user.id) {
       return NextResponse.json(
-        { error: "سجل هذا المصمم مرتبط بالفعل بمستخدم نشط آخر. يرجى مراجعة إدارة الايجنسي." },
+        { error: "سجل هذا العضو مرتبط بالفعل بمستخدم نشط آخر. يرجى مراجعة إدارة الايجنسي." },
         { status: 409 }
       );
     }
@@ -134,7 +182,7 @@ export async function POST(req: NextRequest) {
           workspace_id: rosterPerson.workspace_id,
           user_id: user.id,
           roster_person_id: rosterPerson.id,
-          role: targetDesigner.role,
+          role: targetRole,
           is_active: true,
           updated_at: new Date().toISOString(),
         },
@@ -171,16 +219,16 @@ export async function POST(req: NextRequest) {
         email: userEmail,
         user_id: user.id,
         roster_person_id: rosterPerson.id,
-        role: targetDesigner.role,
-        designer_name: targetDesigner.name,
+        role: targetRole,
+        member_name: targetName,
       },
     });
 
     return NextResponse.json({
       success: true,
-      designerName: targetDesigner.name,
-      role: targetDesigner.role,
-      message: `أهلاً بك يا ${targetDesigner.name}! تم تفعيل حسابك بنجاح.`,
+      memberName: targetName,
+      role: targetRole,
+      message: `أهلاً بك يا ${targetName}! تم تفعيل حسابك بنجاح.`,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "حدث خطأ غير متوقع." }, { status: 500 });

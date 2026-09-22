@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateMonthlyReportDraft, finalizeMonthlySnapshot } from "@/lib/services/reports";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requireOwner } from "@/lib/auth/server-auth";
 
 export async function GET(req: NextRequest) {
   try {
@@ -35,9 +36,16 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
+    const authRes = await requireOwner(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
+    }
+
+    const { membership } = authRes.data;
     const body = await req.json();
-    const { workspaceId, monthKey, commentary, idempotencyKey } = body;
+    const { monthKey, commentary, idempotencyKey } = body;
     const headerIdempotencyKey = req.headers.get("x-idempotency-key") || undefined;
+    const workspaceId = body.workspaceId || membership.workspaceId;
 
     if (!workspaceId || !monthKey) {
       return NextResponse.json(
