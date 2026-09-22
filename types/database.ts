@@ -38,7 +38,8 @@ export type TimeCategory =
   | 'strategy_research'
   | 'content_writing'
   | 'video_editing'
-  | 'review';
+  | 'review'
+  | 'waiting';
 
 export type TimeEntrySource = 'timer' | 'manual' | 'on_behalf';
 export type ReviewRoundType = 'internal' | 'client';

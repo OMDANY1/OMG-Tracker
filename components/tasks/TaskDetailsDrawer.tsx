@@ -245,11 +245,11 @@ export default function TaskDetailsDrawer({
         // Start timer with appropriate specialty category
         const stageCategory =
           task.work_stage === "copywriting"
-            ? "copywriting"
+            ? "content_writing"
             : task.work_stage === "video_editing"
             ? "video_editing"
             : task.work_stage === "strategy"
-            ? "strategy"
+            ? "strategy_research"
             : "initial_design";
 
         await fetch("/api/timer/start", {

@@ -46,10 +46,55 @@ export const TIME_CATEGORY_LABELS: Record<TimeCategory, string> = {
   client_revision: "تعديلات العميل",
   final_preparation_export: "تجهيز وتصدير نهائي",
   strategy_research: "بحث وإعداد الاستراتيجية",
-  content_writing: "كتابة المحتوى والاسكربت",
+  content_writing: "كتابة أولية",
   video_editing: "مونتاج وإنتاج الفيديو",
   review: "مراجعة واعتماد",
+  waiting: "ساعات انتظار وتعطيل",
 };
+
+/**
+ * Returns a human-readable Arabic activity label decoupled from job title,
+ * respecting the work stage / discipline context.
+ */
+export function getActivityLabel(category?: string, workStage?: string): string {
+  if (!category) return "عمل مبدئي";
+
+  if (category === "review") {
+    return "مراجعة";
+  }
+  if (category === "internal_revision") {
+    return "تعديلات داخلية";
+  }
+  if (category === "client_revision") {
+    return "تعديلات العميل";
+  }
+  if (category === "waiting") {
+    return "ساعات انتظار وتعطيل";
+  }
+  if (category === "content_writing") {
+    return "كتابة أولية";
+  }
+  if (category === "strategy_research") {
+    return "إعداد الاستراتيجية";
+  }
+  if (category === "video_editing") {
+    return "مونتاج أولي";
+  }
+  if (category === "initial_design") {
+    if (workStage === "copywriting") return "كتابة أولية";
+    if (workStage === "strategy") return "إعداد الاستراتيجية";
+    if (workStage === "video_editing") return "مونتاج أولي";
+    return "تصميم مبدئي";
+  }
+  if (category === "research_references") {
+    return "بحث ومراجع إلهام";
+  }
+  if (category === "final_preparation_export") {
+    return "تجهيز وتصدير نهائي";
+  }
+
+  return (TIME_CATEGORY_LABELS as Record<string, string>)[category] || category;
+}
 
 export const WORK_STAGE_LABELS: Record<string, string> = {
   strategy: "استراتيجية",

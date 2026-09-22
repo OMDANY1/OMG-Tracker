@@ -21,7 +21,8 @@ async function capture() {
     // Capture 10: Ata (Marketing Director) on /reports
     // -------------------------------------------------------------------------
     console.log('--- [1] Capturing /reports as Ata (Marketing Director) ---');
-    const pageAta = await browser.newPage();
+    const contextAta = await browser.createBrowserContext();
+    const pageAta = await contextAta.newPage();
     await pageAta.setViewport({ width: 1440, height: 950 });
 
     await pageAta.goto('http://localhost:3000/login', { waitUntil: 'networkidle2' });
@@ -51,13 +52,14 @@ async function capture() {
     await pageAta.screenshot({ path: path10_scratch });
     fs.copyFileSync(path10_scratch, path10_art);
     console.log('📸 Captured: 10_reports_ata_view.png');
-    await pageAta.close();
+    await contextAta.close();
 
     // -------------------------------------------------------------------------
     // Capture 11: Emad (Owner) on /reports
     // -------------------------------------------------------------------------
     console.log('--- [2] Capturing /reports as Emad (Owner) ---');
-    const pageOwner = await browser.newPage();
+    const contextOwner = await browser.createBrowserContext();
+    const pageOwner = await contextOwner.newPage();
     await pageOwner.setViewport({ width: 1440, height: 950 });
 
     await pageOwner.goto('http://localhost:3000/login', { waitUntil: 'networkidle2' });
@@ -85,7 +87,14 @@ async function capture() {
     await pageOwner.screenshot({ path: path11_scratch });
     fs.copyFileSync(path11_scratch, path11_art);
     console.log('📸 Captured: 11_reports_owner_view.png');
-    await pageOwner.close();
+
+    const path12_scratch = path.join(SCREENSHOT_DIR, '12_reports_full_breakdown.png');
+    const path12_art = path.join(ARTIFACT_DIR, '12_reports_full_breakdown.png');
+    await pageOwner.screenshot({ path: path12_scratch, fullPage: true });
+    fs.copyFileSync(path12_scratch, path12_art);
+    console.log('📸 Captured: 12_reports_full_breakdown.png');
+
+    await contextOwner.close();
 
   } catch (err) {
     console.error('Capture reports error:', err);

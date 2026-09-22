@@ -406,7 +406,7 @@ export default function ReportsPage() {
             <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
               <div className="text-slate-500">إجمالي ساعات العمل الفعلي:</div>
               <div className="text-xl font-bold font-mono text-slate-900 mt-1">
-                {report?.executiveSummary?.totalLoggedHours || "1.00"} ساعة
+                {report?.executiveSummary?.totalLoggedHours !== undefined ? Number(report.executiveSummary.totalLoggedHours).toFixed(2) : "0.00"} ساعة
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">عمل منتج مباشر</div>
             </div>
@@ -414,7 +414,7 @@ export default function ReportsPage() {
             <div className="p-3.5 rounded-xl bg-purple-50/50 border border-purple-200">
               <div className="text-purple-700 font-semibold">ساعات المراجعات المستقلة:</div>
               <div className="text-xl font-bold font-mono text-purple-900 mt-1">
-                {report?.executiveSummary?.totalRevisionHours ? (Number(report.executiveSummary.totalRevisionHours) * 0.5).toFixed(2) : "0.50"} ساعة
+                {report?.executiveSummary?.totalReviewHours !== undefined ? Number(report.executiveSummary.totalReviewHours).toFixed(2) : "0.00"} ساعة
               </div>
               <div className="text-[10px] text-purple-600 mt-0.5">مسجلة بأسماء المراجعين</div>
             </div>
@@ -422,7 +422,7 @@ export default function ReportsPage() {
             <div className="p-3.5 rounded-xl bg-rose-50/50 border border-rose-200">
               <div className="text-rose-700 font-semibold">ساعات التعديلات:</div>
               <div className="text-xl font-bold font-mono text-rose-900 mt-1">
-                {report?.executiveSummary?.totalRevisionHours || "0.00"} ساعة
+                {report?.executiveSummary?.totalRevisionHours !== undefined ? Number(report.executiveSummary.totalRevisionHours).toFixed(2) : "0.00"} ساعة
               </div>
               <div className="text-[10px] text-rose-600 mt-0.5">تعديلات داخلية وعميل</div>
             </div>
@@ -433,7 +433,7 @@ export default function ReportsPage() {
                 ساعات الانتظار والتعطيل:
               </div>
               <div className="text-xl font-bold font-mono text-amber-900 mt-1">
-                0.00 ساعة
+                {report?.executiveSummary?.totalWaitingHours !== undefined ? Number(report.executiveSummary.totalWaitingHours).toFixed(2) : "0.00"} ساعة
               </div>
               <div className="text-[10px] text-amber-700 mt-0.5">مفصولة عن ساعات العمل</div>
             </div>
@@ -459,7 +459,8 @@ export default function ReportsPage() {
                   <th className="px-4 py-2.5">العضو</th>
                   <th className="px-4 py-2.5">المسمى الوظيفي</th>
                   <th className="px-4 py-2.5">التخصص / القسم</th>
-                  <th className="px-4 py-2.5">ساعات العمل الفعلي</th>
+                  <th className="px-4 py-2.5">إجمالي ساعات العمل</th>
+                  <th className="px-4 py-2.5">ساعات المراجعة</th>
                   <th className="px-4 py-2.5">ساعات التعديل</th>
                   <th className="px-4 py-2.5">التسليمات المعتمدة</th>
                   <th className="px-4 py-2.5">عدد الجلسات</th>
@@ -468,7 +469,7 @@ export default function ReportsPage() {
               <tbody className="divide-y divide-slate-100 bg-white">
                 {filteredMembers.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-6 text-center text-slate-400 font-medium">
+                    <td colSpan={8} className="px-4 py-6 text-center text-slate-400 font-medium">
                       لا توجد بيانات مطابقة لمعايير الفلترة الحالية.
                     </td>
                   </tr>
@@ -502,6 +503,9 @@ export default function ReportsPage() {
                         </td>
                         <td className="px-4 py-2.5 font-bold font-mono text-slate-900">
                           {m.loggedHours || "0.00"} ساعة
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-purple-700 font-semibold">
+                          {m.reviewHours || "0.00"} ساعة
                         </td>
                         <td className="px-4 py-2.5 font-mono text-rose-700">
                           {m.revisionHours || "0.00"} ساعة

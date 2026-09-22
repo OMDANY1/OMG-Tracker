@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireWorkspaceMembership } from "@/lib/auth/server-auth";
+import { requireWorkspaceMembership, requireOwner } from "@/lib/auth/server-auth";
 import { getMonthIntervalUtc, toCairoDate, formatCairoDate } from "@/lib/timezone";
-import { WORK_STAGE_LABELS, TIME_CATEGORY_LABELS } from "@/lib/utils";
+import { WORK_STAGE_LABELS, TIME_CATEGORY_LABELS, getActivityLabel } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -134,24 +134,21 @@ export async function GET(req: NextRequest) {
         const durationHours = (durationSec / 3600).toFixed(2);
         const estimatedHours = t.estimated_hours ? Number(t.estimated_hours).toFixed(2) : "0.00";
 
-        // Separate work time, review time, revision time, and waiting time
+        // Separate work time, review time, revision time, and waiting time strictly
+        const isWaiting = e.category === "waiting";
         const isReview = e.category === "review";
         const isRevision = e.category === "internal_revision" || e.category === "client_revision";
+
         const reviewHours = isReview ? durationHours : "0.00";
         const revisionHours = isRevision ? durationHours : "0.00";
-        const workHours = (!isReview && !isRevision) ? durationHours : "0.00";
-
-        // Waiting time calculation if task is waiting
-        let waitingHours = "0.00";
-        if (t.status === "blocked" && t.waiting_since) {
-          const waitMs = Date.now() - new Date(t.waiting_since).getTime();
-          if (waitMs > 0) {
-            waitingHours = (waitMs / 3600000).toFixed(2);
-          }
-        }
+        const waitingHours = isWaiting ? durationHours : "0.00";
+        const workHours = (!isReview && !isRevision && !isWaiting) ? durationHours : "0.00";
 
         const workStageLabel = WORK_STAGE_LABELS[t.work_stage] || t.work_stage || "تصميم";
-        const categoryLabel = TIME_CATEGORY_LABELS[e.category as keyof typeof TIME_CATEGORY_LABELS] || e.category || "";
+        const categoryLabel = getActivityLabel(e.category, t.work_stage);
+        const waitingReason = isWaiting
+          ? (e.note || t.waiting_reason || "")
+          : (t.status === "blocked" ? (t.waiting_reason || "") : "");
 
         const startTimeStr = e.started_at ? toCairoDate(e.started_at).toLocaleString("ar-EG") : "";
         const endTimeStr = e.ended_at ? toCairoDate(e.ended_at).toLocaleString("ar-EG") : "مفتوح";
@@ -171,7 +168,7 @@ export async function GET(req: NextRequest) {
           reviewHours,
           revisionHours,
           waitingHours,
-          t.waiting_reason || "",
+          waitingReason,
           startTimeStr,
           endTimeStr,
           e.note || "",
@@ -455,9 +452,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "نوع التقرير غير مدعوم." }, { status: 400 });
     }
 
-    // Prepend UTF-8 Byte Order Mark (BOM: 0xEF, 0xBB, 0xBF) so Arabic renders cleanly in Microsoft Excel
+    // Prepend UTF-8 Byte Order Mark (\uFEFF: 0xEF, 0xBB, 0xBF) so Arabic renders cleanly in Microsoft Excel
     const bomBuffer = Buffer.concat([
-      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from("\uFEFF", "utf-8"),
       Buffer.from(csvContent, "utf-8"),
     ]);
 
