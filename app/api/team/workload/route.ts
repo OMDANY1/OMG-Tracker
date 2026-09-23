@@ -44,10 +44,10 @@ export async function GET(req: NextRequest) {
       .single();
 
     // 2. Fetch all required data in parallel
-    const [rosterRes, membershipsRes, capacitiesRes, clientsRes, tasksRes] = await Promise.all([
+    const [rosterRes, membershipsRes, capacitiesRes, clientsRes, tasksRes, invitesRes] = await Promise.all([
       admin
         .from("roster_people")
-        .select("id, display_name, job_title, is_active, specialties")
+        .select("id, display_name, job_title, is_active, specialties, role")
         .eq("workspace_id", workspaceId)
         .order("display_name", { ascending: true }),
       admin
@@ -83,6 +83,10 @@ export async function GET(req: NextRequest) {
         `)
         .eq("workspace_id", workspaceId)
         .not("status", "in", '("approved","delivered","cancelled")'),
+      admin
+        .from("workspace_invitations")
+        .select("roster_person_id, status")
+        .eq("workspace_id", workspaceId),
     ]);
 
     if (rosterRes.error) {
@@ -94,6 +98,7 @@ export async function GET(req: NextRequest) {
     const capacities = capacitiesRes.data || [];
     const clients = clientsRes.data || [];
     const tasks = tasksRes.data || [];
+    const invitations = invitesRes.data || [];
 
     const membershipRoleMap = new Map<string, string>();
     const membershipUserMap = new Map<string, string | null>();
@@ -101,6 +106,13 @@ export async function GET(req: NextRequest) {
       if (m.roster_person_id) {
         if (m.role) membershipRoleMap.set(m.roster_person_id, m.role);
         membershipUserMap.set(m.roster_person_id, m.user_id || null);
+      }
+    }
+
+    const acceptedInvitesRosterSet = new Set<string>();
+    for (const inv of invitations) {
+      if (inv.status === "accepted" && inv.roster_person_id) {
+        acceptedInvitesRosterSet.add(inv.roster_person_id);
       }
     }
 
@@ -116,7 +128,7 @@ export async function GET(req: NextRequest) {
     const in14Days = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
 
     const metrics: DesignerWorkloadMetric[] = roster.map((person) => {
-      let role = membershipRoleMap.get(person.id);
+      let role = membershipRoleMap.get(person.id) || (person as any).role;
       if (!role) {
         const title = (person.job_title || "").toLowerCase();
         const name = (person.display_name || "").toLowerCase();
@@ -124,6 +136,16 @@ export async function GET(req: NextRequest) {
           role = "owner";
         } else if (name.includes("ندى") || title.includes("senior") || title.includes("reviewer")) {
           role = "senior_reviewer";
+        } else if (title.includes("marketing")) {
+          role = "marketing_director";
+        } else if (title.includes("strategy lead")) {
+          role = "strategy_lead";
+        } else if (title.includes("strategist")) {
+          role = "strategist";
+        } else if (title.includes("content") || title.includes("writer")) {
+          role = "content_writer";
+        } else if (title.includes("video") || title.includes("editor")) {
+          role = "video_editor";
         } else {
           role = "designer";
         }
@@ -185,7 +207,9 @@ export async function GET(req: NextRequest) {
       else if (loadRatio > 90) status = "overloaded";
 
       const userId = membershipUserMap.get(person.id);
-      const hasJoined = Boolean(userId);
+      // Strictly verify if member has truly joined:
+      // Must have userId AND (be the active Owner OR have an accepted invitation)
+      const hasJoined = Boolean(userId && (role === "owner" || acceptedInvitesRosterSet.has(person.id)));
 
       return {
         id: person.id,

@@ -294,6 +294,35 @@ export async function requireMarketingDirector(
 }
 
 /**
+ * Ensures caller is specifically authorized to export data/reports (Owner, Manager, Marketing Director).
+ * Rejects Business Owner Viewer, Designers, and other unprivileged roles.
+ */
+export async function requireExportPermission(
+  req: NextRequest
+): Promise<
+  AuthResult<{
+    user: User;
+    membership: ActiveMembershipContext;
+    admin: SupabaseClient;
+    serverClient: SupabaseClient;
+  }>
+> {
+  const result = await requireWorkspaceMembership(req, {
+    allowedRoles: ["owner", "manager", "marketing_director"],
+  });
+  if (!result.success) {
+    return {
+      success: false,
+      errorResponse: NextResponse.json(
+        { error: "غير مصرح: صلاحية تصدير التقارير وسجلات الوقت مقتصرة على الإدارة ومدير التسويق فقط." },
+        { status: 403 }
+      ),
+    };
+  }
+  return result;
+}
+
+/**
  * Ensures caller is Owner, Manager, or Strategy Lead.
  */
 export async function requireStrategyLead(

@@ -1,26 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateMonthlyReportDraft } from "@/lib/services/reports";
 import { generateAnalysisPackZip } from "@/lib/services/exports";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { requireExportPermission } from "@/lib/auth/server-auth";
 
 export async function GET(req: NextRequest) {
   try {
+    const authRes = await requireExportPermission(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
+    }
+
+    const { membership, admin: supabase } = authRes.data;
     const { searchParams } = new URL(req.url);
     const monthKey = searchParams.get("monthKey") || "2026-09";
     const timezone = searchParams.get("timezone") || "Africa/Cairo";
 
-    const supabase = createAdminClient();
-    if (!supabase) {
-      return NextResponse.json({ error: "Database unconfigured" }, { status: 500 });
-    }
-
-    const { data: workspace } = await supabase
-      .from("workspaces")
-      .select("id")
-      .limit(1)
-      .maybeSingle();
-
-    const workspaceId = workspace?.id || "00000000-0000-0000-0000-000000000000";
+    const workspaceId = membership.workspaceId;
 
     const report = await generateMonthlyReportDraft({
       workspaceId,

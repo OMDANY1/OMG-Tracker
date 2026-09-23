@@ -155,8 +155,8 @@ export function AddClientModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full p-6 text-right space-y-5 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto overflow-x-hidden">
+      <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full p-4 sm:p-6 text-right space-y-5 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto overflow-x-hidden">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <button
@@ -495,21 +495,21 @@ export function AddClientModal({
         </div>
 
         {/* Modal Actions */}
-        <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-3">
+        <div className="pt-3 border-t border-slate-100 flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-3">
           <button
             type="button"
             onClick={onClose}
             disabled={isSubmitting}
-            className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
+            className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl text-center"
           >
             إلغاء
           </button>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
             <button
               type="button"
               disabled={isSubmitting}
               onClick={() => handleSubmit("Not started")}
-              className="px-4 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+              className="px-4 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors text-center"
             >
               حفظ كمسودة
             </button>
@@ -517,7 +517,7 @@ export function AddClientModal({
               type="button"
               disabled={isSubmitting}
               onClick={() => handleSubmit("Active")}
-              className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs flex items-center gap-1.5 transition-all"
+              className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs flex items-center justify-center gap-1.5 transition-all text-center"
             >
               {isSubmitting ? "جاري الحفظ..." : "إنشاء وتفعيل العميل"}
             </button>

@@ -61,7 +61,9 @@ export interface RosterPerson {
   workspace_id: string;
   display_name: string;
   job_title: string;
+  role?: RosterRole;
   specialties?: string[];
+  is_active?: boolean;
   created_at: string;
   updated_at: string;
   membership?: WorkspaceMembership | null;
@@ -512,3 +514,160 @@ export interface DesignerProductivity {
   monthlyCapacityHours?: number | null;
   capacityUtilizationRate?: number | null;
 }
+
+// -----------------------------------------------------------------------------
+// Permissions System: Capabilities, Scopes, and Role Matrix
+// -----------------------------------------------------------------------------
+
+export type PermissionKey =
+  | 'view_data'
+  | 'manage_clients'
+  | 'assign_team'
+  | 'approve_reviews'
+  | 'track_time'
+  | 'export_reports'
+  | 'manage_workspace';
+
+export type PermissionScope =
+  | 'workspace'
+  | 'assigned_team'
+  | 'assigned_clients'
+  | 'own_tasks'
+  | 'none';
+
+export interface RolePermissionConfig {
+  label: string;
+  description: string;
+  scope: PermissionScope;
+  canViewData: boolean;
+  canManageClients: boolean;
+  canAssignTeam: boolean;
+  canApproveReviews: boolean;
+  canTrackTime: boolean;
+  canExportReports: boolean;
+  canManageWorkspace: boolean;
+}
+
+export const ROLE_PERMISSIONS_MATRIX: Record<RosterRole, RolePermissionConfig> = {
+  owner: {
+    label: "المدير العام (Owner)",
+    description: "إدارة كاملة للمنظومة والعملاء والفرق والدعوات والإعدادات والتقارير",
+    scope: "workspace",
+    canViewData: true,
+    canManageClients: true,
+    canAssignTeam: true,
+    canApproveReviews: true,
+    canTrackTime: true,
+    canExportReports: true,
+    canManageWorkspace: true,
+  },
+  manager: {
+    label: "مدير العمليات (Manager)",
+    description: "إدارة التشغيل والعملاء وتوزيع الفرق والتقارير والتصدير دون إدارة النظام",
+    scope: "workspace",
+    canViewData: true,
+    canManageClients: true,
+    canAssignTeam: true,
+    canApproveReviews: true,
+    canTrackTime: true,
+    canExportReports: true,
+    canManageWorkspace: false,
+  },
+  marketing_director: {
+    label: "مدير التسويق (عطا)",
+    description: "اطلاع شامل على المؤشرات وسجلات الوقت والتقييمات والتصدير فقط دون تعديل أو إسناد",
+    scope: "workspace",
+    canViewData: true,
+    canManageClients: false,
+    canAssignTeam: false,
+    canApproveReviews: false,
+    canTrackTime: true,
+    canExportReports: true,
+    canManageWorkspace: false,
+  },
+  strategy_lead: {
+    label: "قائد فريق استراتيجية (أروى)",
+    description: "قيادة الاستراتيجية ومراجعة واعتماد البريفات وإسناد فريق الاستراتيجية",
+    scope: "assigned_team",
+    canViewData: true,
+    canManageClients: true,
+    canAssignTeam: true,
+    canApproveReviews: true,
+    canTrackTime: true,
+    canExportReports: false,
+    canManageWorkspace: false,
+  },
+  senior_reviewer: {
+    label: "مراجع أول (ندى)",
+    description: "مراجعة واعتماد تصاميم الفريق والتوجيه الفني",
+    scope: "assigned_team",
+    canViewData: true,
+    canManageClients: false,
+    canAssignTeam: false,
+    canApproveReviews: true,
+    canTrackTime: true,
+    canExportReports: false,
+    canManageWorkspace: false,
+  },
+  strategist: {
+    label: "استراتيجي (Strategist)",
+    description: "إعداد الاستراتيجيات والبريفات وسجلات الوقت للعملاء المسندين",
+    scope: "assigned_clients",
+    canViewData: true,
+    canManageClients: false,
+    canAssignTeam: false,
+    canApproveReviews: false,
+    canTrackTime: true,
+    canExportReports: false,
+    canManageWorkspace: false,
+  },
+  content_writer: {
+    label: "كاتب محتوى (Content Writer)",
+    description: "كتابة خطط المحتوى والاسكريبتات وتتبع الوقت للمهام المسندة",
+    scope: "own_tasks",
+    canViewData: true,
+    canManageClients: false,
+    canAssignTeam: false,
+    canApproveReviews: false,
+    canTrackTime: true,
+    canExportReports: false,
+    canManageWorkspace: false,
+  },
+  designer: {
+    label: "مصمم (Designer)",
+    description: "تنفيذ التصاميم ورفع التسليمات وتتبع الوقت للمهام المسندة",
+    scope: "own_tasks",
+    canViewData: true,
+    canManageClients: false,
+    canAssignTeam: false,
+    canApproveReviews: false,
+    canTrackTime: true,
+    canExportReports: false,
+    canManageWorkspace: false,
+  },
+  video_editor: {
+    label: "مونتير (Video Editor)",
+    description: "تنفيذ ومونتاج الفيديو ورفع التسليمات وتتبع الوقت للمهام المسندة",
+    scope: "own_tasks",
+    canViewData: true,
+    canManageClients: false,
+    canAssignTeam: false,
+    canApproveReviews: false,
+    canTrackTime: true,
+    canExportReports: false,
+    canManageWorkspace: false,
+  },
+  business_owner_viewer: {
+    label: "مالك الشركة (مشاهد فقط)",
+    description: "اطلاع وقراءة كاملة للعملاء والفرق والتقارير دون أي صلاحيات كتابة أو تصدير أو تعديل",
+    scope: "workspace",
+    canViewData: true,
+    canManageClients: false,
+    canAssignTeam: false,
+    canApproveReviews: false,
+    canTrackTime: false,
+    canExportReports: false,
+    canManageWorkspace: false,
+  },
+};
+

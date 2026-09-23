@@ -31,6 +31,8 @@ import {
   FileText,
 } from "lucide-react";
 import { ROSTER_ROLE_LABELS, cn } from "@/lib/utils";
+import { PermissionsMatrixModal } from "@/components/team/PermissionsMatrixModal";
+import { ROLE_PERMISSIONS_MATRIX } from "@/types/database";
 
 export interface WorkloadMember {
   id: string;
@@ -132,6 +134,7 @@ export default function TeamPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isViewer, setIsViewer] = useState<boolean>(false);
   const [copySuccessId, setCopySuccessId] = useState<string | null>(null);
+  const [showPermissionsMatrix, setShowPermissionsMatrix] = useState<boolean>(false);
 
   // Add Member Modal State
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
@@ -402,8 +405,7 @@ export default function TeamPage() {
     }
   };
 
-  const handleSaveDraftInvite = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveOrIssueInvite = async (isDraftOnly: boolean = true) => {
     if (!selectedRosterId || !inviteEmail.trim()) {
       setInviteModalError("يرجى اختيار العضو وإدخال البريد الإلكتروني.");
       return;
@@ -421,16 +423,17 @@ export default function TeamPage() {
           rosterPersonId: selectedRosterId,
           email: inviteEmail.trim(),
           role: inviteRole,
-          isDraftOnly: true,
+          isDraftOnly: isDraftOnly,
+          action: isDraftOnly ? "create_draft" : "issue",
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || "فشل حفظ مسودة الدعوة.");
+        throw new Error(data.error || "فشل معالجة الدعوة.");
       }
 
-      setInviteModalSuccess(data.message || "تم حفظ مسودة الدعوة بنجاح.");
+      setInviteModalSuccess(data.message || (isDraftOnly ? "تم حفظ مسودة الدعوة بنجاح." : "تم إصدار وتفعيل رابط الدعوة بنجاح."));
       setTimeout(() => {
         setShowInviteModal(false);
         setInviteModalSuccess(null);
@@ -442,6 +445,29 @@ export default function TeamPage() {
       setInviteModalError(err.message || "حدث خطأ أثناء حفظ الدعوة.");
     } finally {
       setSubmittingInvite(false);
+    }
+  };
+
+  const handleSaveDraftInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await handleSaveOrIssueInvite(true);
+  };
+
+  const handleIssueExistingInvite = async (invitationId: string) => {
+    try {
+      const res = await fetch("/api/team/invitations", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: invitationId, action: "issue" }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "فشل تفعيل الرابط.");
+        return;
+      }
+      fetchTeamData();
+    } catch (e: any) {
+      alert(e.message);
     }
   };
 
@@ -499,6 +525,14 @@ export default function TeamPage() {
             title="تحديث البيانات"
           >
             <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+          </button>
+          <button
+            onClick={() => setShowPermissionsMatrix(true)}
+            className="px-3.5 py-2 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5"
+            title="عرض مصفوفة الأدوار والصلاحيات"
+          >
+            <Shield className="w-4 h-4 text-purple-700" />
+            <span>مصفوفة الصلاحيات</span>
           </button>
           {!isViewer && (
             <>
@@ -858,6 +892,19 @@ export default function TeamPage() {
                     </td>
                     <td className="p-3">
                       <div className="flex items-center gap-1.5">
+                        {/* Issue/Activate Draft button */}
+                        {!isViewer && inv.status === "draft" && (
+                          <button
+                            type="button"
+                            onClick={() => handleIssueExistingInvite(inv.id)}
+                            className="p-1.5 rounded text-[11px] font-semibold flex items-center gap-1 text-sky-600 hover:text-sky-800 hover:bg-sky-50 transition-colors"
+                            title="تفعيل وإصدار رابط الدعوة للانضمام"
+                          >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">إصدار الرابط</span>
+                          </button>
+                        )}
+
                         {/* Copy Link button */}
                         <button
                           type="button"
@@ -968,6 +1015,43 @@ export default function TeamPage() {
                     </option>
                   ))}
                 </select>
+
+                {/* Role Permissions & Scope Summary Card */}
+                {(() => {
+                  const roleConfig = ROLE_PERMISSIONS_MATRIX[newMemberRole as keyof typeof ROLE_PERMISSIONS_MATRIX];
+                  if (!roleConfig) return null;
+                  return (
+                    <div className="mt-2 p-3 bg-purple-50/70 border border-purple-200 rounded-xl space-y-1.5 text-[11px]">
+                      <div className="flex items-center justify-between font-bold text-purple-950">
+                        <span className="flex items-center gap-1.5">
+                          <Shield className="w-3.5 h-3.5 text-purple-700" />
+                          نطاق الصلاحيات:
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-purple-200 text-purple-900 text-[10px] font-bold">
+                          {roleConfig.scope === "workspace"
+                            ? "مساحة العمل كاملة"
+                            : roleConfig.scope === "assigned_team"
+                            ? "فريقه وتخصصه"
+                            : roleConfig.scope === "assigned_clients"
+                            ? "العملاء المسندون"
+                            : "مهامه الخاصة"}
+                        </span>
+                      </div>
+                      <p className="text-purple-900 text-[10px] leading-relaxed">{roleConfig.description}</p>
+                      <div className="flex flex-wrap gap-1 pt-1 text-[10px]">
+                        {roleConfig.canManageClients && <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded font-semibold">إدارة العملاء</span>}
+                        {roleConfig.canAssignTeam && <span className="px-1.5 py-0.5 bg-sky-50 text-sky-800 border border-sky-200 rounded font-semibold">إسناد الفرق</span>}
+                        {roleConfig.canApproveReviews && <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded font-semibold">الاعتماد والمراجعة</span>}
+                        {roleConfig.canExportReports && <span className="px-1.5 py-0.5 bg-purple-50 text-purple-800 border border-purple-200 rounded font-semibold">تصدير التقارير</span>}
+                        {roleConfig.canManageWorkspace && <span className="px-1.5 py-0.5 bg-rose-50 text-rose-800 border border-rose-200 rounded font-bold">إدارة النظام</span>}
+                        {roleConfig.canTrackTime && <span className="px-1.5 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 rounded font-semibold">تتبع الوقت</span>}
+                        {!roleConfig.canManageClients && !roleConfig.canAssignTeam && !roleConfig.canApproveReviews && !roleConfig.canExportReports && !roleConfig.canTrackTime && !roleConfig.canManageWorkspace && (
+                          <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded font-semibold">مشاهدة وقراءة فقط (بدون كتابة)</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div>
@@ -1123,6 +1207,50 @@ export default function TeamPage() {
                     ))
                   )}
                 </select>
+
+                {editingMember.role === "owner" && (
+                  <div className="mt-1.5 p-2 bg-purple-50 border border-purple-200 text-purple-900 rounded-lg text-[10px] flex items-center gap-1.5 font-semibold">
+                    <Lock className="w-3.5 h-3.5 text-purple-700 shrink-0" />
+                    <span>حساب المدير العام محمي بموجب قواعد النظام لمنع قفل مساحة العمل.</span>
+                  </div>
+                )}
+
+                {/* Role Permissions & Scope Summary Card */}
+                {(() => {
+                  const roleConfig = ROLE_PERMISSIONS_MATRIX[editRole as keyof typeof ROLE_PERMISSIONS_MATRIX];
+                  if (!roleConfig) return null;
+                  return (
+                    <div className="mt-2 p-3 bg-purple-50/70 border border-purple-200 rounded-xl space-y-1.5 text-[11px]">
+                      <div className="flex items-center justify-between font-bold text-purple-950">
+                        <span className="flex items-center gap-1.5">
+                          <Shield className="w-3.5 h-3.5 text-purple-700" />
+                          نطاق الصلاحيات:
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-purple-200 text-purple-900 text-[10px] font-bold">
+                          {roleConfig.scope === "workspace"
+                            ? "مساحة العمل كاملة"
+                            : roleConfig.scope === "assigned_team"
+                            ? "فريقه وتخصصه"
+                            : roleConfig.scope === "assigned_clients"
+                            ? "العملاء المسندون"
+                            : "مهامه الخاصة"}
+                        </span>
+                      </div>
+                      <p className="text-purple-900 text-[10px] leading-relaxed">{roleConfig.description}</p>
+                      <div className="flex flex-wrap gap-1 pt-1 text-[10px]">
+                        {roleConfig.canManageClients && <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded font-semibold">إدارة العملاء</span>}
+                        {roleConfig.canAssignTeam && <span className="px-1.5 py-0.5 bg-sky-50 text-sky-800 border border-sky-200 rounded font-semibold">إسناد الفرق</span>}
+                        {roleConfig.canApproveReviews && <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded font-semibold">الاعتماد والمراجعة</span>}
+                        {roleConfig.canExportReports && <span className="px-1.5 py-0.5 bg-purple-50 text-purple-800 border border-purple-200 rounded font-semibold">تصدير التقارير</span>}
+                        {roleConfig.canManageWorkspace && <span className="px-1.5 py-0.5 bg-rose-50 text-rose-800 border border-rose-200 rounded font-bold">إدارة النظام</span>}
+                        {roleConfig.canTrackTime && <span className="px-1.5 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 rounded font-semibold">تتبع الوقت</span>}
+                        {!roleConfig.canManageClients && !roleConfig.canAssignTeam && !roleConfig.canApproveReviews && !roleConfig.canExportReports && !roleConfig.canTrackTime && !roleConfig.canManageWorkspace && (
+                          <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded font-semibold">مشاهدة وقراءة فقط (بدون كتابة)</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div>
@@ -1374,7 +1502,7 @@ export default function TeamPage() {
               </div>
             )}
 
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+            <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={() => setShowInviteModal(false)}
@@ -1383,17 +1511,36 @@ export default function TeamPage() {
                 إلغاء
               </button>
 
-              <button
-                type="submit"
-                disabled={submittingInvite || !selectedRosterId || !inviteEmail.trim()}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-xl font-bold shadow-xs transition-colors"
-              >
-                {submittingInvite ? "جاري الحفظ..." : "حفظ كمسودة دعوة"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleSaveOrIssueInvite(true)}
+                  disabled={submittingInvite || !selectedRosterId || !inviteEmail.trim()}
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-400 text-slate-800 rounded-xl font-bold text-xs transition-colors"
+                >
+                  {submittingInvite ? "جاري الحفظ..." : "حفظ كمسودة دعوة"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSaveOrIssueInvite(false)}
+                  disabled={submittingInvite || !selectedRosterId || !inviteEmail.trim()}
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 text-white rounded-xl font-bold text-xs shadow-xs transition-colors flex items-center gap-1.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{submittingInvite ? "جاري الإصدار..." : "إصدار وتفعيل الرابط"}</span>
+                </button>
+              </div>
             </div>
           </form>
         </div>
       )}
+
+      {/* Modal 5: Permissions Matrix Modal */}
+      <PermissionsMatrixModal
+        isOpen={showPermissionsMatrix}
+        onClose={() => setShowPermissionsMatrix(false)}
+      />
     </div>
   );
 }

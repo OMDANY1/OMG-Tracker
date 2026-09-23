@@ -99,12 +99,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "مساحة العمل غير موجودة." }, { status: 404 });
     }
 
-    // If attempting to SEND while paused, return strict 403
-    if (action === "send" || (!isDraftOnly && action !== "create_draft")) {
+    // If attempting to SEND automated email while paused, return strict 403
+    if (action === "send") {
       if (ws.invitations_paused) {
         return NextResponse.json(
           {
-            error: "الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. تم منع إرسال الدعوة حفاظًا على الأمان.",
+            error: "خدمة إرسال الإيميلات التلقائية متوقفة مؤقتًا لحين اكتمال إعداد النطاق. يمكنك إصدار رابط الدعوة ونسخه لمشاركته يدوياً.",
             paused: true,
           },
           { status: 403 }
@@ -165,12 +165,14 @@ export async function POST(req: NextRequest) {
       const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
+      const targetStatus = isDraftOnly && action !== "issue" ? "draft" : "pending";
+
       const { data: updated, error: updateErr } = await admin
         .from("workspace_invitations")
         .update({
           invited_email: cleanEmail,
           role: role === "owner" ? "senior_reviewer" : role,
-          status: ws.invitations_paused ? "draft" : isDraftOnly ? "draft" : "pending",
+          status: targetStatus,
           token_hash: tokenHash,
           expires_at: expiresAt,
           notes: notes || null,
@@ -198,19 +200,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: true,
         isExisting: true,
-        message: ws.invitations_paused
-          ? "تم تحديث مسودة الدعوة القائمة بنجاح. (الإرسال متوقف مؤقتًا)"
-          : "تم تحديث الدعوة بنجاح.",
+        message: targetStatus === "pending"
+          ? "تم إصدار وتفعيل رابط الدعوة بنجاح."
+          : "تم حفظ مسودة الدعوة بنجاح.",
         invitation: updated,
       });
     }
 
-    // Otherwise create brand new draft
+    // Otherwise create brand new invitation
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    const targetStatus = ws.invitations_paused ? "draft" : isDraftOnly ? "draft" : "pending";
+    const targetStatus = isDraftOnly && action !== "issue" ? "draft" : "pending";
 
     const { data: invitation, error: insertErr } = await admin
       .from("workspace_invitations")
@@ -364,6 +366,35 @@ export async function PATCH(req: NextRequest) {
       });
 
       return NextResponse.json({ success: true, message: "تم إرسال الدعوة بنجاح." });
+    }
+
+    // Handle ISSUE action (transition draft -> pending for manual sharing)
+    if (action === "issue" || status === "pending") {
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { error: issueErr } = await admin
+        .from("workspace_invitations")
+        .update({
+          status: "pending",
+          expires_at: expiresAt,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("workspace_id", membership.workspaceId)
+        .eq("id", id);
+
+      if (issueErr) {
+        return NextResponse.json({ error: issueErr.message }, { status: 500 });
+      }
+
+      await admin.from("audit_events").insert({
+        workspace_id: membership.workspaceId,
+        actor_id: membership.rosterPersonId,
+        action: "issue_invitation_link",
+        entity_type: "workspace_invitations",
+        entity_id: id,
+        metadata: { action: "issue" },
+      });
+
+      return NextResponse.json({ success: true, message: "تم إصدار وتفعيل رابط الدعوة بنجاح (صالح لمدة 7 أيام)." });
     }
 
     // Handle REVOKE action
