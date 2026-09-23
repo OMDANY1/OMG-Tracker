@@ -9,6 +9,7 @@ import {
   Key,
   Calendar,
   CheckCircle2,
+  Check,
   AlertTriangle,
   RefreshCw,
   Mail,
@@ -32,10 +33,13 @@ export default function SettingsPage() {
   const [threshold, setThreshold] = useState("240");
   const [diagnostics, setDiagnostics] = useState<any>(null);
   const [testing, setTesting] = useState(false);
-  const [invitationsPaused, setInvitationsPaused] = useState<boolean>(true);
+  const [allowEmails, setAllowEmails] = useState<boolean>(false);
+  const [allowAcceptance, setAllowAcceptance] = useState<boolean>(true);
+  const [invitationsPaused, setInvitationsPaused] = useState<boolean>(false);
   const [workspaceId, setWorkspaceId] = useState<string>("");
-  const [updatingPause, setUpdatingPause] = useState<boolean>(false);
-  const [pauseError, setPauseError] = useState<string | null>(null);
+  const [updatingSettings, setUpdatingSettings] = useState<boolean>(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsSuccess, setSettingsSuccess] = useState<string | null>(null);
   const [aiMetrics, setAiMetrics] = useState<any>(null);
   const [loadingAi, setLoadingAi] = useState<boolean>(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -63,7 +67,9 @@ export default function SettingsPage() {
       const res = await fetch("/api/workspace/invitations-status");
       if (res.ok) {
         const data = await res.json();
-        setInvitationsPaused(data.invitationsPaused ?? true);
+        setAllowEmails(data.allowInvitationEmails ?? false);
+        setAllowAcceptance(data.allowInvitationAcceptance ?? true);
+        setInvitationsPaused(data.invitationsPaused ?? false);
         setWorkspaceId(data.workspaceId || "");
       }
     } catch (e) {
@@ -71,35 +77,36 @@ export default function SettingsPage() {
     }
   };
 
-  const toggleInvitationsPause = async () => {
+  const updateInvitationSettings = async (newEmails: boolean, newAcceptance: boolean) => {
     if (!workspaceId) return;
-    const targetState = !invitationsPaused;
-    if (!targetState && !confirm("هل أنت متأكد من رغبتك في إعادة فتح الدعوات الآن؟")) {
-      return;
-    }
-
-    setUpdatingPause(true);
-    setPauseError(null);
+    setUpdatingSettings(true);
+    setSettingsError(null);
+    setSettingsSuccess(null);
     try {
       const res = await fetch("/api/workspace/invitations-status", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           workspaceId,
-          paused: targetState,
+          allowEmails: newEmails,
+          allowAcceptance: newAcceptance,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || "فشل تحديث حالة الدعوات.");
+        throw new Error(data.error || "فشل تحديث إعدادات الدعوات.");
       }
 
+      setAllowEmails(data.allowInvitationEmails);
+      setAllowAcceptance(data.allowInvitationAcceptance);
       setInvitationsPaused(data.invitationsPaused);
+      setSettingsSuccess("تم حفظ إعدادات الدعوات بنجاح.");
+      setTimeout(() => setSettingsSuccess(null), 3000);
     } catch (err: any) {
-      setPauseError(err.message || "حدث خطأ أثناء تعديل الإعداد.");
+      setSettingsError(err.message || "حدث خطأ أثناء حفظ الإعدادات.");
     } finally {
-      setUpdatingPause(false);
+      setUpdatingSettings(false);
     }
   };
 
@@ -420,72 +427,133 @@ export default function SettingsPage() {
         ) : null}
       </div>
 
-      {/* Section: Invitations Control (Owner Only) */}
-      <div className="bg-surface rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4 text-xs">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+      {/* Section: Invitations Control (Owner Only) - Split Independent Controls */}
+      <div className="bg-surface rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5 text-xs">
+        <div className="border-b border-slate-100 pb-3">
           <h2 className="font-bold text-base text-slate-900 flex items-center gap-2">
-            <Mail className="w-4 h-4 text-sky-600" />
-            حالة قبول الدعوات (إدارة المدير العام)
+            <Mail className="w-5 h-5 text-sky-600" />
+            إدارة إعدادات الدعوات والأمان (المدير العام)
           </h2>
-          <span
-            className={cn(
-              "px-3 py-1 rounded-full text-xs font-bold border",
-              invitationsPaused
-                ? "bg-amber-50 text-amber-700 border-amber-200"
-                : "bg-emerald-50 text-emerald-700 border-emerald-200"
-            )}
-          >
-            {invitationsPaused ? "متوقفة مؤقتًا" : "مفتوحة ومفعلة"}
-          </span>
+          <p className="text-slate-500 text-[11px] mt-0.5">
+            فصل تام ومستقل بين إرسال البريد التلقائي وقبول الروابط المباشرة لحماية مساحة العمل
+          </p>
         </div>
 
-        <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        {settingsSuccess && (
+          <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs flex items-center gap-2 font-bold">
+            <Check className="w-4 h-4 text-emerald-600" />
+            <span>{settingsSuccess}</span>
+          </div>
+        )}
+
+        {settingsError && (
+          <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs font-semibold">
+            {settingsError}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Card 1: Automated Email Sending (allow_invitation_emails) */}
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between space-y-3">
             <div>
-              <div className="font-bold text-slate-800">إيقاف استقبال وقبول الدعوات لجميع الأعضاء:</div>
-              <p className="text-slate-500 text-[11px] mt-0.5">
-                عند التفعيل، يتم حظر قبول أي رابط دعوة قديم أو إرسال دعوات جديدة في مساحة العمل وتظهر رسالة التوقف المؤقت.
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                  <Mail className="w-4 h-4 text-slate-600" />
+                  إرسال الإيميلات التلقائي
+                </span>
+                <span
+                  className={cn(
+                    "px-2.5 py-0.5 rounded-full text-[10px] font-bold border",
+                    allowEmails
+                      ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                      : "bg-slate-200/80 text-slate-700 border-slate-300"
+                  )}
+                >
+                  {allowEmails ? "مفعل" : "معطل (Safe Mode)"}
+                </span>
+              </div>
+              <p className="text-slate-500 text-[11px] mt-2 leading-relaxed">
+                إرسال الإيميلات التلقائية عبر البريد معطل حالياً لأسباب السلامة لحين ربط واعتماد خادم البريد الرسمي للمؤسسة، لمنع أي إرسال عشوائي.
               </p>
             </div>
-            <button
-              onClick={toggleInvitationsPause}
-              disabled={updatingPause}
-              className={cn(
-                "px-4 py-2 rounded-xl text-xs font-bold text-white transition-colors flex items-center gap-1.5 shadow-xs shrink-0",
-                invitationsPaused
-                  ? "bg-emerald-600 hover:bg-emerald-700"
-                  : "bg-rose-600 hover:bg-rose-700"
-              )}
-            >
-              {updatingPause ? (
-                <span>جاري الحفظ...</span>
-              ) : invitationsPaused ? (
-                <>
-                  <PlayCircle className="w-4 h-4" />
-                  <span>إعادة فتح الدعوات</span>
-                </>
-              ) : (
-                <>
-                  <PauseCircle className="w-4 h-4" />
-                  <span>إيقاف الدعوات مؤقتًا</span>
-                </>
-              )}
-            </button>
+
+            <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400 font-mono">allow_invitation_emails</span>
+              <button
+                type="button"
+                disabled={updatingSettings}
+                onClick={() => {
+                  const target = !allowEmails;
+                  if (target && !confirm("تنبيه: هل أنت متأكد من تفعيل الإرسال التلقائي للإيميلات الآن؟")) return;
+                  updateInvitationSettings(target, allowAcceptance);
+                }}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-2xs",
+                  allowEmails
+                    ? "bg-rose-600 hover:bg-rose-700 text-white"
+                    : "bg-slate-800 hover:bg-slate-900 text-white"
+                )}
+              >
+                {updatingSettings ? "جاري الحفظ..." : allowEmails ? "تعطيل الإرسال" : "تفعيل الإرسال"}
+              </button>
+            </div>
           </div>
 
-          {pauseError && (
-            <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-[11px] font-semibold">
-              {pauseError}
+          {/* Card 2: Direct Link Acceptance (allow_invitation_acceptance) */}
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between space-y-3">
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                  <PlayCircle className="w-4 h-4 text-emerald-600" />
+                  حالة قبول الدعوات وتفعيل الروابط
+                </span>
+                <span
+                  className={cn(
+                    "px-2.5 py-0.5 rounded-full text-[10px] font-bold border",
+                    allowAcceptance
+                      ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                      : "bg-rose-50 text-rose-800 border-rose-200"
+                  )}
+                >
+                  {allowAcceptance ? "مفعل ومتاح للأعضاء" : "متوقف مؤقتاً"}
+                </span>
+              </div>
+              <p className="text-slate-500 text-[11px] mt-2 leading-relaxed">
+                يسمح لأعضاء الفريق بالانضمام وتفعيل حساباتهم فور فتح رابط الدعوة الآمن المزود بالرمز السري الصادر من المدير العام.
+              </p>
             </div>
-          )}
 
-          <div className="p-3 bg-amber-50/80 border border-amber-200/80 rounded-lg text-amber-900 text-[11px] leading-relaxed">
-            <strong>نص الرسالة التي تظهر للمستخدم عند فتح رابط قديم أثناء التوقف:</strong>
-            <p className="mt-1 font-semibold text-amber-800">
-              «الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. سيصلك رابط جديد عند إعادة فتح الدعوات.»
-            </p>
+            <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400 font-mono">allow_invitation_acceptance</span>
+              <button
+                type="button"
+                disabled={updatingSettings}
+                onClick={() => {
+                  const target = !allowAcceptance;
+                  if (!target && !confirm("هل أنت متأكد من رغبتك في إيقاف قبول الدعوات لجميع الأعضاء مؤقتاً؟")) return;
+                  updateInvitationSettings(allowEmails, target);
+                }}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-xs font-bold text-white transition-all shadow-2xs",
+                  allowAcceptance
+                    ? "bg-rose-600 hover:bg-rose-700"
+                    : "bg-emerald-600 hover:bg-emerald-700"
+                )}
+              >
+                {updatingSettings ? "جاري الحفظ..." : allowAcceptance ? "إيقاف مؤقت للقبول" : "فتح وقبول الدعوات"}
+              </button>
+            </div>
           </div>
         </div>
+
+        {!allowAcceptance && (
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-[11px] leading-relaxed">
+            <strong>نص الرسالة التي تظهر عند محاولة فتح رابط دعوة أثناء الإيقاف المؤقت:</strong>
+            <p className="mt-0.5 font-semibold text-amber-800">
+              «قبول وتفعيل الدعوات متوقف حالياً في مساحة العمل بناءً على إعدادات الإدارة.»
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Section 3: Owner Bootstrap & Roster Linking Guide */}

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireWorkspaceMembership, requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
+import { generateInvitationToken, decryptToken } from "@/lib/crypto-tokens";
 import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +19,7 @@ export async function GET(req: NextRequest) {
 
     const { data: ws } = await admin
       .from("workspaces")
-      .select("id, invitations_paused")
+      .select("id, allow_invitation_emails, allow_invitation_acceptance, invitations_paused")
       .eq("id", membership.workspaceId)
       .single();
 
@@ -36,6 +37,7 @@ export async function GET(req: NextRequest) {
         expires_at,
         last_sent_at,
         notes,
+        encrypted_token,
         created_at,
         updated_at,
         roster_person:roster_people!fk_invitation_roster(id, display_name, job_title, is_active)
@@ -47,16 +49,22 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Augment with safe UI indicators: canCopyLink is true for active/pending invitations
-    const augmentedInvitations = (invitations || []).map((inv: any) => ({
-      ...inv,
-      canCopyLink: inv.status !== "revoked",
-      isDraft: inv.status === "draft",
-    }));
+    // Decrypt tokens for owner so copy-link can include &token=...
+    const augmentedInvitations = (invitations || []).map((inv: any) => {
+      const rawToken = decryptToken(inv.encrypted_token);
+      return {
+        ...inv,
+        rawToken: rawToken || undefined,
+        canCopyLink: inv.status !== "revoked",
+        isDraft: inv.status === "draft",
+      };
+    });
 
     return NextResponse.json({
       success: true,
       isViewer,
+      allowInvitationEmails: ws.allow_invitation_emails ?? false,
+      allowInvitationAcceptance: ws.allow_invitation_acceptance ?? true,
       invitationsPaused: ws.invitations_paused,
       invitations: augmentedInvitations,
     });
@@ -161,8 +169,7 @@ export async function POST(req: NextRequest) {
       }
 
       // Update existing draft record (idempotency)
-      const rawToken = crypto.randomBytes(32).toString("hex");
-      const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+      const { rawToken, tokenHash, encryptedToken } = generateInvitationToken();
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
       const targetStatus = isDraftOnly && action !== "issue" ? "draft" : "pending";
@@ -174,6 +181,7 @@ export async function POST(req: NextRequest) {
           role: role === "owner" ? "senior_reviewer" : role,
           status: targetStatus,
           token_hash: tokenHash,
+          encrypted_token: encryptedToken,
           expires_at: expiresAt,
           notes: notes || null,
           updated_at: new Date().toISOString(),
@@ -200,16 +208,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: true,
         isExisting: true,
+        rawToken,
         message: targetStatus === "pending"
           ? "تم إصدار وتفعيل رابط الدعوة بنجاح."
           : "تم حفظ مسودة الدعوة بنجاح.",
-        invitation: updated,
+        invitation: { ...updated, rawToken },
       });
     }
 
     // Otherwise create brand new invitation
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const { rawToken, tokenHash, encryptedToken } = generateInvitationToken();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
     const targetStatus = isDraftOnly && action !== "issue" ? "draft" : "pending";
@@ -222,6 +230,7 @@ export async function POST(req: NextRequest) {
         role: role === "owner" ? "senior_reviewer" : role, // Owner cannot be invited
         roster_person_id: rosterPersonId,
         token_hash: tokenHash,
+        encrypted_token: encryptedToken,
         status: targetStatus,
         invited_by_roster_id: membership.rosterPersonId,
         expires_at: expiresAt,
@@ -266,7 +275,7 @@ export async function POST(req: NextRequest) {
       message: ws.invitations_paused
         ? "تم حفظ مسودة الدعوة بنجاح. (الإرسال الفعلي متوقف لحين إعادة فتح الدعوات)"
         : "تم إنشاء الدعوة بنجاح.",
-      invitation,
+      invitation: { ...invitation, rawToken },
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
@@ -371,10 +380,13 @@ export async function PATCH(req: NextRequest) {
     // Handle ISSUE action (transition draft -> pending for manual sharing)
     if (action === "issue" || status === "pending") {
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { rawToken, tokenHash, encryptedToken } = generateInvitationToken();
       const { error: issueErr } = await admin
         .from("workspace_invitations")
         .update({
           status: "pending",
+          token_hash: tokenHash,
+          encrypted_token: encryptedToken,
           expires_at: expiresAt,
           updated_at: new Date().toISOString(),
         })
@@ -394,7 +406,11 @@ export async function PATCH(req: NextRequest) {
         metadata: { action: "issue" },
       });
 
-      return NextResponse.json({ success: true, message: "تم إصدار وتفعيل رابط الدعوة بنجاح (صالح لمدة 7 أيام)." });
+      return NextResponse.json({
+        success: true,
+        rawToken,
+        message: "تم إصدار وتفعيل رابط الدعوة بنجاح (صالح لمدة 7 أيام).",
+      });
     }
 
     // Handle REVOKE action

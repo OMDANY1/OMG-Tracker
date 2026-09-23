@@ -107,7 +107,8 @@ export function PermissionsMatrixModal({ isOpen, onClose }: PermissionsMatrixMod
                 <th className="p-2.5 text-center whitespace-nowrap">إدارة العملاء</th>
                 <th className="p-2.5 text-center whitespace-nowrap">إسناد الفرق</th>
                 <th className="p-2.5 text-center whitespace-nowrap">الاعتماد والمراجعة</th>
-                <th className="p-2.5 text-center whitespace-nowrap">تتبع الوقت</th>
+                <th className="p-2.5 text-center whitespace-nowrap">تشغيل المؤقت</th>
+                <th className="p-2.5 text-center whitespace-nowrap">عرض الوقت والتقارير</th>
                 <th className="p-2.5 text-center whitespace-nowrap">تصدير التقارير</th>
                 <th className="p-2.5 text-center whitespace-nowrap">إدارة النظام</th>
               </tr>
@@ -115,6 +116,7 @@ export function PermissionsMatrixModal({ isOpen, onClose }: PermissionsMatrixMod
             <tbody className="divide-y divide-slate-100">
               {roles.map(([roleKey, cfg]) => {
                 const scopeInfo = SCOPE_LABELS[cfg.scope] || { label: cfg.scope, badgeClass: "bg-slate-100 text-slate-700" };
+                const canViewTimeLogs = roleKey !== "designer" && roleKey !== "content_writer" && roleKey !== "video_editor";
                 return (
                   <tr key={roleKey} className="hover:bg-slate-50/60 transition-colors">
                     <td className="p-3 font-bold text-slate-900">
@@ -158,6 +160,13 @@ export function PermissionsMatrixModal({ isOpen, onClose }: PermissionsMatrixMod
                     </td>
                     <td className="p-2.5 text-center">
                       {cfg.canTrackTime ? (
+                        <Check className="w-4 h-4 text-emerald-600 mx-auto" />
+                      ) : (
+                        <Minus className="w-4 h-4 text-slate-300 mx-auto" />
+                      )}
+                    </td>
+                    <td className="p-2.5 text-center">
+                      {canViewTimeLogs ? (
                         <Check className="w-4 h-4 text-emerald-600 mx-auto" />
                       ) : (
                         <Minus className="w-4 h-4 text-slate-300 mx-auto" />

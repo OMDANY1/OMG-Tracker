@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
 
     const { data: ws, error } = await admin
       .from("workspaces")
-      .select("id, invitations_paused")
+      .select("id, allow_invitation_emails, allow_invitation_acceptance, invitations_paused")
       .limit(1)
       .single();
 
@@ -21,7 +21,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       workspaceId: ws.id,
-      invitationsPaused: ws.invitations_paused,
+      allowInvitationEmails: ws.allow_invitation_emails ?? false,
+      allowInvitationAcceptance: ws.allow_invitation_acceptance ?? true,
+      invitationsPaused: ws.invitations_paused ?? false,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
@@ -41,23 +43,39 @@ export async function PATCH(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { workspaceId, paused } = body;
+    const { workspaceId, allowEmails, allowAcceptance, paused } = body;
 
-    if (!workspaceId || typeof paused !== "boolean") {
-      return NextResponse.json({ error: "بيانات غير صالحة." }, { status: 400 });
+    if (!workspaceId) {
+      return NextResponse.json({ error: "معرف مساحة العمل مطلوب." }, { status: 400 });
     }
 
-    // Call secure set_workspace_invitations_paused RPC with caller context
-    const { data, error } = await serverClient.rpc("set_workspace_invitations_paused", {
+    // Determine target states supporting both new independent flags and legacy paused toggle
+    let targetAcceptance = true;
+    if (typeof allowAcceptance === "boolean") {
+      targetAcceptance = allowAcceptance;
+    } else if (typeof paused === "boolean") {
+      targetAcceptance = !paused;
+    }
+
+    const targetEmails = typeof allowEmails === "boolean" ? allowEmails : false;
+
+    // Call secure set_workspace_invitation_settings RPC with caller context (replaces legacy set_workspace_invitations_paused)
+    const { data, error } = await serverClient.rpc("set_workspace_invitation_settings", {
       p_workspace_id: workspaceId,
-      p_paused: paused,
+      p_allow_emails: targetEmails,
+      p_allow_acceptance: targetAcceptance,
     });
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 403 });
     }
 
-    return NextResponse.json({ success: true, invitationsPaused: paused });
+    return NextResponse.json({
+      success: true,
+      allowInvitationEmails: targetEmails,
+      allowInvitationAcceptance: targetAcceptance,
+      invitationsPaused: !targetAcceptance,
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

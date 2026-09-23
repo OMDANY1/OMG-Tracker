@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient, type User, type SupabaseClient } from "@supabase/supabase-js";
-import type { RosterRole } from "@/types/database";
+import type {
+  RosterRole,
+  AccessScope,
+  CustomPermissions,
+  GranularPermissionKey,
+} from "@/types/database";
+import { DEFAULT_ROLE_PERMISSIONS } from "@/types/database";
 
 export interface ActiveMembershipContext {
   id: string;
@@ -10,6 +16,8 @@ export interface ActiveMembershipContext {
   userId: string;
   rosterPersonId: string;
   role: RosterRole;
+  accessScope?: AccessScope;
+  customPermissions?: CustomPermissions;
   displayName?: string;
 }
 
@@ -162,6 +170,8 @@ export async function requireWorkspaceMembership(
       user_id,
       roster_person_id,
       role,
+      access_scope,
+      custom_permissions,
       is_active,
       roster_person:roster_people!fk_membership_roster(id, display_name, job_title)
     `)
@@ -206,12 +216,70 @@ export async function requireWorkspaceMembership(
         userId: membership.user_id,
         rosterPersonId: membership.roster_person_id,
         role,
+        accessScope: membership.access_scope as AccessScope,
+        customPermissions: (membership.custom_permissions || {}) as CustomPermissions,
         displayName: rosterObj?.display_name,
       },
       admin,
       serverClient,
     },
   };
+}
+
+/**
+ * Checks whether an active membership has a specific granular permission.
+ * Owner has all permissions unconditionally.
+ * Business Owner Viewer has no modification or export permissions.
+ * Explicit custom_permissions overrides default role permissions.
+ */
+export function hasGranularPermission(
+  membership: ActiveMembershipContext,
+  permission: GranularPermissionKey
+): boolean {
+  if (membership.role === "owner") return true;
+  if (membership.role === "business_owner_viewer") return false;
+
+  // Check custom override if explicitly defined
+  if (
+    membership.customPermissions &&
+    typeof membership.customPermissions[permission] === "boolean"
+  ) {
+    return Boolean(membership.customPermissions[permission]);
+  }
+
+  // Fall back to default role permission matrix
+  const roleDefaults = DEFAULT_ROLE_PERMISSIONS[membership.role];
+  return Boolean(roleDefaults?.[permission]);
+}
+
+/**
+ * Enforces a specific granular permission for an incoming request.
+ */
+export async function requireGranularPermission(
+  req: NextRequest,
+  permission: GranularPermissionKey
+): Promise<
+  AuthResult<{
+    user: User;
+    membership: ActiveMembershipContext;
+    admin: SupabaseClient;
+    serverClient: SupabaseClient;
+  }>
+> {
+  const result = await requireWorkspaceMembership(req);
+  if (!result.success) return result;
+
+  if (!hasGranularPermission(result.data.membership, permission)) {
+    return {
+      success: false,
+      errorResponse: NextResponse.json(
+        { error: `غير مصرح: ليس لديك صلاحية (${permission}) لإتمام هذا الإجراء.` },
+        { status: 403 }
+      ),
+    };
+  }
+
+  return result;
 }
 
 /**

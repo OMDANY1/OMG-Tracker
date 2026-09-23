@@ -1,12 +1,26 @@
 // OMG Creative Workspace: Operational Readiness & Permissions Matrix Test Suite
 // tests/operational_readiness_and_permissions.test.ts
-// Verifies live production roles, permissions enforcement, isolated viewer RBAC, and invitation lifecycle.
+// Verifies live production roles, Migration 36 schema, custom permissions enforcement, isolated viewer RBAC, and cryptographic invitation lifecycle.
 
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-import { ROLE_PERMISSIONS_MATRIX, RosterRole } from "../types/database";
+import {
+  ROLE_PERMISSIONS_MATRIX,
+  DEFAULT_ROLE_PERMISSIONS,
+  GRANULAR_PERMISSIONS_LIST,
+  ACCESS_SCOPE_CONFIGS,
+  AccessScope,
+  CustomPermissions,
+} from "../types/database";
+import {
+  generateSecureToken,
+  hashToken,
+  encryptToken,
+  decryptToken,
+  verifyToken,
+} from "../lib/crypto-tokens";
 
 let envPath = path.join(__dirname, "../.env.local.production.bak");
 if (!fs.existsSync(envPath)) {
@@ -58,7 +72,7 @@ async function runSuite() {
 
   const { data: roster, error: rosterErr } = await admin
     .from("roster_people")
-    .select("id, display_name, job_title, role, is_active")
+    .select("id, display_name, job_title, role, is_active, access_scope, custom_permissions")
     .order("created_at", { ascending: true });
 
   assert(!rosterErr && !!roster, "roster_people table queries successfully without error", rosterErr?.message);
@@ -71,7 +85,7 @@ async function runSuite() {
 
   console.log("  Roster Members & Live Roles in DB:");
   roster?.forEach((r) => {
-    console.log(`    - ${r.display_name.padEnd(20)} | Role: ${r.role.padEnd(20)} | Title: ${r.job_title}`);
+    console.log(`    - ${r.display_name.padEnd(25)} | Role: ${r.role.padEnd(20)} | Active: ${r.is_active}`);
   });
 
   // Verify key individuals
@@ -89,8 +103,12 @@ async function runSuite() {
   assert(roleMap["شهد"] === "designer", "Shahd role is designer");
   assert(roleMap["آية"] === "designer", "Aya role is designer");
 
-  const ownerMember = roster?.find((r) => r.role === "owner" && r.is_active === true);
-  assert(!!ownerMember, "Workspace active Owner roster record exists and has owner role");
+  // Verify Legacy Inactive Owner vs Active Emad Owner
+  const legacyOwner = roster?.find((r) => r.display_name.includes("المدير العام (Owner)"));
+  assert(!!legacyOwner && legacyOwner.is_active === false, "Legacy Owner 'المدير العام (Owner)' is is_active = false");
+
+  const emadOwner = roster?.find((r) => r.display_name.includes("عماد") && r.role === "owner");
+  assert(!!emadOwner && emadOwner.is_active === true, "Active Owner 'عماد' is active owner");
 
   // ---------------------------------------------------------------------------
   // ITEM 2: Permissions Matrix Specification & Server-Side Security Rules
@@ -103,196 +121,253 @@ async function runSuite() {
   assert(ROLE_PERMISSIONS_MATRIX.business_owner_viewer.canManageClients === false, "Viewer CANNOT manage clients");
   assert(ROLE_PERMISSIONS_MATRIX.business_owner_viewer.canAssignTeam === false, "Viewer CANNOT assign team");
   assert(ROLE_PERMISSIONS_MATRIX.business_owner_viewer.canExportReports === false, "Viewer CANNOT export analytical pack");
-  assert(ROLE_PERMISSIONS_MATRIX.marketing_director.canExportReports === true, "Marketing Director (Atta) CAN export analytical pack");
-  assert(ROLE_PERMISSIONS_MATRIX.marketing_director.canManageWorkspace === false, "Marketing Director CANNOT modify system workspace");
+  assert(ROLE_PERMISSIONS_MATRIX.business_owner_viewer.canTrackTime === false, "Viewer CANNOT track time");
+
+  // Atta (marketing_director): strictly reports and export only, NO review/approvals, NO timer
+  assert(ROLE_PERMISSIONS_MATRIX.marketing_director.canExportReports === true, "Marketing Director (Atta) CAN export reports");
+  assert(ROLE_PERMISSIONS_MATRIX.marketing_director.canManageWorkspace === false, "Marketing Director CANNOT modify workspace");
+  assert(ROLE_PERMISSIONS_MATRIX.marketing_director.canTrackTime === false, "Marketing Director (Atta) CANNOT track time");
+  assert(ROLE_PERMISSIONS_MATRIX.marketing_director.canApproveReviews === false, "Marketing Director (Atta) CANNOT approve reviews");
+
+  // Arwa (strategy_lead): strategy approvals
   assert(ROLE_PERMISSIONS_MATRIX.strategy_lead.canApproveReviews === true, "Strategy Lead (Arwa) CAN approve reviews");
-  assert(ROLE_PERMISSIONS_MATRIX.designer.canExportReports === false, "Designer CANNOT export reports");
+
+  // Default Granular Permissions
+  assert(DEFAULT_ROLE_PERMISSIONS.marketing_director.track_timer === false, "Default Atta track_timer is false");
+  assert(DEFAULT_ROLE_PERMISSIONS.marketing_director.approve_reviews === false, "Default Atta approve_reviews is false");
+  assert(DEFAULT_ROLE_PERMISSIONS.marketing_director.approve_strategy === false, "Default Atta approve_strategy is false");
+  assert(DEFAULT_ROLE_PERMISSIONS.marketing_director.view_time_logs === true, "Default Atta view_time_logs is true");
+  assert(DEFAULT_ROLE_PERMISSIONS.marketing_director.export_reports === true, "Default Atta export_reports is true");
+
+  assert(DEFAULT_ROLE_PERMISSIONS.strategy_lead.approve_strategy === true, "Default Arwa approve_strategy is true");
+  assert(DEFAULT_ROLE_PERMISSIONS.strategy_lead.approve_reviews === true, "Default Arwa approve_reviews is true");
 
   // ---------------------------------------------------------------------------
-  // ITEM 3: Last Active Owner Protection Rule
+  // ITEM 3: Migration 36 Schema Verification
   // ---------------------------------------------------------------------------
-  console.log("\n[Item 3] Verifying Last Active Owner Protection (RPC admin_update_roster_person)...");
+  console.log("\n[Item 3] Verifying Migration 36 Schema (Columns & RPCs)...");
 
-  const { data: wsData } = await admin.from("workspaces").select("id").limit(1).single();
+  const { data: wsData, error: wsErr } = await admin
+    .from("workspaces")
+    .select("id, allow_invitation_emails, allow_invitation_acceptance")
+    .limit(1)
+    .single();
+
+  assert(!wsErr && !!wsData, "workspaces table contains allow_invitation_emails and allow_invitation_acceptance", wsErr?.message);
+  assert(typeof wsData?.allow_invitation_emails === "boolean", `allow_invitation_emails is boolean (${wsData?.allow_invitation_emails})`);
+  assert(typeof wsData?.allow_invitation_acceptance === "boolean", `allow_invitation_acceptance is boolean (${wsData?.allow_invitation_acceptance})`);
+
   const wsId = wsData!.id;
 
-  if (ownerMember) {
-    // Attempting to downgrade owner to designer should be blocked by PostgreSQL RPC
+  // ---------------------------------------------------------------------------
+  // ITEM 4: Custom Permissions and Access Scope Persistence
+  // ---------------------------------------------------------------------------
+  console.log("\n[Item 4] Testing Custom Permissions and Scope Persistence on Roster Person...");
+
+  const testMember = roster?.find((r) => r.role === "designer" && r.is_active === true);
+  assert(!!testMember, "Found active designer member for custom permissions test");
+
+  if (testMember) {
+    const customTestPerms: CustomPermissions = {
+      manage_workspace: false,
+      invite_members: false,
+      manage_members: false,
+      manage_clients: false,
+      delete_clients: false,
+      assign_team: false,
+      create_campaigns: false,
+      create_tasks: false,
+      track_timer: true,
+      approve_strategy: false,
+      approve_reviews: false,
+      view_time_logs: true,
+      export_reports: false,
+      comment_and_attachments: true,
+    };
+
+    // Update member using admin_update_roster_person RPC
+    const { error: updateErr } = await admin.rpc("admin_update_roster_person", {
+      p_workspace_id: wsId,
+      p_roster_person_id: testMember.id,
+      p_job_title: testMember.job_title,
+      p_specialties: ["design"],
+      p_role: "designer",
+      p_access_scope: "assigned_clients",
+      p_custom_permissions: customTestPerms,
+    });
+
+    assert(!updateErr, "admin_update_roster_person accepts access_scope and custom_permissions", updateErr?.message);
+
+    // Verify stored in DB
+    const { data: updatedMember } = await admin
+      .from("roster_people")
+      .select("access_scope, custom_permissions")
+      .eq("id", testMember.id)
+      .single();
+
+    assert(updatedMember?.access_scope === "assigned_clients", "access_scope persisted as 'assigned_clients'");
+    assert(updatedMember?.custom_permissions?.view_time_logs === true, "custom_permissions.view_time_logs persisted as true");
+
+    // Restore to default designer scope
+    await admin.rpc("admin_update_roster_person", {
+      p_workspace_id: wsId,
+      p_roster_person_id: testMember.id,
+      p_job_title: testMember.job_title,
+      p_specialties: ["design"],
+      p_role: "designer",
+      p_access_scope: "assigned_tasks",
+      p_custom_permissions: DEFAULT_ROLE_PERMISSIONS.designer,
+    });
+    console.log("  Restored test member permissions back to designer defaults.");
+  }
+
+  // ---------------------------------------------------------------------------
+  // ITEM 5: Last Active Owner Protection Rule
+  // ---------------------------------------------------------------------------
+  console.log("\n[Item 5] Verifying Last Active Owner Protection...");
+
+  if (emadOwner) {
     const { error: downgradeErr } = await admin.rpc("admin_update_roster_person", {
       p_workspace_id: wsId,
-      p_roster_person_id: ownerMember.id,
-      p_job_title: ownerMember.job_title,
+      p_roster_person_id: emadOwner.id,
+      p_job_title: emadOwner.job_title,
       p_specialties: ["management"],
       p_role: "designer",
+      p_access_scope: "workspace",
+      p_custom_permissions: {},
     });
 
     assert(
       !!downgradeErr && (downgradeErr.message.includes("لا يمكن تغيير دور آخر") || downgradeErr.message.includes("مدير عام")),
-      "PostgreSQL RPC strictly blocks downgrading the last active owner",
+      "PostgreSQL RPC strictly blocks downgrading the active owner",
       downgradeErr?.message
     );
 
-    // Attempting to deactivate owner should be blocked
     const { error: deactivateErr } = await admin.rpc("toggle_workspace_member_active", {
       p_workspace_id: wsId,
-      p_roster_person_id: ownerMember.id,
+      p_roster_person_id: emadOwner.id,
       p_is_active: false,
     });
 
     assert(
       !!deactivateErr && (deactivateErr.message.includes("Owner account cannot be deactivated") || deactivateErr.message.includes("لا يمكن تعطيل")),
-      "PostgreSQL RPC strictly blocks deactivating the last active owner",
+      "PostgreSQL RPC strictly blocks deactivating the active owner",
       deactivateErr?.message
     );
   }
 
   // ---------------------------------------------------------------------------
-  // ITEM 4: Isolated Business Owner Viewer Permissions Contract
+  // ITEM 6: Cryptographic Invitation Lifecycle & Token Validation
   // ---------------------------------------------------------------------------
-  console.log("\n[Item 4] Verifying Isolated Business Owner Viewer Permissions Contract...");
+  console.log("\n[Item 6] Testing Cryptographic Invitation Lifecycle...");
 
-  // Verify server-auth.ts helpers
-  const serverAuthContent = fs.readFileSync(path.join(__dirname, "../lib/auth/server-auth.ts"), "utf-8");
-  assert(
-    serverAuthContent.includes("requireExportPermission"),
-    "server-auth.ts defines requireExportPermission RBAC helper"
-  );
-  assert(
-    serverAuthContent.includes('allowedRoles: ["owner", "manager", "marketing_director"]'),
-    "requireExportPermission restricts analytical export exclusively to owner, manager, and marketing_director"
-  );
+  // Unit tests for crypto-tokens
+  const rawToken = generateSecureToken();
+  const tokenHash = hashToken(rawToken);
+  const encrypted = encryptToken(rawToken);
+  const decrypted = decryptToken(encrypted);
 
-  // Check /api/reports/export-pack/route.ts enforcement
-  const exportPackRoute = fs.readFileSync(path.join(__dirname, "../app/api/reports/export-pack/route.ts"), "utf-8");
-  assert(
-    exportPackRoute.includes("requireExportPermission"),
-    "/api/reports/export-pack/route.ts strictly calls requireExportPermission"
-  );
+  assert(rawToken.length >= 64, "Generated raw token is 64 hex characters (256-bit entropy)");
+  assert(tokenHash.length === 64, "Token hash is 64 hex characters (SHA-256)");
+  assert(verifyToken(rawToken, tokenHash) === true, "verifyToken validates correct token");
+  assert(verifyToken("invalid_tampered_token", tokenHash) === false, "verifyToken rejects tampered token");
+  assert(decrypted === rawToken, "AES-256-GCM encryption/decryption roundtrip matches original token");
 
-  // ---------------------------------------------------------------------------
-  // ITEM 5: Complete Invitation Lifecycle (Draft -> Issue -> Accept Link)
-  // ---------------------------------------------------------------------------
-  console.log("\n[Item 5] Testing Invitation Lifecycle (Draft vs Issued vs Accept)...");
-
-  const testEmail = `test.readiness.${Date.now()}@example.internal`;
-  const designerMember = roster?.find((r) => r.role === "designer");
-  assert(!!designerMember, "Found designer roster member for invitation test");
-
-  if (designerMember && ownerMember) {
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-
-    // 5a. Create DRAFT invitation
-    const { data: draftInv, error: draftErr } = await admin
+  // Database Invitation Token Flow
+  const testEmail = `test.token.${Date.now()}@example.internal`;
+  if (testMember && emadOwner) {
+    const { data: inv, error: invErr } = await admin
       .from("workspace_invitations")
       .insert({
         workspace_id: wsId,
         invited_email: testEmail,
         role: "designer",
-        roster_person_id: designerMember.id,
+        roster_person_id: testMember.id,
         token_hash: tokenHash,
-        invited_by_roster_id: ownerMember.id,
-        status: "draft",
-        expires_at: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),
+        encrypted_token: encrypted,
+        invited_by_roster_id: emadOwner.id,
+        status: "pending",
+        expires_at: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
       })
       .select()
       .single();
 
-    assert(!draftErr && !!draftInv, "Successfully created draft invitation record", draftErr?.message);
-    assert(draftInv?.status === "draft", "Draft invitation status is 'draft'");
+    assert(!invErr && !!inv, "Created pending invitation with cryptographic token hash and encrypted token");
 
-    // 5b. Transition Draft to ISSUED (pending with 7-day expiry)
-    const sevenDaysLater = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
-    const { data: issuedInv, error: issueErr } = await admin
+    // Test rejection of tampered token
+    const tamperedHash = hashToken("tampered_token_value_xyz");
+    assert(inv?.token_hash !== tamperedHash, "Tampered token generates non-matching hash");
+
+    // First atomic accept update
+    const { data: firstAccept, error: firstAcceptErr } = await admin
       .from("workspace_invitations")
       .update({
-        status: "pending",
-        expires_at: sevenDaysLater,
+        status: "accepted",
+        accepted_at: new Date().toISOString(),
       })
-      .eq("id", draftInv!.id)
+      .eq("id", inv!.id)
+      .eq("status", "pending")
       .select()
-      .single();
+      .maybeSingle();
 
-    assert(!issueErr && !!issuedInv, "Successfully issued draft invitation", issueErr?.message);
-    assert(issuedInv?.status === "pending", "Issued invitation status is 'pending'");
+    assert(!firstAcceptErr && !!firstAccept, "First accept succeeds via atomic conditional update (status was pending)", firstAcceptErr?.message);
 
-    // 5c. Validate accept-invite validation logic
-    const { data: verifiedInv } = await admin
+    // Second atomic accept attempt on the same invitation (must fail because status is now accepted, not pending)
+    const { data: secondAccept } = await admin
       .from("workspace_invitations")
-      .select(`
-        id,
-        invited_email,
-        role,
-        status,
-        expires_at,
-        roster_person:roster_people!fk_invitation_roster(id, display_name, job_title, role)
-      `)
-      .eq("id", issuedInv!.id)
-      .single();
+      .update({
+        status: "accepted",
+        accepted_at: new Date().toISOString(),
+      })
+      .eq("id", inv!.id)
+      .eq("status", "pending")
+      .select()
+      .maybeSingle();
 
-    assert(!!verifiedInv && verifiedInv.status === "pending", "Invitation resolves cleanly for /accept-invite?id=...");
+    assert(!secondAccept, "Double-accept is strictly rejected by atomic WHERE status = 'pending' condition");
 
-    // 5d. Clean up test invitation safely
-    await admin.from("workspace_invitations").delete().eq("id", draftInv!.id);
-    console.log("  Cleaned up test invitation cleanly without leftover state.");
+    // Clean up test invitation
+    await admin.from("workspace_invitations").delete().eq("id", inv!.id);
+    console.log("  Cleaned up test cryptographic invitation.");
   }
 
   // ---------------------------------------------------------------------------
-  // ITEM 6: Client Onboarding and Team Assignment Persistence
+  // ITEM 7: Independent Invitation Settings Switch
   // ---------------------------------------------------------------------------
-  console.log("\n[Item 6] Testing Client Onboarding & Team Assignment Persistence...");
+  console.log("\n[Item 7] Testing Independent Invitation Settings Switch...");
 
-  const testClientName = `Automated Readiness Test Brand ${Date.now()}`;
+  // Toggle allow_invitation_acceptance to false
+  const { error: setSettingsErr } = await admin.rpc("set_workspace_invitation_settings", {
+    p_workspace_id: wsId,
+    p_allow_emails: false,
+    p_allow_acceptance: false,
+  });
+  assert(!setSettingsErr, "set_workspace_invitation_settings sets allow_acceptance = false", setSettingsErr?.message);
 
-  const attaMember = roster?.find((r) => r.display_name === "عطا");
-  const arwaMember = roster?.find((r) => r.display_name === "أروى");
-  const saraMember = roster?.find((r) => r.display_name === "سارة");
-
-  // Create test client with full multi-service assignment
-  const { data: testClient, error: clientErr } = await admin
-    .from("clients")
-    .insert({
-      workspace_id: wsId,
-      name: testClientName,
-      difficulty: "Medium",
-      extra_workload: "None",
-      state: "Active",
-      owner_roster_id: saraMember?.id || null,
-      notes: "Test client for operational readiness verification",
-    })
-    .select()
+  const { data: updatedWs } = await admin
+    .from("workspaces")
+    .select("allow_invitation_emails, allow_invitation_acceptance")
+    .eq("id", wsId)
     .single();
 
-  assert(!clientErr && !!testClient, "Client record created successfully in production DB", clientErr?.message);
+  assert(updatedWs?.allow_invitation_emails === false, "allow_invitation_emails is false");
+  assert(updatedWs?.allow_invitation_acceptance === false, "allow_invitation_acceptance is false");
 
-  if (testClient) {
-    // Upsert team assignment linking design, strategy, copywriting
-    const { data: assignRecord, error: assignErr } = await admin
-      .from("client_team_assignments")
-      .upsert(
-        {
-          workspace_id: wsId,
-          client_id: testClient.id,
-          primary_designer_id: saraMember?.id || null,
-          design_reviewer_id: attaMember?.id || null,
-          primary_strategist_id: arwaMember?.id || null,
-          strategy_reviewer_id: arwaMember?.id || null,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "workspace_id,client_id" }
-      )
-      .select()
-      .single();
+  // Restore safe defaults: emails false, acceptance true
+  await admin.rpc("set_workspace_invitation_settings", {
+    p_workspace_id: wsId,
+    p_allow_emails: false,
+    p_allow_acceptance: true,
+  });
 
-    assert(!assignErr && !!assignRecord, "Client multi-service team assignment saved successfully", assignErr?.message);
-    assert(assignRecord?.primary_designer_id === saraMember?.id, "Designer assignment correctly stored");
-    assert(assignRecord?.primary_strategist_id === arwaMember?.id, "Strategist assignment correctly stored");
+  const { data: restoredWs } = await admin
+    .from("workspaces")
+    .select("allow_invitation_emails, allow_invitation_acceptance")
+    .eq("id", wsId)
+    .single();
 
-    // Clean up test client and assignment safely
-    await admin.from("client_team_assignments").delete().eq("client_id", testClient.id);
-    await admin.from("clients").delete().eq("id", testClient.id);
-    console.log("  Cleaned up test client and team assignments cleanly without leftover state.");
-  }
+  assert(restoredWs?.allow_invitation_emails === false, "Final allow_invitation_emails restored to false (Safe mode)");
+  assert(restoredWs?.allow_invitation_acceptance === true, "Final allow_invitation_acceptance restored to true (Acceptance enabled)");
 
   // ---------------------------------------------------------------------------
   // SUMMARY

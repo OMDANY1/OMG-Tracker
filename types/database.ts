@@ -52,8 +52,30 @@ export interface Workspace {
   name: string;
   default_timezone: string;
   long_session_threshold_mins: number;
+  allow_invitation_emails?: boolean;
+  allow_invitation_acceptance?: boolean;
+  invitations_paused?: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export type AccessScope = 'workspace' | 'assigned_team' | 'assigned_clients' | 'assigned_tasks';
+
+export interface CustomPermissions {
+  manage_workspace?: boolean;
+  invite_members?: boolean;
+  manage_members?: boolean;
+  manage_clients?: boolean;
+  delete_clients?: boolean;
+  assign_team?: boolean;
+  create_campaigns?: boolean;
+  create_tasks?: boolean;
+  track_timer?: boolean;
+  approve_strategy?: boolean;
+  approve_reviews?: boolean;
+  view_time_logs?: boolean;
+  export_reports?: boolean;
+  comment_and_attachments?: boolean;
 }
 
 export interface RosterPerson {
@@ -62,6 +84,8 @@ export interface RosterPerson {
   display_name: string;
   job_title: string;
   role?: RosterRole;
+  access_scope?: AccessScope;
+  custom_permissions?: CustomPermissions;
   specialties?: string[];
   is_active?: boolean;
   created_at: string;
@@ -75,6 +99,8 @@ export interface WorkspaceMembership {
   user_id: string;
   roster_person_id: string;
   role: RosterRole;
+  access_scope?: AccessScope;
+  custom_permissions?: CustomPermissions;
   created_at: string;
   updated_at: string;
   roster_person?: RosterPerson | null;
@@ -87,6 +113,8 @@ export interface WorkspaceInvitation {
   email: string;
   role: RosterRole;
   token_hash: string;
+  encrypted_token?: string | null;
+  rawToken?: string;
   invited_by_user_id: string;
   expires_at: string;
   accepted_at?: string | null;
@@ -575,13 +603,13 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RosterRole, RolePermissionConfig> =
   },
   marketing_director: {
     label: "مدير التسويق (عطا)",
-    description: "اطلاع شامل على المؤشرات وسجلات الوقت والتقييمات والتصدير فقط دون تعديل أو إسناد",
+    description: "اطلاع شامل على المؤشرات وسجلات الوقت والتقييمات والتصدير فقط دون تعديل أو إسناد أو تشغيل مؤقت",
     scope: "workspace",
     canViewData: true,
     canManageClients: false,
     canAssignTeam: false,
     canApproveReviews: false,
-    canTrackTime: true,
+    canTrackTime: false,
     canExportReports: true,
     canManageWorkspace: false,
   },
@@ -670,4 +698,296 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RosterRole, RolePermissionConfig> =
     canManageWorkspace: false,
   },
 };
+
+// -----------------------------------------------------------------------------
+// Granular 14 Permissions Specifications & Groupings
+// -----------------------------------------------------------------------------
+
+export type GranularPermissionKey = keyof CustomPermissions;
+
+export interface GranularPermissionMeta {
+  key: GranularPermissionKey;
+  label: string;
+  category: 'system' | 'clients_tasks' | 'reviews_time';
+  description: string;
+}
+
+export const GRANULAR_PERMISSIONS_LIST: GranularPermissionMeta[] = [
+  // 1. الإدارة والنظام
+  {
+    key: "manage_workspace",
+    label: "تعديل مساحة العمل",
+    category: "system",
+    description: "تعديل إعدادات مساحة العمل والمنطقة الزمنية وساعات العمل العامة",
+  },
+  {
+    key: "invite_members",
+    label: "دعوة الأعضاء",
+    category: "system",
+    description: "إصدار روابط الدعوة وإرسالها لأعضاء الفريق الجدد",
+  },
+  {
+    key: "manage_members",
+    label: "إدارة بيانات وأدوار الأعضاء",
+    category: "system",
+    description: "تعديل المسميات والأدوار وتخصيص الصلاحيات الفردية",
+  },
+
+  // 2. إدارة العملاء والمهام
+  {
+    key: "manage_clients",
+    label: "إنشاء وتعديل العملاء",
+    category: "clients_tasks",
+    description: "إضافة عملاء جدد وتعديل بياناتهم وبريفاتهم",
+  },
+  {
+    key: "delete_clients",
+    label: "حذف وأرشفة العملاء",
+    category: "clients_tasks",
+    description: "نقل العملاء للأرشيف أو حذف ملفاتهم التشغيلية",
+  },
+  {
+    key: "assign_team",
+    label: "تعيين وإسناد الفريق",
+    category: "clients_tasks",
+    description: "توزيع المصممين والاستراتيجيين والمراجعين على العملاء",
+  },
+  {
+    key: "create_campaigns",
+    label: "إنشاء الحملات الإعلانية",
+    category: "clients_tasks",
+    description: "إنشاء وإدارة الخطط الشهرية والحملات التسويقية",
+  },
+  {
+    key: "create_tasks",
+    label: "إنشاء وتعيين المهام",
+    category: "clients_tasks",
+    description: "إضافة مهام جديدة وتعيين المنفذين ومواعيد التسليم",
+  },
+
+  // 3. المراجعات والوقت والتقارير
+  {
+    key: "track_timer",
+    label: "تشغيل المؤقت وتسجيل الوقت",
+    category: "reviews_time",
+    description: "تشغيل مؤقت المهام وبدء جلسات العمل وتسجيل الساعات",
+  },
+  {
+    key: "approve_strategy",
+    label: "مراجعة واعتماد الاستراتيجية",
+    category: "reviews_time",
+    description: "مراجعة وتدقيق واعتماد بريفات واستراتيجيات العملاء",
+  },
+  {
+    key: "approve_reviews",
+    label: "الاعتماد النهائي والمراجعة",
+    category: "reviews_time",
+    description: "مراجعة واعتماد تصاميم ومخرجات الفريق الفنية",
+  },
+  {
+    key: "view_time_logs",
+    label: "عرض الوقت والتقارير",
+    category: "reviews_time",
+    description: "الاطلاع على سجلات الوقت ومؤشرات الإنجاز والطاقة الاستيعابية",
+  },
+  {
+    key: "export_reports",
+    label: "تصدير حزم التقارير",
+    category: "reviews_time",
+    description: "تصدير الملفات التحليلية وحزم البيانات بتنسيقات CSV و Excel",
+  },
+  {
+    key: "comment_and_attachments",
+    label: "التعليق ورفع المرفقات",
+    category: "reviews_time",
+    description: "المشاركة في نقاشات المهام ورفع المرفقات والتسليمات",
+  },
+];
+
+export const ACCESS_SCOPE_CONFIGS: Record<AccessScope, { label: string; description: string; badgeClass: string }> = {
+  workspace: {
+    label: "نطاق العمل الكامل (Workspace)",
+    description: "وصول شامل لكافة العملاء والحملات والمهام والتقارير في مساحة العمل",
+    badgeClass: "bg-purple-100 text-purple-900 border-purple-200",
+  },
+  assigned_team: {
+    label: "الفريق المحدد (Assigned Team)",
+    description: "الوصول لأعضاء الفريق والتخصصات والعملاء المرتبطين بفريق عمله",
+    badgeClass: "bg-blue-100 text-blue-900 border-blue-200",
+  },
+  assigned_clients: {
+    label: "العملاء المحددين (Assigned Clients)",
+    description: "الوصول لبيانات وحملات ومهام العملاء المسندين إليه صراحة فقط",
+    badgeClass: "bg-sky-100 text-sky-900 border-sky-200",
+  },
+  assigned_tasks: {
+    label: "المهام المكلف بها فقط (Assigned Tasks)",
+    description: "الوصول فقط للمهام المباشرة المكلف بها العضو دون الاطلاع على باقي المهام",
+    badgeClass: "bg-slate-100 text-slate-800 border-slate-200",
+  },
+};
+
+export const DEFAULT_ROLE_PERMISSIONS: Record<RosterRole, CustomPermissions> = {
+  owner: {
+    manage_workspace: true,
+    invite_members: true,
+    manage_members: true,
+    manage_clients: true,
+    delete_clients: true,
+    assign_team: true,
+    create_campaigns: true,
+    create_tasks: true,
+    track_timer: true,
+    approve_strategy: true,
+    approve_reviews: true,
+    view_time_logs: true,
+    export_reports: true,
+    comment_and_attachments: true,
+  },
+  manager: {
+    manage_workspace: false,
+    invite_members: true,
+    manage_members: true,
+    manage_clients: true,
+    delete_clients: false,
+    assign_team: true,
+    create_campaigns: true,
+    create_tasks: true,
+    track_timer: true,
+    approve_strategy: true,
+    approve_reviews: true,
+    view_time_logs: true,
+    export_reports: true,
+    comment_and_attachments: true,
+  },
+  marketing_director: {
+    manage_workspace: false,
+    invite_members: false,
+    manage_members: false,
+    manage_clients: false,
+    delete_clients: false,
+    assign_team: false,
+    create_campaigns: false,
+    create_tasks: false,
+    track_timer: false,
+    approve_strategy: false,
+    approve_reviews: false,
+    view_time_logs: true,
+    export_reports: true,
+    comment_and_attachments: false,
+  },
+  strategy_lead: {
+    manage_workspace: false,
+    invite_members: false,
+    manage_members: false,
+    manage_clients: true,
+    delete_clients: false,
+    assign_team: true,
+    create_campaigns: true,
+    create_tasks: true,
+    track_timer: true,
+    approve_strategy: true,
+    approve_reviews: true,
+    view_time_logs: true,
+    export_reports: false,
+    comment_and_attachments: true,
+  },
+  senior_reviewer: {
+    manage_workspace: false,
+    invite_members: false,
+    manage_members: false,
+    manage_clients: false,
+    delete_clients: false,
+    assign_team: false,
+    create_campaigns: false,
+    create_tasks: false,
+    track_timer: true,
+    approve_strategy: false,
+    approve_reviews: true,
+    view_time_logs: true,
+    export_reports: false,
+    comment_and_attachments: true,
+  },
+  strategist: {
+    manage_workspace: false,
+    invite_members: false,
+    manage_members: false,
+    manage_clients: false,
+    delete_clients: false,
+    assign_team: false,
+    create_campaigns: true,
+    create_tasks: true,
+    track_timer: true,
+    approve_strategy: false,
+    approve_reviews: false,
+    view_time_logs: true,
+    export_reports: false,
+    comment_and_attachments: true,
+  },
+  content_writer: {
+    manage_workspace: false,
+    invite_members: false,
+    manage_members: false,
+    manage_clients: false,
+    delete_clients: false,
+    assign_team: false,
+    create_campaigns: false,
+    create_tasks: false,
+    track_timer: true,
+    approve_strategy: false,
+    approve_reviews: false,
+    view_time_logs: false,
+    export_reports: false,
+    comment_and_attachments: true,
+  },
+  designer: {
+    manage_workspace: false,
+    invite_members: false,
+    manage_members: false,
+    manage_clients: false,
+    delete_clients: false,
+    assign_team: false,
+    create_campaigns: false,
+    create_tasks: false,
+    track_timer: true,
+    approve_strategy: false,
+    approve_reviews: false,
+    view_time_logs: false,
+    export_reports: false,
+    comment_and_attachments: true,
+  },
+  video_editor: {
+    manage_workspace: false,
+    invite_members: false,
+    manage_members: false,
+    manage_clients: false,
+    delete_clients: false,
+    assign_team: false,
+    create_campaigns: false,
+    create_tasks: false,
+    track_timer: true,
+    approve_strategy: false,
+    approve_reviews: false,
+    view_time_logs: false,
+    export_reports: false,
+    comment_and_attachments: true,
+  },
+  business_owner_viewer: {
+    manage_workspace: false,
+    invite_members: false,
+    manage_members: false,
+    manage_clients: false,
+    delete_clients: false,
+    assign_team: false,
+    create_campaigns: false,
+    create_tasks: false,
+    track_timer: false,
+    approve_strategy: false,
+    approve_reviews: false,
+    view_time_logs: false,
+    export_reports: false,
+    comment_and_attachments: false,
+  },
+};
+
 

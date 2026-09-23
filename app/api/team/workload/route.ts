@@ -47,7 +47,7 @@ export async function GET(req: NextRequest) {
     const [rosterRes, membershipsRes, capacitiesRes, clientsRes, tasksRes, invitesRes] = await Promise.all([
       admin
         .from("roster_people")
-        .select("id, display_name, job_title, is_active, specialties, role")
+        .select("id, display_name, job_title, is_active, specialties, role, access_scope, custom_permissions")
         .eq("workspace_id", workspaceId)
         .order("display_name", { ascending: true }),
       admin
@@ -216,6 +216,8 @@ export async function GET(req: NextRequest) {
         displayName: person.display_name,
         jobTitle: person.job_title || "Graphic Designer",
         role: role || "designer",
+        accessScope: (person as any).access_scope || "assigned_tasks",
+        customPermissions: (person as any).custom_permissions || {},
         specialties: (person as any).specialties || [],
         hasJoined,
         isActive: person.is_active !== false,

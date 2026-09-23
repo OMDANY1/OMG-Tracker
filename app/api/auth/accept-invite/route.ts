@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ROSTER_ROLE_LABELS } from "@/lib/utils";
+import { hashToken } from "@/lib/crypto-tokens";
 
 export const dynamic = "force-dynamic";
 
@@ -23,24 +24,46 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url);
     const invitationId = searchParams.get("id");
+    const token = searchParams.get("token");
 
     const { data: ws } = await admin
       .from("workspaces")
-      .select("id, invitations_paused")
+      .select("id, allow_invitation_emails, allow_invitation_acceptance, invitations_paused")
       .limit(1)
       .single();
 
+    // Check optional active user session to detect email mismatches
+    const serverClient = await createServerSupabaseClient().catch(() => null);
+    let sessionUser: any = null;
+    if (serverClient) {
+      const { data: authData } = await serverClient.auth.getUser();
+      sessionUser = authData?.user || null;
+    }
+
     // If an invitation ID was provided in the query params, validate it specifically
     if (invitationId) {
+      // 1. Secret token presence verification
+      if (!token || typeof token !== "string" || !token.trim()) {
+        return NextResponse.json(
+          {
+            error: "رابط الدعوة غير مكتمل. الرمز السري (token) مفقود لأسباب أمنية. يرجى طلب الرابط الكامل من الإدارة.",
+            tokenMissing: true,
+            invalid: true,
+          },
+          { status: 400 }
+        );
+      }
+
       const { data: inv, error: invErr } = await admin
         .from("workspace_invitations")
         .select(`
           id,
           invited_email,
           role,
+          token_hash,
           status,
           expires_at,
-          roster_person:roster_people!fk_invitation_roster(id, display_name, job_title, role)
+          roster_person:roster_people!fk_invitation_roster(id, display_name, job_title, role, access_scope, custom_permissions)
         `)
         .eq("id", invitationId)
         .maybeSingle();
@@ -52,7 +75,34 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      // Check status
+      // 2. Cryptographic token hash matching verification
+      const computedHash = hashToken(token.trim());
+      if (computedHash !== inv.token_hash) {
+        return NextResponse.json(
+          {
+            error: "رمز التحقق السري للدعوة غير صحيح أو تم التلاعب به. يرجى استخدام الرابط الأصلي المعتمد.",
+            tokenInvalid: true,
+            invalid: true,
+          },
+          { status: 403 }
+        );
+      }
+
+      // 3. Workspace invitation acceptance setting check
+      const isAcceptancePaused =
+        ws?.allow_invitation_acceptance === false || ws?.invitations_paused === true;
+
+      if (isAcceptancePaused) {
+        return NextResponse.json(
+          {
+            error: "قبول وتفعيل الدعوات متوقف حالياً في مساحة العمل بناءً على إعدادات الإدارة. سيتم إعادة تفعيل الروابط قريباً.",
+            isPaused: true,
+          },
+          { status: 403 }
+        );
+      }
+
+      // 4. Status checks
       if (inv.status === "draft") {
         return NextResponse.json(
           {
@@ -84,7 +134,7 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      // Check expiration
+      // 5. Expiration check
       const isExpired = new Date(inv.expires_at).getTime() < Date.now();
       if (isExpired) {
         return NextResponse.json(
@@ -102,6 +152,21 @@ export async function GET(req: NextRequest) {
 
       const effectiveRole = inv.role || rosterPerson?.role || "designer";
 
+      // 6. Session Mismatch & Authenticated Link Detection
+      let sessionMismatch = false;
+      let sessionMatches = false;
+      let loggedInEmail: string | null = null;
+
+      if (sessionUser && sessionUser.email) {
+        loggedInEmail = sessionUser.email.toLowerCase().trim();
+        const invitedEmail = inv.invited_email.toLowerCase().trim();
+        if (loggedInEmail === invitedEmail) {
+          sessionMatches = true;
+        } else {
+          sessionMismatch = true;
+        }
+      }
+
       return NextResponse.json({
         valid: true,
         invitationId: inv.id,
@@ -111,12 +176,17 @@ export async function GET(req: NextRequest) {
         roleLabel: ROSTER_ROLE_LABELS[effectiveRole as keyof typeof ROSTER_ROLE_LABELS] || effectiveRole,
         displayName: rosterPerson?.display_name || "عضو فريق OMG",
         jobTitle: rosterPerson?.job_title || "",
-        invitationsPaused: ws?.invitations_paused ?? false,
+        invitationsPaused: isAcceptancePaused,
+        sessionMismatch,
+        sessionMatches,
+        loggedInEmail,
       });
     }
 
     return NextResponse.json({
       invitationsPaused: ws?.invitations_paused ?? true,
+      allowInvitationAcceptance: ws?.allow_invitation_acceptance ?? true,
+      allowInvitationEmails: ws?.allow_invitation_emails ?? false,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
@@ -131,33 +201,37 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const { invitationId, password } = body;
+    const { invitationId, token, password, autoAcceptIfSessionMatches } = body;
 
-    // Check if invitations are globally paused
+    // Check workspace settings
     const { data: ws } = await admin
       .from("workspaces")
-      .select("id, invitations_paused")
+      .select("id, allow_invitation_acceptance, invitations_paused")
       .limit(1)
       .maybeSingle();
 
-    if (ws?.invitations_paused && !invitationId) {
+    const isAcceptancePaused =
+      ws?.allow_invitation_acceptance === false || ws?.invitations_paused === true;
+
+    if (isAcceptancePaused) {
       return NextResponse.json(
-        { error: "الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. سيصلك رابط جديد عند إعادة فتح الدعوات." },
+        { error: "قبول وتفعيل الدعوات متوقف حالياً من قِبل إدارة الايجنسي." },
         { status: 403 }
       );
     }
 
     // -------------------------------------------------------------------------
-    // FLOW A: Explicit invitation acceptance via invitation link (Without pre-existing session)
+    // FLOW A: Explicit invitation acceptance via secure link (?id=...&token=...)
     // -------------------------------------------------------------------------
-    if (invitationId && password) {
-      if (typeof password !== "string" || password.length < 8) {
+    if (invitationId) {
+      if (!token || typeof token !== "string" || !token.trim()) {
         return NextResponse.json(
-          { error: "كلمة المرور يجب أن لا تقل عن 8 أحرف." },
+          { error: "الرمز السري للدعوة (token) مطلوب لإتمام التفعيل." },
           { status: 400 }
         );
       }
 
+      // Fetch invitation
       const { data: inv, error: invErr } = await admin
         .from("workspace_invitations")
         .select(`
@@ -165,10 +239,11 @@ export async function POST(req: NextRequest) {
           workspace_id,
           invited_email,
           role,
+          token_hash,
           roster_person_id,
           status,
           expires_at,
-          roster_person:roster_people!fk_invitation_roster(id, display_name, job_title, role)
+          roster_person:roster_people!fk_invitation_roster(id, display_name, job_title, role, access_scope, custom_permissions)
         `)
         .eq("id", invitationId)
         .maybeSingle();
@@ -177,6 +252,15 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           { error: "رابط الدعوة غير صالح أو غير موجود." },
           { status: 404 }
+        );
+      }
+
+      // Cryptographic verification
+      const computedHash = hashToken(token.trim());
+      if (computedHash !== inv.token_hash) {
+        return NextResponse.json(
+          { error: "رمز الدعوة السري غير مطابق. تم رفض طلب التفعيل." },
+          { status: 403 }
         );
       }
 
@@ -196,7 +280,7 @@ export async function POST(req: NextRequest) {
 
       if (inv.status === "accepted") {
         return NextResponse.json(
-          { error: "تم قبول هذه الدعوة بالفعل مسبقاً. يمكنك التوجه لتسجيل الدخول." },
+          { error: "تم قبول هذه الدعوة بالفعل مسبقاً. يمكنك التوجه لتسجيل الدخول مباشرة." },
           { status: 400 }
         );
       }
@@ -212,44 +296,78 @@ export async function POST(req: NextRequest) {
       const targetRosterId = inv.roster_person_id;
       const targetRole = inv.role || "designer";
 
-      // 1. Find or create Auth User in Supabase Auth
-      let authUserId: string;
-      const { data: listData } = await admin.auth.admin.listUsers();
-      const existingAuthUser = (listData?.users || []).find(
-        (u) => (u.email || "").toLowerCase() === cleanEmail
-      );
-
-      if (existingAuthUser) {
-        authUserId = existingAuthUser.id;
-        const { error: updateAuthErr } = await admin.auth.admin.updateUserById(authUserId, {
-          password: password,
-          email_confirm: true,
-        });
-        if (updateAuthErr) {
-          return NextResponse.json(
-            { error: `فشل تحديث كلمة المرور: ${updateAuthErr.message}` },
-            { status: 500 }
-          );
-        }
-      } else {
-        const { data: createData, error: createAuthErr } = await admin.auth.admin.createUser({
-          email: cleanEmail,
-          password: password,
-          email_confirm: true,
-        });
-        if (createAuthErr || !createData.user) {
-          return NextResponse.json(
-            { error: `فشل إنشاء حساب المصادقة: ${createAuthErr?.message || "خطأ غير معروف"}` },
-            { status: 500 }
-          );
-        }
-        authUserId = createData.user.id;
+      // Session Mismatch Check
+      const serverClient = await createServerSupabaseClient().catch(() => null);
+      let sessionUser: any = null;
+      if (serverClient) {
+        const { data: authData } = await serverClient.auth.getUser();
+        sessionUser = authData?.user || null;
       }
 
-      // 2. Fetch the target roster person
+      let authUserId: string;
+
+      if (sessionUser && sessionUser.email) {
+        const sessionEmail = sessionUser.email.toLowerCase().trim();
+        if (sessionEmail !== cleanEmail) {
+          return NextResponse.json(
+            {
+              error: `أنت مسجل حالياً بحساب (${sessionEmail}) بينما الدعوة موجهة إلى (${cleanEmail}). يرجى تسجيل الخروج أولاً لتفعيل الدعوة بالحساب الصحيح.`,
+              sessionMismatch: true,
+              loggedInEmail: sessionEmail,
+              invitedEmail: cleanEmail,
+            },
+            { status: 400 }
+          );
+        }
+        // User is already authenticated with the correct matching email
+        authUserId = sessionUser.id;
+      } else {
+        // User is not authenticated in current session, requires password
+        if (typeof password !== "string" || password.length < 8) {
+          return NextResponse.json(
+            { error: "كلمة المرور مطلوبة ويجب أن لا تقل عن 8 أحرف." },
+            { status: 400 }
+          );
+        }
+
+        // Find or create Auth User in Supabase Auth
+        const { data: listData } = await admin.auth.admin.listUsers();
+        const existingAuthUser = (listData?.users || []).find(
+          (u) => (u.email || "").toLowerCase() === cleanEmail
+        );
+
+        if (existingAuthUser) {
+          authUserId = existingAuthUser.id;
+          const { error: updateAuthErr } = await admin.auth.admin.updateUserById(authUserId, {
+            password: password,
+            email_confirm: true,
+          });
+          if (updateAuthErr) {
+            return NextResponse.json(
+              { error: `فشل تحديث كلمة المرور: ${updateAuthErr.message}` },
+              { status: 500 }
+            );
+          }
+        } else {
+          const { data: createData, error: createAuthErr } = await admin.auth.admin.createUser({
+            email: cleanEmail,
+            password: password,
+            email_confirm: true,
+          });
+          if (createAuthErr || !createData.user) {
+            return NextResponse.json(
+              { error: `فشل إنشاء حساب المصادقة: ${createAuthErr?.message || "خطأ غير معروف"}` },
+              { status: 500 }
+            );
+          }
+          authUserId = createData.user.id;
+        }
+      }
+
+      // Fetch target roster person
       const { data: rosterPerson, error: rErr } = await admin
         .from("roster_people")
-        .select("id, workspace_id, display_name, role, job_title")
+        .select("id, workspace_id, display_name, role, job_title, access_scope, custom_permissions")
         .eq("id", targetRosterId)
         .eq("workspace_id", inv.workspace_id)
         .single();
@@ -261,7 +379,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 3. Invariant: Check if roster person is already bound to another active user
+      // Invariant: Check if roster person is already bound to another active user
       const { data: existingRosterMem } = await admin
         .from("workspace_memberships")
         .select("id, user_id, is_active")
@@ -277,7 +395,31 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 4. Create or activate workspace membership
+      // ATOMIC UPDATE on workspace_invitations to prevent double acceptance race condition
+      const { data: updatedInv, error: acceptErr } = await admin
+        .from("workspace_invitations")
+        .update({
+          status: "accepted",
+          accepted_at: new Date().toISOString(),
+          accepted_by_id: authUserId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", inv.id)
+        .eq("status", "pending")
+        .select()
+        .single();
+
+      if (acceptErr || !updatedInv) {
+        return NextResponse.json(
+          { error: "هذه الدعوة لم تعد معلقة أو تم قبولها بالفعل من جلسة أخرى." },
+          { status: 409 }
+        );
+      }
+
+      // Create or activate workspace membership syncing scope and permissions
+      const targetScope = rosterPerson.access_scope || "assigned_tasks";
+      const targetPermissions = rosterPerson.custom_permissions || {};
+
       const { data: memberRecord, error: memErr } = await admin
         .from("workspace_memberships")
         .upsert(
@@ -286,6 +428,8 @@ export async function POST(req: NextRequest) {
             user_id: authUserId,
             roster_person_id: rosterPerson.id,
             role: targetRole,
+            access_scope: targetScope,
+            custom_permissions: targetPermissions,
             is_active: true,
             updated_at: new Date().toISOString(),
           },
@@ -301,7 +445,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 5. Update roster_people role if different
+      // Update roster_people role if different
       await admin
         .from("roster_people")
         .update({
@@ -310,18 +454,7 @@ export async function POST(req: NextRequest) {
         })
         .eq("id", rosterPerson.id);
 
-      // 6. Mark invitation as accepted
-      await admin
-        .from("workspace_invitations")
-        .update({
-          status: "accepted",
-          accepted_at: new Date().toISOString(),
-          accepted_by_id: authUserId,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", inv.id);
-
-      // 7. Audit Event
+      // Audit Event
       await admin.from("audit_events").insert({
         workspace_id: inv.workspace_id,
         actor_id: rosterPerson.id,
@@ -334,6 +467,7 @@ export async function POST(req: NextRequest) {
           user_id: authUserId,
           roster_person_id: rosterPerson.id,
           role: targetRole,
+          access_scope: targetScope,
           display_name: rosterPerson.display_name,
         },
       });
@@ -348,7 +482,7 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------------------------------
-    // FLOW B: Existing authenticated session acceptance fallback
+    // FLOW B: Existing authenticated session acceptance fallback (No explicit invitationId)
     // -------------------------------------------------------------------------
     const serverClient = await createServerSupabaseClient().catch(() => null);
     if (!serverClient) {
@@ -357,7 +491,7 @@ export async function POST(req: NextRequest) {
 
     const { data: authData, error: authErr } = await serverClient.auth.getUser();
     if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "يجب تسجيل الدخول أو إرسال معرف الدعوة." }, { status: 401 });
+      return NextResponse.json({ error: "يجب تسجيل الدخول أو استخدام رابط الدعوة الكامل." }, { status: 401 });
     }
 
     const user = authData.user;
@@ -367,7 +501,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "البريد الإلكتروني غير صالح." }, { status: 400 });
     }
 
-    // 1. Check if user already has an active workspace membership
+    // Check if user already has an active workspace membership
     const { data: existingUserMember } = await admin
       .from("workspace_memberships")
       .select("id, role, is_active, roster_person_id")
@@ -383,7 +517,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2. Resolve target roster person and role by invitation
+    // Resolve target roster person and role by invitation
     const { data: inviteRecord } = await admin
       .from("workspace_invitations")
       .select("id, workspace_id, invited_email, role, roster_person_id, status, expires_at")
@@ -393,32 +527,27 @@ export async function POST(req: NextRequest) {
       .limit(1)
       .maybeSingle();
 
-    let targetRosterId: string | null = null;
-    let targetRole: string = "designer";
-    let targetName: string = "";
-
-    if (inviteRecord) {
-      if (new Date(inviteRecord.expires_at).getTime() < Date.now()) {
-        return NextResponse.json(
-          { error: "انتهت صلاحية رابط الدعوة. يرجى التواصل مع الإدارة لتجديد الدعوة." },
-          { status: 410 }
-        );
-      }
-      targetRosterId = inviteRecord.roster_person_id;
-      targetRole = inviteRecord.role;
-    }
-
-    if (!targetRosterId) {
+    if (!inviteRecord) {
       return NextResponse.json(
         { error: "لم يتم العثور على دعوة معلقة لهذا البريد الإلكتروني." },
         { status: 404 }
       );
     }
 
-    // 3. Find active roster record
+    if (new Date(inviteRecord.expires_at).getTime() < Date.now()) {
+      return NextResponse.json(
+        { error: "انتهت صلاحية رابط الدعوة. يرجى التواصل مع الإدارة لتجديد الدعوة." },
+        { status: 410 }
+      );
+    }
+
+    const targetRosterId = inviteRecord.roster_person_id;
+    const targetRole = inviteRecord.role;
+
+    // Find active roster record
     const { data: rosterPerson, error: rosterErr } = await admin
       .from("roster_people")
-      .select("id, workspace_id, display_name, is_active")
+      .select("id, workspace_id, display_name, is_active, access_scope, custom_permissions")
       .eq("id", targetRosterId)
       .eq("is_active", true)
       .maybeSingle();
@@ -429,9 +558,8 @@ export async function POST(req: NextRequest) {
         { status: 404 }
       );
     }
-    targetName = rosterPerson.display_name;
 
-    // 4. Invariant: Ensure target roster person is NOT already bound to an active user
+    // Ensure target roster person is NOT already bound to another active user
     const { data: rosterMembership } = await admin
       .from("workspace_memberships")
       .select("id, user_id, is_active")
@@ -447,7 +575,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 5. Create or activate workspace membership
+    // Atomic update on invitation
+    const { data: updatedInviteRecord, error: updateInviteErr } = await admin
+      .from("workspace_invitations")
+      .update({
+        status: "accepted",
+        accepted_at: new Date().toISOString(),
+        accepted_by_id: user.id,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", inviteRecord.id)
+      .eq("status", "pending")
+      .select()
+      .single();
+
+    if (updateInviteErr || !updatedInviteRecord) {
+      return NextResponse.json(
+        { error: "تم قبول هذه الدعوة بالفعل مسبقاً أو أنها لم تعد معلقة." },
+        { status: 409 }
+      );
+    }
+
+    // Create or activate workspace membership
     const { data: newMember, error: memberErr } = await admin
       .from("workspace_memberships")
       .upsert(
@@ -456,6 +605,8 @@ export async function POST(req: NextRequest) {
           user_id: user.id,
           roster_person_id: rosterPerson.id,
           role: targetRole,
+          access_scope: rosterPerson.access_scope || "assigned_tasks",
+          custom_permissions: rosterPerson.custom_permissions || {},
           is_active: true,
           updated_at: new Date().toISOString(),
         },
@@ -468,20 +619,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `فشل تفعيل العضوية: ${memberErr.message}` }, { status: 500 });
     }
 
-    // 6. Update workspace_invitations status if exists
-    if (inviteRecord) {
-      await admin
-        .from("workspace_invitations")
-        .update({
-          status: "accepted",
-          accepted_at: new Date().toISOString(),
-          accepted_by_id: user.id,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", inviteRecord.id);
-    }
-
-    // 7. Audit Event
+    // Audit Event
     await admin.from("audit_events").insert({
       workspace_id: rosterPerson.workspace_id,
       actor_id: rosterPerson.id,
@@ -493,15 +631,15 @@ export async function POST(req: NextRequest) {
         user_id: user.id,
         roster_person_id: rosterPerson.id,
         role: targetRole,
-        member_name: targetName,
+        member_name: rosterPerson.display_name,
       },
     });
 
     return NextResponse.json({
       success: true,
-      memberName: targetName,
+      memberName: rosterPerson.display_name,
       role: targetRole,
-      message: `أهلاً بك يا ${targetName}! تم تفعيل حسابك بنجاح.`,
+      message: `أهلاً بك يا ${rosterPerson.display_name}! تم تفعيل حسابك بنجاح.`,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "حدث خطأ غير متوقع." }, { status: 500 });

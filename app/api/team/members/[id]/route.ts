@@ -29,7 +29,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { jobTitle, specialties, role } = body;
+    const { jobTitle, specialties, role, accessScope, customPermissions } = body;
 
     if (!jobTitle || typeof jobTitle !== "string" || !jobTitle.trim()) {
       return NextResponse.json({ error: "المسمى الوظيفي مطلوب." }, { status: 400 });
@@ -48,6 +48,8 @@ export async function PATCH(
       p_job_title: jobTitle.trim(),
       p_specialties: validSpecialties,
       p_role: validRole,
+      p_access_scope: accessScope || null,
+      p_custom_permissions: customPermissions || null,
     });
 
     if (rpcErr) {

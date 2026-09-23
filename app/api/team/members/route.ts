@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
 
     const { membership, admin } = authRes.data;
     const body = await req.json();
-    const { displayName, jobTitle, specialties, role } = body;
+    const { displayName, jobTitle, specialties, role, accessScope, customPermissions } = body;
 
     if (!displayName || typeof displayName !== "string" || !displayName.trim()) {
       return NextResponse.json(
@@ -49,6 +49,8 @@ export async function POST(req: NextRequest) {
       p_job_title: jobTitle.trim(),
       p_specialties: validSpecialties,
       p_role: validRole,
+      p_access_scope: accessScope || "assigned_tasks",
+      p_custom_permissions: customPermissions || {},
     });
 
     if (rpcErr) {

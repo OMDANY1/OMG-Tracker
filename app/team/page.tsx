@@ -32,13 +32,23 @@ import {
 } from "lucide-react";
 import { ROSTER_ROLE_LABELS, cn } from "@/lib/utils";
 import { PermissionsMatrixModal } from "@/components/team/PermissionsMatrixModal";
-import { ROLE_PERMISSIONS_MATRIX } from "@/types/database";
+import {
+  ROLE_PERMISSIONS_MATRIX,
+  AccessScope,
+  CustomPermissions,
+  GranularPermissionKey,
+  GRANULAR_PERMISSIONS_LIST,
+  ACCESS_SCOPE_CONFIGS,
+  DEFAULT_ROLE_PERMISSIONS,
+} from "@/types/database";
 
 export interface WorkloadMember {
   id: string;
   displayName: string;
   jobTitle: string;
   role: string;
+  access_scope?: AccessScope;
+  custom_permissions?: CustomPermissions;
   specialties?: string[];
   hasJoined?: boolean;
   isActive?: boolean;
@@ -65,6 +75,7 @@ export interface InvitationRecord {
   created_at: string;
   last_sent_at?: string | null;
   notes?: string | null;
+  rawToken?: string | null;
   isDraft?: boolean;
   canCopyLink?: boolean;
   roster_person?: {
@@ -93,6 +104,19 @@ const AVAILABLE_ROLES = [
   { value: "video_editor", label: "مونتير (Video Editor)" },
   { value: "business_owner_viewer", label: "مالك الشركة (مشاهد فقط)" },
 ];
+
+function getDefaultScopeForRole(role: string): AccessScope {
+  if (role === "owner" || role === "manager" || role === "marketing_director" || role === "business_owner_viewer") {
+    return "workspace";
+  }
+  if (role === "strategy_lead" || role === "senior_reviewer") {
+    return "assigned_team";
+  }
+  if (role === "strategist") {
+    return "assigned_clients";
+  }
+  return "assigned_tasks";
+}
 
 function getMemberStatus(member: WorkloadMember, invitations: InvitationRecord[]) {
   if (member.isActive === false) {
@@ -136,11 +160,22 @@ export default function TeamPage() {
   const [copySuccessId, setCopySuccessId] = useState<string | null>(null);
   const [showPermissionsMatrix, setShowPermissionsMatrix] = useState<boolean>(false);
 
+  // Active Team Count (excluding deactivated legacy owner)
+  const activeMembersCount = useMemo(() => {
+    return teamMembers.filter(
+      (m) => m.isActive !== false && !m.displayName.includes("المدير العام (Owner)")
+    ).length;
+  }, [teamMembers]);
+
   // Add Member Modal State
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [newMemberName, setNewMemberName] = useState("");
   const [newMemberJobTitle, setNewMemberJobTitle] = useState("");
   const [newMemberRole, setNewMemberRole] = useState("designer");
+  const [newMemberAccessScope, setNewMemberAccessScope] = useState<AccessScope>("assigned_tasks");
+  const [newMemberCustomPermissions, setNewMemberCustomPermissions] = useState<CustomPermissions>(
+    () => ({ ...(DEFAULT_ROLE_PERMISSIONS.designer || {}) })
+  );
   const [newMemberSpecialties, setNewMemberSpecialties] = useState<string[]>(["design"]);
   const [newMemberWeeklyHours, setNewMemberWeeklyHours] = useState(40);
   const [newMemberMaxLoad, setNewMemberMaxLoad] = useState(15);
@@ -152,6 +187,8 @@ export default function TeamPage() {
   const [editName, setEditName] = useState("");
   const [editJobTitle, setEditJobTitle] = useState("");
   const [editRole, setEditRole] = useState("designer");
+  const [editAccessScope, setEditAccessScope] = useState<AccessScope>("assigned_tasks");
+  const [editCustomPermissions, setEditCustomPermissions] = useState<CustomPermissions>({});
   const [editSpecialties, setEditSpecialties] = useState<string[]>([]);
   const [editWeeklyHours, setEditWeeklyHours] = useState(40);
   const [editMaxLoad, setEditMaxLoad] = useState(15);
@@ -228,6 +265,17 @@ export default function TeamPage() {
     return () => window.removeEventListener("persona_changed", handlePersonaChange);
   }, []);
 
+  // Role change handler for adding member
+  const handleNewMemberRoleChange = (role: string) => {
+    setNewMemberRole(role);
+    const scope = getDefaultScopeForRole(role);
+    setNewMemberAccessScope(scope);
+    const perms = DEFAULT_ROLE_PERMISSIONS[role as keyof typeof DEFAULT_ROLE_PERMISSIONS];
+    if (perms) {
+      setNewMemberCustomPermissions({ ...perms });
+    }
+  };
+
   // Handler for adding a new member
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -247,6 +295,8 @@ export default function TeamPage() {
           displayName: newMemberName.trim(),
           jobTitle: newMemberJobTitle.trim(),
           role: newMemberRole,
+          accessScope: newMemberAccessScope,
+          customPermissions: newMemberCustomPermissions,
           specialties: newMemberSpecialties,
           weeklyHours: Number(newMemberWeeklyHours) || 40,
           maxWeightedLoad: Number(newMemberMaxLoad) || 15,
@@ -262,12 +312,25 @@ export default function TeamPage() {
       setNewMemberName("");
       setNewMemberJobTitle("");
       setNewMemberRole("designer");
+      setNewMemberAccessScope("assigned_tasks");
+      setNewMemberCustomPermissions({ ...(DEFAULT_ROLE_PERMISSIONS.designer || {}) });
       setNewMemberSpecialties(["design"]);
       fetchTeamData();
     } catch (err: any) {
       setMemberError(err.message || "حدث خطأ أثناء إضافة العضو.");
     } finally {
       setSubmittingMember(false);
+    }
+  };
+
+  // Role change handler for editing member
+  const handleEditRoleChange = (role: string) => {
+    setEditRole(role);
+    const scope = getDefaultScopeForRole(role);
+    setEditAccessScope(scope);
+    const perms = DEFAULT_ROLE_PERMISSIONS[role as keyof typeof DEFAULT_ROLE_PERMISSIONS];
+    if (perms) {
+      setEditCustomPermissions({ ...perms });
     }
   };
 
@@ -280,6 +343,14 @@ export default function TeamPage() {
     setEditSpecialties(member.specialties || []);
     setEditWeeklyHours(member.weeklyHours || 40);
     setEditMaxLoad(member.maxWeightedLoad || 15);
+    const defaultScope = getDefaultScopeForRole(member.role);
+    setEditAccessScope(member.access_scope || defaultScope);
+    const defaultPerms = DEFAULT_ROLE_PERMISSIONS[member.role as keyof typeof DEFAULT_ROLE_PERMISSIONS] || {};
+    setEditCustomPermissions(
+      member.custom_permissions && Object.keys(member.custom_permissions).length > 0
+        ? { ...member.custom_permissions }
+        : { ...defaultPerms }
+    );
     setEditError(null);
   };
 
@@ -303,6 +374,8 @@ export default function TeamPage() {
           displayName: editName.trim(),
           jobTitle: editJobTitle.trim(),
           role: editRole,
+          accessScope: editAccessScope,
+          customPermissions: editCustomPermissions,
           specialties: editSpecialties,
           weeklyHours: Number(editWeeklyHours) || 40,
           maxWeightedLoad: Number(editMaxLoad) || 15,
@@ -494,7 +567,8 @@ export default function TeamPage() {
       host.includes("localhost") || host.includes("127.0.0.1")
         ? window.location.origin
         : "https://omg-creative-workspace.vercel.app";
-    const inviteUrl = `${baseOrigin}/accept-invite?id=${inv.id}`;
+    const tokenParam = inv.rawToken ? `&token=${encodeURIComponent(inv.rawToken)}` : "";
+    const inviteUrl = `${baseOrigin}/accept-invite?id=${inv.id}${tokenParam}`;
     navigator.clipboard.writeText(inviteUrl);
     setCopySuccessId(inv.id);
     setTimeout(() => setCopySuccessId(null), 2500);
@@ -589,7 +663,7 @@ export default function TeamPage() {
         <div className="flex items-center justify-between">
           <h2 className="font-bold text-base text-slate-900 flex items-center gap-2">
             <Users className="w-4 h-4 text-sky-600" />
-            أعضاء الفريق ومعدلات الحمل الحالية ({teamMembers.length})
+            أعضاء الفريق ومعدلات الحمل الحالية ({activeMembersCount})
           </h2>
         </div>
 
@@ -618,6 +692,7 @@ export default function TeamPage() {
               const isHighLoad = member.status === "overloaded";
               const isBalanced = member.status === "balanced";
               const memberStatus = getMemberStatus(member, invitations);
+              const isLegacyOwner = member.displayName.includes("المدير العام (Owner)");
 
               return (
                 <div
@@ -640,12 +715,25 @@ export default function TeamPage() {
                       </div>
 
                       <div className="flex flex-col items-end gap-1">
-                        <span className={cn("px-2 py-0.5 rounded-md font-bold text-[10px] border", memberStatus.badgeClass)}>
-                          {memberStatus.label}
-                        </span>
-                        <span className="px-2 py-0.5 rounded-md font-semibold text-[10px] bg-slate-100 text-slate-700">
-                          {ROSTER_ROLE_LABELS[member.role as keyof typeof ROSTER_ROLE_LABELS] || member.role}
-                        </span>
+                        {isLegacyOwner ? (
+                          <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-slate-200 text-slate-700 border border-slate-300">
+                            سجل أرشيفي قديم (معطل)
+                          </span>
+                        ) : (
+                          <span className={cn("px-2 py-0.5 rounded-md font-bold text-[10px] border", memberStatus.badgeClass)}>
+                            {memberStatus.label}
+                          </span>
+                        )}
+                        <div className="flex items-center gap-1 flex-wrap justify-end">
+                          <span className="px-2 py-0.5 rounded-md font-semibold text-[10px] bg-slate-100 text-slate-700">
+                            {ROSTER_ROLE_LABELS[member.role as keyof typeof ROSTER_ROLE_LABELS] || member.role}
+                          </span>
+                          {member.access_scope && ACCESS_SCOPE_CONFIGS[member.access_scope] && (
+                            <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-semibold border", ACCESS_SCOPE_CONFIGS[member.access_scope].badgeClass)}>
+                              {ACCESS_SCOPE_CONFIGS[member.access_scope].label.split(" (")[0]}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -748,7 +836,12 @@ export default function TeamPage() {
 
                       {/* Member Actions */}
                       <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                        {!isViewer ? (
+                        {isLegacyOwner ? (
+                          <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1">
+                            <Lock className="w-3 h-3 text-slate-400" />
+                            <span>سجل أرشيفي قديم (معطل)</span>
+                          </span>
+                        ) : !isViewer ? (
                           <button
                             type="button"
                             onClick={() => handleOpenEditMember(member)}
@@ -759,7 +852,7 @@ export default function TeamPage() {
                           </button>
                         ) : <div />}
 
-                        {member.role === "owner" ? (
+                        {isLegacyOwner ? null : member.role === "owner" ? (
                           <span className="text-[10px] text-slate-400 flex items-center gap-1">
                             <Lock className="w-3 h-3 text-slate-400" />
                             <span>حساب المالك محمي</span>
@@ -957,7 +1050,7 @@ export default function TeamPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
           <form
             onSubmit={handleAddMember}
-            className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs"
+            className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-xl w-full max-h-[90vh] overflow-y-auto p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs"
           >
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
@@ -1003,10 +1096,10 @@ export default function TeamPage() {
               </div>
 
               <div>
-                <label className="font-bold text-slate-700 block mb-1">الدور والصلاحيات في النظام:</label>
+                <label className="font-bold text-slate-700 block mb-1">الدور الوظيفي في المنظومة:</label>
                 <select
                   value={newMemberRole}
-                  onChange={(e) => setNewMemberRole(e.target.value)}
+                  onChange={(e) => handleNewMemberRoleChange(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold"
                 >
                   {AVAILABLE_ROLES.map((r) => (
@@ -1015,43 +1108,162 @@ export default function TeamPage() {
                     </option>
                   ))}
                 </select>
+              </div>
 
-                {/* Role Permissions & Scope Summary Card */}
-                {(() => {
-                  const roleConfig = ROLE_PERMISSIONS_MATRIX[newMemberRole as keyof typeof ROLE_PERMISSIONS_MATRIX];
-                  if (!roleConfig) return null;
-                  return (
-                    <div className="mt-2 p-3 bg-purple-50/70 border border-purple-200 rounded-xl space-y-1.5 text-[11px]">
-                      <div className="flex items-center justify-between font-bold text-purple-950">
-                        <span className="flex items-center gap-1.5">
-                          <Shield className="w-3.5 h-3.5 text-purple-700" />
-                          نطاق الصلاحيات:
-                        </span>
-                        <span className="px-2 py-0.5 rounded bg-purple-200 text-purple-900 text-[10px] font-bold">
-                          {roleConfig.scope === "workspace"
-                            ? "مساحة العمل كاملة"
-                            : roleConfig.scope === "assigned_team"
-                            ? "فريقه وتخصصه"
-                            : roleConfig.scope === "assigned_clients"
-                            ? "العملاء المسندون"
-                            : "مهامه الخاصة"}
-                        </span>
+              {/* Access Scope Selector */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  نطاق الصلاحيات التشغيلي (Access Scope):
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  {(Object.entries(ACCESS_SCOPE_CONFIGS) as [AccessScope, typeof ACCESS_SCOPE_CONFIGS[AccessScope]][]).map(([scopeKey, config]) => (
+                    <label
+                      key={scopeKey}
+                      className={cn(
+                        "flex flex-col p-2.5 rounded-xl border cursor-pointer text-[11px] transition-all",
+                        newMemberAccessScope === scopeKey
+                          ? "bg-purple-50 border-purple-300 ring-1 ring-purple-300 shadow-2xs"
+                          : "bg-white border-slate-200 hover:bg-slate-50 text-slate-700"
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="newMemberScope"
+                          value={scopeKey}
+                          checked={newMemberAccessScope === scopeKey}
+                          onChange={() => setNewMemberAccessScope(scopeKey)}
+                          className="text-purple-600 focus:ring-purple-500"
+                        />
+                        <span className="font-bold">{config.label.split(" (")[0]}</span>
                       </div>
-                      <p className="text-purple-900 text-[10px] leading-relaxed">{roleConfig.description}</p>
-                      <div className="flex flex-wrap gap-1 pt-1 text-[10px]">
-                        {roleConfig.canManageClients && <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded font-semibold">إدارة العملاء</span>}
-                        {roleConfig.canAssignTeam && <span className="px-1.5 py-0.5 bg-sky-50 text-sky-800 border border-sky-200 rounded font-semibold">إسناد الفرق</span>}
-                        {roleConfig.canApproveReviews && <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded font-semibold">الاعتماد والمراجعة</span>}
-                        {roleConfig.canExportReports && <span className="px-1.5 py-0.5 bg-purple-50 text-purple-800 border border-purple-200 rounded font-semibold">تصدير التقارير</span>}
-                        {roleConfig.canManageWorkspace && <span className="px-1.5 py-0.5 bg-rose-50 text-rose-800 border border-rose-200 rounded font-bold">إدارة النظام</span>}
-                        {roleConfig.canTrackTime && <span className="px-1.5 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 rounded font-semibold">تتبع الوقت</span>}
-                        {!roleConfig.canManageClients && !roleConfig.canAssignTeam && !roleConfig.canApproveReviews && !roleConfig.canExportReports && !roleConfig.canTrackTime && !roleConfig.canManageWorkspace && (
-                          <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded font-semibold">مشاهدة وقراءة فقط (بدون كتابة)</span>
-                        )}
-                      </div>
+                      <p className="text-[10px] text-slate-500 mt-1 leading-normal pr-5">{config.description}</p>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Granular Permissions (14 Permissions) */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="font-bold text-slate-700 block">
+                    الصلاحيات الفردية المخصصة (14 صلاحية):
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const def = DEFAULT_ROLE_PERMISSIONS[newMemberRole as keyof typeof DEFAULT_ROLE_PERMISSIONS];
+                      if (def) setNewMemberCustomPermissions({ ...def });
+                    }}
+                    className="text-[10px] font-semibold text-sky-600 hover:text-sky-800 underline"
+                  >
+                    استعادة الافتراضي للدور
+                  </button>
+                </div>
+
+                <div className="space-y-3 bg-slate-50/80 p-3 rounded-xl border border-slate-200">
+                  {/* Group 1: النظام والإدارة */}
+                  <div>
+                    <span className="text-[10px] font-bold text-purple-900 block mb-1">1. النظام والإدارة</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "system").map((p) => {
+                        const checked = !!newMemberCustomPermissions[p.key];
+                        return (
+                          <label
+                            key={p.key}
+                            className={cn(
+                              "flex items-start gap-2 p-2 rounded-lg border text-[10px] cursor-pointer transition-colors",
+                              checked
+                                ? "bg-purple-50 border-purple-200 text-purple-950 font-semibold"
+                                : "bg-white border-slate-200 text-slate-600"
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setNewMemberCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
+                              }
+                              className="mt-0.5 rounded text-purple-600 focus:ring-purple-500"
+                            />
+                            <div>
+                              <div className="leading-tight">{p.label}</div>
+                              <div className="text-[9px] text-slate-400 font-normal mt-0.5">{p.description}</div>
+                            </div>
+                          </label>
+                        );
+                      })}
                     </div>
-                  );
-                })()}
+                  </div>
+
+                  {/* Group 2: إدارة العملاء والمهام */}
+                  <div>
+                    <span className="text-[10px] font-bold text-sky-900 block mb-1">2. إدارة العملاء والمهام</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "clients_tasks").map((p) => {
+                        const checked = !!newMemberCustomPermissions[p.key];
+                        return (
+                          <label
+                            key={p.key}
+                            className={cn(
+                              "flex items-start gap-2 p-2 rounded-lg border text-[10px] cursor-pointer transition-colors",
+                              checked
+                                ? "bg-sky-50 border-sky-200 text-sky-950 font-semibold"
+                                : "bg-white border-slate-200 text-slate-600"
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setNewMemberCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
+                              }
+                              className="mt-0.5 rounded text-sky-600 focus:ring-sky-500"
+                            />
+                            <div>
+                              <div className="leading-tight">{p.label}</div>
+                              <div className="text-[9px] text-slate-400 font-normal mt-0.5">{p.description}</div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Group 3: المراجعات والوقت والتقارير */}
+                  <div>
+                    <span className="text-[10px] font-bold text-emerald-900 block mb-1">3. المراجعات والوقت والتقارير</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "reviews_time").map((p) => {
+                        const checked = !!newMemberCustomPermissions[p.key];
+                        return (
+                          <label
+                            key={p.key}
+                            className={cn(
+                              "flex items-start gap-2 p-2 rounded-lg border text-[10px] cursor-pointer transition-colors",
+                              checked
+                                ? "bg-emerald-50 border-emerald-200 text-emerald-950 font-semibold"
+                                : "bg-white border-slate-200 text-slate-600"
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setNewMemberCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
+                              }
+                              className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500"
+                            />
+                            <div>
+                              <div className="leading-tight">{p.label}</div>
+                              <div className="text-[9px] text-slate-400 font-normal mt-0.5">{p.description}</div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -1146,7 +1358,7 @@ export default function TeamPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
           <form
             onSubmit={handleSaveEditMember}
-            className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs"
+            className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-xl w-full max-h-[90vh] overflow-y-auto p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs"
           >
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
@@ -1190,10 +1402,10 @@ export default function TeamPage() {
               </div>
 
               <div>
-                <label className="font-bold text-slate-700 block mb-1">الدور والصلاحيات:</label>
+                <label className="font-bold text-slate-700 block mb-1">الدور الوظيفي في المنظومة:</label>
                 <select
                   value={editRole}
-                  onChange={(e) => setEditRole(e.target.value)}
+                  onChange={(e) => handleEditRoleChange(e.target.value)}
                   disabled={editingMember.role === "owner"}
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold disabled:bg-slate-100"
                 >
@@ -1211,47 +1423,170 @@ export default function TeamPage() {
                 {editingMember.role === "owner" && (
                   <div className="mt-1.5 p-2 bg-purple-50 border border-purple-200 text-purple-900 rounded-lg text-[10px] flex items-center gap-1.5 font-semibold">
                     <Lock className="w-3.5 h-3.5 text-purple-700 shrink-0" />
-                    <span>حساب المدير العام محمي بموجب قواعد النظام لمنع قفل مساحة العمل.</span>
+                    <span>حساب المدير العام محمي بموجب قواعد النظام بصلاحيات إدارية كاملة.</span>
                   </div>
                 )}
+              </div>
 
-                {/* Role Permissions & Scope Summary Card */}
-                {(() => {
-                  const roleConfig = ROLE_PERMISSIONS_MATRIX[editRole as keyof typeof ROLE_PERMISSIONS_MATRIX];
-                  if (!roleConfig) return null;
-                  return (
-                    <div className="mt-2 p-3 bg-purple-50/70 border border-purple-200 rounded-xl space-y-1.5 text-[11px]">
-                      <div className="flex items-center justify-between font-bold text-purple-950">
-                        <span className="flex items-center gap-1.5">
-                          <Shield className="w-3.5 h-3.5 text-purple-700" />
-                          نطاق الصلاحيات:
-                        </span>
-                        <span className="px-2 py-0.5 rounded bg-purple-200 text-purple-900 text-[10px] font-bold">
-                          {roleConfig.scope === "workspace"
-                            ? "مساحة العمل كاملة"
-                            : roleConfig.scope === "assigned_team"
-                            ? "فريقه وتخصصه"
-                            : roleConfig.scope === "assigned_clients"
-                            ? "العملاء المسندون"
-                            : "مهامه الخاصة"}
-                        </span>
-                      </div>
-                      <p className="text-purple-900 text-[10px] leading-relaxed">{roleConfig.description}</p>
-                      <div className="flex flex-wrap gap-1 pt-1 text-[10px]">
-                        {roleConfig.canManageClients && <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded font-semibold">إدارة العملاء</span>}
-                        {roleConfig.canAssignTeam && <span className="px-1.5 py-0.5 bg-sky-50 text-sky-800 border border-sky-200 rounded font-semibold">إسناد الفرق</span>}
-                        {roleConfig.canApproveReviews && <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded font-semibold">الاعتماد والمراجعة</span>}
-                        {roleConfig.canExportReports && <span className="px-1.5 py-0.5 bg-purple-50 text-purple-800 border border-purple-200 rounded font-semibold">تصدير التقارير</span>}
-                        {roleConfig.canManageWorkspace && <span className="px-1.5 py-0.5 bg-rose-50 text-rose-800 border border-rose-200 rounded font-bold">إدارة النظام</span>}
-                        {roleConfig.canTrackTime && <span className="px-1.5 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 rounded font-semibold">تتبع الوقت</span>}
-                        {!roleConfig.canManageClients && !roleConfig.canAssignTeam && !roleConfig.canApproveReviews && !roleConfig.canExportReports && !roleConfig.canTrackTime && !roleConfig.canManageWorkspace && (
-                          <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded font-semibold">مشاهدة وقراءة فقط (بدون كتابة)</span>
+              {/* Access Scope Selector for Edit Member */}
+              {editingMember.role !== "owner" && (
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    نطاق الصلاحيات التشغيلي (Access Scope):
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                    {(Object.entries(ACCESS_SCOPE_CONFIGS) as [AccessScope, typeof ACCESS_SCOPE_CONFIGS[AccessScope]][]).map(([scopeKey, config]) => (
+                      <label
+                        key={scopeKey}
+                        className={cn(
+                          "flex flex-col p-2.5 rounded-xl border cursor-pointer text-[11px] transition-all",
+                          editAccessScope === scopeKey
+                            ? "bg-purple-50 border-purple-300 ring-1 ring-purple-300 shadow-2xs"
+                            : "bg-white border-slate-200 hover:bg-slate-50 text-slate-700"
                         )}
+                      >
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name="editMemberScope"
+                            value={scopeKey}
+                            checked={editAccessScope === scopeKey}
+                            onChange={() => setEditAccessScope(scopeKey)}
+                            className="text-purple-600 focus:ring-purple-500"
+                          />
+                          <span className="font-bold">{config.label.split(" (")[0]}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-1 leading-normal pr-5">{config.description}</p>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Granular Permissions (14 Permissions) for Edit Member */}
+              {editingMember.role !== "owner" && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="font-bold text-slate-700 block">
+                      الصلاحيات الفردية المخصصة (14 صلاحية):
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const def = DEFAULT_ROLE_PERMISSIONS[editRole as keyof typeof DEFAULT_ROLE_PERMISSIONS];
+                        if (def) setEditCustomPermissions({ ...def });
+                      }}
+                      className="text-[10px] font-semibold text-sky-600 hover:text-sky-800 underline"
+                    >
+                      استعادة الافتراضي للدور
+                    </button>
+                  </div>
+
+                  <div className="space-y-3 bg-slate-50/80 p-3 rounded-xl border border-slate-200">
+                    {/* Group 1: النظام والإدارة */}
+                    <div>
+                      <span className="text-[10px] font-bold text-purple-900 block mb-1">1. النظام والإدارة</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "system").map((p) => {
+                          const checked = !!editCustomPermissions[p.key];
+                          return (
+                            <label
+                              key={p.key}
+                              className={cn(
+                                "flex items-start gap-2 p-2 rounded-lg border text-[10px] cursor-pointer transition-colors",
+                                checked
+                                  ? "bg-purple-50 border-purple-200 text-purple-950 font-semibold"
+                                  : "bg-white border-slate-200 text-slate-600"
+                              )}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  setEditCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
+                                }
+                                className="mt-0.5 rounded text-purple-600 focus:ring-purple-500"
+                              />
+                              <div>
+                                <div className="leading-tight">{p.label}</div>
+                                <div className="text-[9px] text-slate-400 font-normal mt-0.5">{p.description}</div>
+                              </div>
+                            </label>
+                          );
+                        })}
                       </div>
                     </div>
-                  );
-                })()}
-              </div>
+
+                    {/* Group 2: إدارة العملاء والمهام */}
+                    <div>
+                      <span className="text-[10px] font-bold text-sky-900 block mb-1">2. إدارة العملاء والمهام</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "clients_tasks").map((p) => {
+                          const checked = !!editCustomPermissions[p.key];
+                          return (
+                            <label
+                              key={p.key}
+                              className={cn(
+                                "flex items-start gap-2 p-2 rounded-lg border text-[10px] cursor-pointer transition-colors",
+                                checked
+                                  ? "bg-sky-50 border-sky-200 text-sky-950 font-semibold"
+                                  : "bg-white border-slate-200 text-slate-600"
+                              )}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  setEditCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
+                                }
+                                className="mt-0.5 rounded text-sky-600 focus:ring-sky-500"
+                              />
+                              <div>
+                                <div className="leading-tight">{p.label}</div>
+                                <div className="text-[9px] text-slate-400 font-normal mt-0.5">{p.description}</div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Group 3: المراجعات والوقت والتقارير */}
+                    <div>
+                      <span className="text-[10px] font-bold text-emerald-900 block mb-1">3. المراجعات والوقت والتقارير</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "reviews_time").map((p) => {
+                          const checked = !!editCustomPermissions[p.key];
+                          return (
+                            <label
+                              key={p.key}
+                              className={cn(
+                                "flex items-start gap-2 p-2 rounded-lg border text-[10px] cursor-pointer transition-colors",
+                                checked
+                                  ? "bg-emerald-50 border-emerald-200 text-emerald-950 font-semibold"
+                                  : "bg-white border-slate-200 text-slate-600"
+                              )}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  setEditCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
+                                }
+                                className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500"
+                              />
+                              <div>
+                                <div className="leading-tight">{p.label}</div>
+                                <div className="text-[9px] text-slate-400 font-normal mt-0.5">{p.description}</div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="font-bold text-slate-700 block mb-1">التخصصات المعتمدة:</label>
@@ -1452,11 +1787,13 @@ export default function TeamPage() {
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold focus:outline-sky-500"
                 >
                   <option value="">-- اختر عضو الفريق --</option>
-                  {teamMembers.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.displayName} ({m.jobTitle})
-                    </option>
-                  ))}
+                  {teamMembers
+                    .filter((m) => m.isActive !== false && !m.displayName.includes("المدير العام (Owner)"))
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.displayName} ({m.jobTitle})
+                      </option>
+                    ))}
                 </select>
               </div>
 
