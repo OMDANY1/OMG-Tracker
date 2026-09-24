@@ -36,11 +36,16 @@ export async function updateSession(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
   const isLoginPage = pathname.startsWith("/login");
-  const isAuthCallback = pathname.startsWith("/auth/callback");
-  const isApi = pathname.startsWith("/api");
+  const isPublicPage =
+    isLoginPage ||
+    pathname.startsWith("/accept-invite") ||
+    pathname.startsWith("/reset-password") ||
+    pathname.startsWith("/setup-owner") ||
+    pathname.startsWith("/auth/callback") ||
+    pathname.startsWith("/api");
 
   // If user is not authenticated and trying to access a protected app page
-  if (!user && !isLoginPage && !isAuthCallback && !isApi) {
+  if (!user && !isPublicPage) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
