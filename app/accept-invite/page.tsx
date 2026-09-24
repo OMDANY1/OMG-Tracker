@@ -7,10 +7,7 @@ import {
   Lock,
   CheckCircle2,
   AlertTriangle,
-  ArrowRight,
   ShieldCheck,
-  Sparkles,
-  Users,
   KeyRound,
   LogIn,
   LogOut,
@@ -35,8 +32,8 @@ interface InviteInfo {
 function AcceptInviteContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const inviteId = searchParams.get("id");
   const inviteToken = searchParams.get("token");
+  const inviteId = searchParams.get("id");
 
   const [inviteInfo, setInviteInfo] = useState<InviteInfo | null>(null);
   const [email, setEmail] = useState<string>("");
@@ -59,39 +56,31 @@ function AcceptInviteContent() {
       setLoading(true);
       setErrorMsg(null);
 
-      // Case 1: An invitation ID is present in URL
-      if (inviteId) {
-        if (!inviteToken) {
-          setTerminalError({
-            title: "رابط الدعوة غير مكتمل",
-            description: "الرمز السري (token) مفقود من الرابط لأسباب أمنية. يرجى طلب الرابط الكامل والمباشر من المدير العام (عماد).",
-          });
-          setLoading(false);
-          return;
-        }
-
+      // Case 1: Secret token is present in URL (token alone or id + token)
+      if (inviteToken) {
         try {
-          const res = await fetch(
-            `/api/auth/accept-invite?id=${encodeURIComponent(inviteId)}&token=${encodeURIComponent(inviteToken)}`
-          );
+          const url = `/api/auth/accept-invite?token=${encodeURIComponent(inviteToken)}${
+            inviteId ? `&id=${encodeURIComponent(inviteId)}` : ""
+          }`;
+          const res = await fetch(url);
           const data = await res.json();
 
           if (!res.ok || data.error) {
             if (data.isAccepted) {
               setTerminalError({
                 title: "تم تفعيل هذه الدعوة مسبقاً",
-                description: data.error || "تم قبول هذه الدعوة بالفعل. يمكنك تسجيل الدخول إلى حسابك مباشرة.",
+                description: data.error || "تم قبول هذه الدعوة بالفعل مسبقاً. يمكنك تسجيل الدخول إلى حسابك مباشرة.",
                 isAccepted: true,
                 loginEmail: data.email,
               });
             } else if (data.isExpired) {
               setTerminalError({
-                title: "انتهت صلاحية رابط الدعوة",
-                description: data.error || "انتهت مهلة هذا الرابط (7 أيام). يرجى طلب رابط دعوة جديد من الإدارة.",
+                title: "انتهت صلاحية رابط الدعوة (This invitation has expired)",
+                description: data.error || "انتهت مهلة هذا الرابط (7 أيام). يرجى طلب رابط دعوة جديد من إدارة الايجنسي.",
               });
             } else if (data.isRevoked) {
               setTerminalError({
-                title: "تم إلغاء الدعوة",
+                title: "تم إلغاء الدعوة (This invitation has been revoked)",
                 description: data.error || "تم إلغاء رابط الدعوة هذا من قِبل إدارة الايجنسي.",
               });
             } else if (data.isPaused) {
@@ -99,20 +88,10 @@ function AcceptInviteContent() {
                 title: "قبول الدعوات متوقف مؤقتًا",
                 description: data.error || "الدعوات متوقفة مؤقتًا لحين الانتهاء من تحديث مساحة العمل. سيصلك رابط جديد عند إعادة فتح الدعوات.",
               });
-            } else if (data.tokenInvalid || data.tokenMissing) {
-              setTerminalError({
-                title: "رمز الدعوة السري غير صحيح",
-                description: data.error || "رمز التحقق السري للدعوة غير صحيح أو تم التلاعب به.",
-              });
-            } else if (data.isDraft) {
-              setTerminalError({
-                title: "الدعوة لا تزال مسودة",
-                description: data.error || "هذه الدعوة لا تزال مسودة داخلية ولم تُفعّل بعد. تواصل مع الإدارة لإصدارها.",
-              });
             } else {
               setTerminalError({
-                title: "رابط غير صالح",
-                description: data.error || "تعذر التحقق من رابط الدعوة. يرجى التأكد من نسخه بشكل صحيح.",
+                title: "رابط غير صالح (Invalid invitation)",
+                description: data.error || "تعذر التحقق من رابط الدعوة. يرجى التأكد من نسخه بالكامل بشكل صحيح.",
               });
             }
             setLoading(false);
@@ -135,7 +114,17 @@ function AcceptInviteContent() {
         }
       }
 
-      // Case 2: No invitation ID, check if user is already logged in
+      // Case 2: Only ID is present without token
+      if (inviteId && !inviteToken) {
+        setTerminalError({
+          title: "رابط الدعوة غير مكتمل",
+          description: "الرمز السري (token) مفقود من الرابط لأسباب أمنية. يرجى طلب الرابط الكامل والمباشر من المدير العام (عماد).",
+        });
+        setLoading(false);
+        return;
+      }
+
+      // Case 3: No token or ID, check if user is already logged in
       const supabase = createClient();
       if (supabase) {
         const { data: authData } = await supabase.auth.getUser();
@@ -154,7 +143,7 @@ function AcceptInviteContent() {
     }
 
     init();
-  }, [inviteId, inviteToken]);
+  }, [inviteToken, inviteId]);
 
   const handleLogout = async () => {
     setLoggingOut(true);
@@ -170,7 +159,7 @@ function AcceptInviteContent() {
   };
 
   const handleQuickAccept = async () => {
-    if (!inviteId || !inviteToken) return;
+    if (!inviteToken) return;
     setSubmitting(true);
     setErrorMsg(null);
     try {
@@ -178,8 +167,8 @@ function AcceptInviteContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          invitationId: inviteId,
           token: inviteToken,
+          invitationId: inviteId || inviteInfo?.invitationId,
           autoAcceptIfSessionMatches: true,
         }),
       });
@@ -189,11 +178,11 @@ function AcceptInviteContent() {
         throw new Error(data.error || "فشل تفعيل العضوية.");
       }
 
-      setSuccessMsg(data.message || "تم تفعيل حسابك بنجاح! جاري تحويلك...");
+      setSuccessMsg(data.message || "تم تفعيل حسابك بنجاح! جاري توجيهك إلى مساحة العمل...");
       setTimeout(() => {
         router.push("/");
         router.refresh();
-      }, 1500);
+      }, 1200);
     } catch (err: any) {
       setErrorMsg(err.message || "حدث خطأ أثناء تفعيل الحساب.");
     } finally {
@@ -217,13 +206,13 @@ function AcceptInviteContent() {
 
     setSubmitting(true);
     try {
-      if (inviteId) {
+      if (inviteToken) {
         const res = await fetch("/api/auth/accept-invite", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            invitationId: inviteId,
             token: inviteToken,
+            invitationId: inviteId || inviteInfo?.invitationId,
             password: password,
           }),
         });
@@ -233,12 +222,22 @@ function AcceptInviteContent() {
           throw new Error(data.error || "فشل تفعيل الدعوة.");
         }
 
-        setSuccessMsg(data.message || "تم تفعيل حسابك بنجاح! جاري تحويلك...");
+        // Automatic authentication to establish session
+        const supabase = createClient();
+        if (supabase) {
+          await supabase.auth.signInWithPassword({
+            email: data.email || email,
+            password: password,
+          });
+        }
+
+        setSuccessMsg(data.message || "تم تفعيل حسابك بنجاح! جاري تحويلك إلى مساحة العمل...");
         setTimeout(() => {
-          router.push(`/login?email=${encodeURIComponent(data.email || email)}`);
-        }, 1500);
+          router.push("/");
+          router.refresh();
+        }, 1200);
       } else {
-        // Fallback for pre-authenticated session
+        // Fallback for pre-authenticated session without token
         const supabase = createClient();
         if (!supabase) throw new Error("تعذر الاتصال بخدمة المصادقة.");
 
@@ -255,11 +254,11 @@ function AcceptInviteContent() {
           throw new Error(data.error || "فشل تفعيل العضوية في مساحة العمل.");
         }
 
-        setSuccessMsg(data.message || "تم تفعيل حسابك بنجاح!");
+        setSuccessMsg(data.message || "تم تفعيل حسابك بنجاح! جاري نقلك إلى مساحة العمل...");
         setTimeout(() => {
           router.push("/");
           router.refresh();
-        }, 1500);
+        }, 1200);
       }
     } catch (err: any) {
       setErrorMsg(err.message || "حدث خطأ أثناء تفعيل الحساب.");
@@ -392,7 +391,7 @@ function AcceptInviteContent() {
                   ) : (
                     <>
                       <ShieldCheck className="w-4 h-4" />
-                      <span>تفعيل العضوية والانضمام فوراً</span>
+                      <span>تفعيل العضوية والانضمام فوراً لمساحة العمل</span>
                     </>
                   )}
                 </button>

@@ -77,7 +77,12 @@ export interface InvitationRecord {
   notes?: string | null;
   rawToken?: string | null;
   isDraft?: boolean;
+  isExpired?: boolean;
+  effectiveStatus?: string;
+  inviteUrl?: string;
   canCopyLink?: boolean;
+  canResend?: boolean;
+  canRevoke?: boolean;
   roster_person?: {
     id: string;
     display_name: string;
@@ -204,12 +209,16 @@ export default function TeamPage() {
 
   // Invite Modal State
   const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
+  const [inviteMode, setInviteMode] = useState<"new_user" | "existing_roster">("new_user");
+  const [inviteFullName, setInviteFullName] = useState<string>("");
+  const [inviteJobTitle, setInviteJobTitle] = useState<string>("");
   const [selectedRosterId, setSelectedRosterId] = useState<string>("");
   const [inviteEmail, setInviteEmail] = useState<string>("");
   const [inviteRole, setInviteRole] = useState<string>("designer");
   const [submittingInvite, setSubmittingInvite] = useState<boolean>(false);
   const [inviteModalError, setInviteModalError] = useState<string | null>(null);
   const [inviteModalSuccess, setInviteModalSuccess] = useState<string | null>(null);
+  const [invitePendingConflictId, setInvitePendingConflictId] = useState<string | null>(null);
 
   const fetchTeamData = async () => {
     setLoading(true);
@@ -478,42 +487,67 @@ export default function TeamPage() {
     }
   };
 
-  const handleSaveOrIssueInvite = async (isDraftOnly: boolean = true) => {
-    if (!selectedRosterId || !inviteEmail.trim()) {
-      setInviteModalError("يرجى اختيار العضو وإدخال البريد الإلكتروني.");
+  const handleSendOrIssueInvite = async (actionType: "send" | "issue" | "create_draft" = "send") => {
+    if (inviteMode === "new_user" && (!inviteFullName.trim() || !inviteEmail.trim())) {
+      setInviteModalError("يرجى إدخال الاسم الكامل والبريد الإلكتروني للعضو الجديد.");
+      return;
+    }
+    if (inviteMode === "existing_roster" && (!selectedRosterId || !inviteEmail.trim())) {
+      setInviteModalError("يرجى اختيار العضو من القائمة وإدخال البريد الإلكتروني.");
       return;
     }
 
     setSubmittingInvite(true);
     setInviteModalError(null);
     setInviteModalSuccess(null);
+    setInvitePendingConflictId(null);
 
     try {
       const res = await fetch("/api/team/invitations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          rosterPersonId: selectedRosterId,
+          rosterPersonId: inviteMode === "existing_roster" ? selectedRosterId : undefined,
+          fullName: inviteMode === "new_user" ? inviteFullName.trim() : undefined,
+          jobTitle: inviteMode === "new_user" ? inviteJobTitle.trim() : undefined,
           email: inviteEmail.trim(),
           role: inviteRole,
-          isDraftOnly: isDraftOnly,
-          action: isDraftOnly ? "create_draft" : "issue",
+          action: actionType,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
+        if (data.alreadyPending) {
+          setInvitePendingConflictId(data.existingInvitationId);
+        }
         throw new Error(data.error || "فشل معالجة الدعوة.");
       }
 
-      setInviteModalSuccess(data.message || (isDraftOnly ? "تم حفظ مسودة الدعوة بنجاح." : "تم إصدار وتفعيل رابط الدعوة بنجاح."));
+      const host = window.location.host;
+      const baseOrigin =
+        host.includes("localhost") || host.includes("127.0.0.1")
+          ? window.location.origin
+          : "https://omg-creative-workspace.vercel.app";
+
+      if (data.rawToken) {
+        navigator.clipboard.writeText(`${baseOrigin}/accept-invite?token=${data.rawToken}`);
+      }
+
+      setInviteModalSuccess(
+        data.message ||
+          "تم إرسال الدعوة وتفعيل الرابط بنجاح! تم نسخ رابط الدعوة المباشر إلى الحافظة تلقائياً."
+      );
       setTimeout(() => {
         setShowInviteModal(false);
         setInviteModalSuccess(null);
         setSelectedRosterId("");
+        setInviteFullName("");
+        setInviteJobTitle("");
         setInviteEmail("");
+        setInvitePendingConflictId(null);
         fetchTeamData();
-      }, 1200);
+      }, 1500);
     } catch (err: any) {
       setInviteModalError(err.message || "حدث خطأ أثناء حفظ الدعوة.");
     } finally {
@@ -521,9 +555,33 @@ export default function TeamPage() {
     }
   };
 
-  const handleSaveDraftInvite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await handleSaveOrIssueInvite(true);
+  const handleResendInvite = async (invitationId: string) => {
+    try {
+      const res = await fetch("/api/team/invitations", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: invitationId, action: "resend" }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "فشل إعادة إرسال الدعوة.");
+        return;
+      }
+      if (data.rawToken) {
+        const host = window.location.host;
+        const baseOrigin =
+          host.includes("localhost") || host.includes("127.0.0.1")
+            ? window.location.origin
+            : "https://omg-creative-workspace.vercel.app";
+        navigator.clipboard.writeText(`${baseOrigin}/accept-invite?token=${data.rawToken}`);
+        setCopySuccessId(invitationId);
+        setTimeout(() => setCopySuccessId(null), 2500);
+      }
+      alert(data.message || "تم تجديد صلاحية الدعوة وإعادة إرسالها بنجاح!");
+      fetchTeamData();
+    } catch (e: any) {
+      alert(e.message);
+    }
   };
 
   const handleIssueExistingInvite = async (invitationId: string) => {
@@ -545,7 +603,7 @@ export default function TeamPage() {
   };
 
   const handleRevokeInvite = async (invitationId: string) => {
-    if (!confirm("هل أنت متأكد من رغبتك في إلغاء هذه الدعوة؟")) return;
+    if (!confirm("هل أنت متأكد من رغبتك في إلغاء هذه الدعوة (Revoke)؟")) return;
     try {
       const res = await fetch(`/api/team/invitations?id=${invitationId}`, {
         method: "DELETE",
@@ -567,8 +625,9 @@ export default function TeamPage() {
       host.includes("localhost") || host.includes("127.0.0.1")
         ? window.location.origin
         : "https://omg-creative-workspace.vercel.app";
-    const tokenParam = inv.rawToken ? `&token=${encodeURIComponent(inv.rawToken)}` : "";
-    const inviteUrl = `${baseOrigin}/accept-invite?id=${inv.id}${tokenParam}`;
+    const inviteUrl = inv.rawToken
+      ? `${baseOrigin}/accept-invite?token=${encodeURIComponent(inv.rawToken)}`
+      : `${baseOrigin}/accept-invite?id=${inv.id}`;
     navigator.clipboard.writeText(inviteUrl);
     setCopySuccessId(inv.id);
     setTimeout(() => setCopySuccessId(null), 2500);
@@ -629,7 +688,7 @@ export default function TeamPage() {
                 className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
               >
                 <Mail className="w-4 h-4" />
-                <span>تجهيز مسودة دعوة</span>
+                <span>دعوة مستخدم جديد</span>
               </button>
             </>
           )}
@@ -906,7 +965,7 @@ export default function TeamPage() {
               مركز دعوات الفريق والربط الأمني (Team Invitations Center)
             </h2>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              إدارة مسودات الدعوات ونسخ روابط الانضمام للمشاركين المعتمدين دون إرسال إيميلات عشوائية
+              إدارة دعوات الفريق وروابط الانضمام للمشاركين المعتمدين
             </p>
           </div>
 
@@ -917,7 +976,7 @@ export default function TeamPage() {
               className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-bold flex items-center gap-1.5 transition-colors self-start sm:self-auto"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>إنشاء مسودة دعوة</span>
+              <span>دعوة عضو جديد</span>
             </button>
           )}
         </div>
@@ -943,102 +1002,126 @@ export default function TeamPage() {
                   </td>
                 </tr>
               ) : (
-                invitations.map((inv) => (
-                  <tr key={inv.id} className="hover:bg-slate-50/60">
-                    <td className="p-3 font-bold text-slate-900">
-                      {inv.roster_person?.display_name || "عضو فريق"}
-                    </td>
-                    <td className="p-3 font-mono text-slate-700">{inv.invited_email}</td>
-                    <td className="p-3">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">
-                        {ROSTER_ROLE_LABELS[inv.role as keyof typeof ROSTER_ROLE_LABELS] || inv.role}
-                      </span>
-                    </td>
-                    <td className="p-3">
-                      <span
-                        className={cn(
-                          "px-2 py-0.5 rounded-full text-[10px] font-bold",
-                          inv.status === "draft"
-                            ? "bg-amber-100 text-amber-900"
-                            : inv.status === "pending"
-                            ? "bg-sky-100 text-sky-800"
-                            : inv.status === "accepted"
-                            ? "bg-emerald-100 text-emerald-800"
-                            : inv.status === "revoked"
-                            ? "bg-rose-100 text-rose-800"
-                            : "bg-slate-100 text-slate-600"
-                        )}
-                      >
-                        {inv.status === "draft"
-                          ? "مسودة (غير مرسلة)"
-                          : inv.status === "pending"
-                          ? "معلقة"
-                          : inv.status === "accepted"
-                          ? "تم القبول"
-                          : inv.status === "revoked"
-                          ? "ملغاة"
-                          : inv.status}
-                      </span>
-                    </td>
-                    <td className="p-3 text-slate-500 font-mono text-[11px]">
-                      {new Date(inv.created_at).toLocaleDateString("ar-EG")}
-                    </td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-1.5">
-                        {/* Issue/Activate Draft button */}
-                        {!isViewer && inv.status === "draft" && (
-                          <button
-                            type="button"
-                            onClick={() => handleIssueExistingInvite(inv.id)}
-                            className="p-1.5 rounded text-[11px] font-semibold flex items-center gap-1 text-sky-600 hover:text-sky-800 hover:bg-sky-50 transition-colors"
-                            title="تفعيل وإصدار رابط الدعوة للانضمام"
-                          >
-                            <Sparkles className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">إصدار الرابط</span>
-                          </button>
-                        )}
-
-                        {/* Copy Link button */}
-                        <button
-                          type="button"
-                          onClick={() => handleCopyLink(inv)}
+                invitations.map((inv) => {
+                  const isExpired =
+                    inv.isExpired ||
+                    (inv.status === "pending" && new Date(inv.expires_at).getTime() < Date.now());
+                  return (
+                    <tr key={inv.id} className="hover:bg-slate-50/60">
+                      <td className="p-3 font-bold text-slate-900">
+                        {inv.roster_person?.display_name || "عضو فريق"}
+                      </td>
+                      <td className="p-3 font-mono text-slate-700">{inv.invited_email}</td>
+                      <td className="p-3">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">
+                          {ROSTER_ROLE_LABELS[inv.role as keyof typeof ROSTER_ROLE_LABELS] || inv.role}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <span
                           className={cn(
-                            "p-1.5 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors",
-                            copySuccessId === inv.id
-                              ? "bg-emerald-50 text-emerald-700 font-bold"
-                              : "text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
+                            "px-2 py-0.5 rounded-full text-[10px] font-bold",
+                            inv.status === "accepted"
+                              ? "bg-emerald-100 text-emerald-800"
+                              : inv.status === "revoked"
+                              ? "bg-rose-100 text-rose-800"
+                              : isExpired
+                              ? "bg-amber-100 text-amber-800 border border-amber-300"
+                              : inv.status === "pending"
+                              ? "bg-sky-100 text-sky-800"
+                              : inv.status === "draft"
+                              ? "bg-slate-100 text-slate-700"
+                              : "bg-slate-100 text-slate-600"
                           )}
-                          title="نسخ رابط الانضمام المباشر"
                         >
-                          {copySuccessId === inv.id ? (
-                            <>
-                              <Check className="w-3.5 h-3.5 text-emerald-600" />
-                              <span>تم النسخ!</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3.5 h-3.5" />
-                              <span className="hidden sm:inline">نسخ الرابط</span>
-                            </>
+                          {inv.status === "accepted"
+                            ? "تم القبول (Accepted)"
+                            : inv.status === "revoked"
+                            ? "ملغاة (Revoked)"
+                            : isExpired
+                            ? "منتهية الصلاحية (Expired)"
+                            : inv.status === "pending"
+                            ? "معلقة (Pending)"
+                            : inv.status === "draft"
+                            ? "مسودة (Draft)"
+                            : inv.status}
+                        </span>
+                      </td>
+                      <td className="p-3 text-slate-500 font-mono text-[11px]">
+                        {new Date(inv.created_at).toLocaleDateString("ar-EG")}
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5">
+                          {/* Resend button for pending or expired */}
+                          {!isViewer && (inv.status === "pending" || isExpired) && (
+                            <button
+                              type="button"
+                              onClick={() => handleResendInvite(inv.id)}
+                              className="p-1.5 rounded text-[11px] font-semibold flex items-center gap-1 text-sky-600 hover:text-sky-800 hover:bg-sky-50 transition-colors"
+                              title={isExpired ? "إعادة إرسال وتجديد صلاحية الدعوة لـ 7 أيام" : "إعادة إرسال الدعوة"}
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">{isExpired ? "تجديد وإرسال" : "إعادة إرسال"}</span>
+                            </button>
                           )}
-                        </button>
 
-                        {/* Revoke button */}
-                        {!isViewer && inv.status !== "revoked" && inv.status !== "accepted" && (
-                          <button
-                            type="button"
-                            onClick={() => handleRevokeInvite(inv.id)}
-                            className="text-rose-600 hover:text-rose-700 p-1.5 hover:bg-rose-50 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors"
-                            title="إلغاء الدعوة"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">إلغاء</span>
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                          {/* Issue/Activate Draft button */}
+                          {!isViewer && inv.status === "draft" && (
+                            <button
+                              type="button"
+                              onClick={() => handleIssueExistingInvite(inv.id)}
+                              className="p-1.5 rounded text-[11px] font-semibold flex items-center gap-1 text-sky-600 hover:text-sky-800 hover:bg-sky-50 transition-colors"
+                              title="تفعيل وإصدار رابط الدعوة للانضمام"
+                            >
+                              <Sparkles className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">إصدار الرابط</span>
+                            </button>
+                          )}
+
+                          {/* Copy Link button */}
+                          {inv.status !== "revoked" && inv.status !== "accepted" && (
+                            <button
+                              type="button"
+                              onClick={() => handleCopyLink(inv)}
+                              className={cn(
+                                "p-1.5 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors",
+                                copySuccessId === inv.id
+                                  ? "bg-emerald-50 text-emerald-700 font-bold"
+                                  : "text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
+                              )}
+                              title="نسخ رابط الانضمام المباشر"
+                            >
+                              {copySuccessId === inv.id ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span>تم النسخ!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span className="hidden sm:inline">نسخ الرابط</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+
+                          {/* Revoke button */}
+                          {!isViewer && inv.status !== "revoked" && inv.status !== "accepted" && (
+                            <button
+                              type="button"
+                              onClick={() => handleRevokeInvite(inv.id)}
+                              className="text-rose-600 hover:text-rose-700 p-1.5 hover:bg-rose-50 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors"
+                              title="إلغاء الدعوة (Revoke)"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">إلغاء</span>
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -1750,52 +1833,119 @@ export default function TeamPage() {
         </div>
       )}
 
-      {/* Modal 4: Draft Invitation Modal */}
+      {/* Modal 4: Invite User Modal */}
       {showInviteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
           <form
-            onSubmit={handleSaveDraftInvite}
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSendOrIssueInvite("send");
+            }}
             className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs"
           >
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
-                <Mail className="w-4 h-4 text-indigo-600" />
-                تجهيز مسودة دعوة لعضو الفريق
+                <Mail className="w-4 h-4 text-sky-600" />
+                دعوة مستخدم جديد لمساحة العمل
               </h3>
               <button
                 type="button"
-                onClick={() => setShowInviteModal(false)}
+                onClick={() => {
+                  setShowInviteModal(false);
+                  setInvitePendingConflictId(null);
+                }}
                 className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-[11px] leading-relaxed">
-              <strong>تنبيه أمان للمدير العام:</strong> إرسال الإيميلات التلقائي متوقف. سيتم حفظ هذا السجل كمسودة معتمدة، ويمكنك نسخ الرابط مباشرة ومشاركته مع العضو.
+            {/* Mode Selector Tabs */}
+            <div className="flex p-1 bg-slate-100 rounded-xl gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setInviteMode("new_user");
+                  setSelectedRosterId("");
+                }}
+                className={cn(
+                  "flex-1 py-1.5 px-3 rounded-lg font-bold text-[11px] transition-all",
+                  inviteMode === "new_user"
+                    ? "bg-white text-slate-900 shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                )}
+              >
+                عضو جديد
+              </button>
+              <button
+                type="button"
+                onClick={() => setInviteMode("existing_roster")}
+                className={cn(
+                  "flex-1 py-1.5 px-3 rounded-lg font-bold text-[11px] transition-all",
+                  inviteMode === "existing_roster"
+                    ? "bg-white text-slate-900 shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                )}
+              >
+                اختيار من قائمة الفريق
+              </button>
             </div>
 
-            <div className="space-y-3">
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">
-                  اختر العضو من الفريق <span className="text-rose-500">*</span>:
-                </label>
-                <select
-                  value={selectedRosterId}
-                  onChange={(e) => handleSelectRosterPerson(e.target.value)}
-                  required
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold focus:outline-sky-500"
-                >
-                  <option value="">-- اختر عضو الفريق --</option>
-                  {teamMembers
-                    .filter((m) => m.isActive !== false && !m.displayName.includes("المدير العام (Owner)"))
-                    .map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.displayName} ({m.jobTitle})
-                      </option>
-                    ))}
-                </select>
+            {invitationsPaused && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-[11px] leading-relaxed">
+                <strong>تنبيه:</strong> قبول الدعوات متوقف حالياً في إعدادات مساحة العمل. يمكنك حفظ الدعوة كمسودة أو تفعيل قبول الدعوات من الإعدادات.
               </div>
+            )}
+
+            <div className="space-y-3">
+              {inviteMode === "new_user" ? (
+                <>
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">
+                      الاسم الكامل بالعربية <span className="text-rose-500">*</span>:
+                    </label>
+                    <input
+                      type="text"
+                      value={inviteFullName}
+                      onChange={(e) => setInviteFullName(e.target.value)}
+                      placeholder="مثال: حسام علي"
+                      required
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold focus:outline-sky-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">المسمى الوظيفي:</label>
+                    <input
+                      type="text"
+                      value={inviteJobTitle}
+                      onChange={(e) => setInviteJobTitle(e.target.value)}
+                      placeholder="مثال: Senior Designer / كاتب إعلانات"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-sky-500"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    اختر العضو من الفريق <span className="text-rose-500">*</span>:
+                  </label>
+                  <select
+                    value={selectedRosterId}
+                    onChange={(e) => handleSelectRosterPerson(e.target.value)}
+                    required
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold focus:outline-sky-500"
+                  >
+                    <option value="">-- اختر عضو الفريق --</option>
+                    {teamMembers
+                      .filter((m) => m.isActive !== false && !m.displayName.includes("المدير العام (Owner)"))
+                      .map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.displayName} ({m.jobTitle})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
@@ -1828,21 +1978,41 @@ export default function TeamPage() {
             </div>
 
             {inviteModalError && (
-              <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-[11px]">
-                {inviteModalError}
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-[11px] space-y-2">
+                <div>{inviteModalError}</div>
+                {invitePendingConflictId && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await handleResendInvite(invitePendingConflictId);
+                      setShowInviteModal(false);
+                      setInvitePendingConflictId(null);
+                    }}
+                    className="w-full py-1.5 px-3 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>إعادة إرسال وتجديد الدعوة القائمة الآن</span>
+                  </button>
+                )}
               </div>
             )}
 
             {inviteModalSuccess && (
-              <div className="p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-[11px] font-bold">
-                {inviteModalSuccess}
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-[11px] font-bold space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <span>{inviteModalSuccess}</span>
+                </div>
               </div>
             )}
 
             <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
-                onClick={() => setShowInviteModal(false)}
+                onClick={() => {
+                  setShowInviteModal(false);
+                  setInvitePendingConflictId(null);
+                }}
                 className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold"
               >
                 إلغاء
@@ -1851,21 +2021,20 @@ export default function TeamPage() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => handleSaveOrIssueInvite(true)}
-                  disabled={submittingInvite || !selectedRosterId || !inviteEmail.trim()}
+                  onClick={() => handleSendOrIssueInvite("create_draft")}
+                  disabled={submittingInvite}
                   className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-400 text-slate-800 rounded-xl font-bold text-xs transition-colors"
                 >
-                  {submittingInvite ? "جاري الحفظ..." : "حفظ كمسودة دعوة"}
+                  {submittingInvite ? "جاري الحفظ..." : "حفظ كمسودة"}
                 </button>
 
                 <button
-                  type="button"
-                  onClick={() => handleSaveOrIssueInvite(false)}
-                  disabled={submittingInvite || !selectedRosterId || !inviteEmail.trim()}
+                  type="submit"
+                  disabled={submittingInvite}
                   className="px-4 py-2 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 text-white rounded-xl font-bold text-xs shadow-xs transition-colors flex items-center gap-1.5"
                 >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>{submittingInvite ? "جاري الإصدار..." : "إصدار وتفعيل الرابط"}</span>
+                  <Send className="w-3.5 h-3.5" />
+                  <span>{submittingInvite ? "جاري الإرسال..." : "إرسال الدعوة وتفعيل الرابط"}</span>
                 </button>
               </div>
             </div>

@@ -23,8 +23,8 @@ export async function GET(req: NextRequest) {
     }
 
     const { searchParams } = new URL(req.url);
-    const invitationId = searchParams.get("id");
     const token = searchParams.get("token");
+    const invitationId = searchParams.get("id");
 
     const { data: ws } = await admin
       .from("workspaces")
@@ -40,24 +40,15 @@ export async function GET(req: NextRequest) {
       sessionUser = authData?.user || null;
     }
 
-    // If an invitation ID was provided in the query params, validate it specifically
-    if (invitationId) {
-      // 1. Secret token presence verification
-      if (!token || typeof token !== "string" || !token.trim()) {
-        return NextResponse.json(
-          {
-            error: "رابط الدعوة غير مكتمل. الرمز السري (token) مفقود لأسباب أمنية. يرجى طلب الرابط الكامل من الإدارة.",
-            tokenMissing: true,
-            invalid: true,
-          },
-          { status: 400 }
-        );
-      }
+    // 1. Secret token presence verification (accept token alone or id + token)
+    if (token) {
+      const computedHash = hashToken(token.trim());
 
-      const { data: inv, error: invErr } = await admin
+      let query = admin
         .from("workspace_invitations")
         .select(`
           id,
+          workspace_id,
           invited_email,
           role,
           token_hash,
@@ -65,30 +56,25 @@ export async function GET(req: NextRequest) {
           expires_at,
           roster_person:roster_people!fk_invitation_roster(id, display_name, job_title, role, access_scope, custom_permissions)
         `)
-        .eq("id", invitationId)
-        .maybeSingle();
+        .eq("token_hash", computedHash);
+
+      if (invitationId) {
+        query = query.eq("id", invitationId);
+      }
+
+      const { data: inv, error: invErr } = await query.maybeSingle();
 
       if (invErr || !inv) {
         return NextResponse.json(
-          { error: "رابط الدعوة غير صالح أو غير موجود. يرجى التأكد من الرابط.", invalid: true },
+          {
+            error: "رابط الدعوة غير صالح أو غير موجود (This invitation is invalid). يرجى التأكد من الرابط.",
+            invalid: true,
+          },
           { status: 404 }
         );
       }
 
-      // 2. Cryptographic token hash matching verification
-      const computedHash = hashToken(token.trim());
-      if (computedHash !== inv.token_hash) {
-        return NextResponse.json(
-          {
-            error: "رمز التحقق السري للدعوة غير صحيح أو تم التلاعب به. يرجى استخدام الرابط الأصلي المعتمد.",
-            tokenInvalid: true,
-            invalid: true,
-          },
-          { status: 403 }
-        );
-      }
-
-      // 3. Workspace invitation acceptance setting check
+      // Workspace invitation acceptance setting check
       const isAcceptancePaused =
         ws?.allow_invitation_acceptance === false || ws?.invitations_paused === true;
 
@@ -102,7 +88,7 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      // 4. Status checks
+      // Status checks
       if (inv.status === "draft") {
         return NextResponse.json(
           {
@@ -116,7 +102,7 @@ export async function GET(req: NextRequest) {
       if (inv.status === "revoked") {
         return NextResponse.json(
           {
-            error: "تم إلغاء رابط الدعوة هذا من قِبل إدارة الايجنسي.",
+            error: "تم إلغاء رابط الدعوة هذا من قِبل إدارة الايجنسي (This invitation has been revoked).",
             isRevoked: true,
           },
           { status: 410 }
@@ -126,7 +112,7 @@ export async function GET(req: NextRequest) {
       if (inv.status === "accepted") {
         return NextResponse.json(
           {
-            error: "تم قبول رابط الدعوة هذا وتفعيل الحساب بالفعل مسبقاً. يمكنك تسجيل الدخول مباشرة.",
+            error: "تم قبول رابط الدعوة هذا وتفعيل الحساب بالفعل مسبقاً (This invitation has already been accepted). يمكنك تسجيل الدخول مباشرة.",
             isAccepted: true,
             email: inv.invited_email,
           },
@@ -134,12 +120,12 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      // 5. Expiration check
+      // Expiration check
       const isExpired = new Date(inv.expires_at).getTime() < Date.now();
       if (isExpired) {
         return NextResponse.json(
           {
-            error: "انتهت صلاحية رابط الدعوة (مدة الصلاحية 7 أيام). يرجى طلب رابط دعوة جديد من الإدارة.",
+            error: "انتهت صلاحية رابط الدعوة (This invitation has expired). يرجى طلب رابط دعوة جديد من الإدارة.",
             isExpired: true,
           },
           { status: 410 }
@@ -152,7 +138,7 @@ export async function GET(req: NextRequest) {
 
       const effectiveRole = inv.role || rosterPerson?.role || "designer";
 
-      // 6. Session Mismatch & Authenticated Link Detection
+      // Session Mismatch & Authenticated Link Detection
       let sessionMismatch = false;
       let sessionMatches = false;
       let loggedInEmail: string | null = null;
@@ -183,8 +169,20 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // If ID was passed without token
+    if (invitationId && !token) {
+      return NextResponse.json(
+        {
+          error: "رابط الدعوة غير مكتمل. الرمز السري (token) مفقود لأسباب أمنية. يرجى استخدام الرابط الكامل المزود برمز التحقق.",
+          tokenMissing: true,
+          invalid: true,
+        },
+        { status: 400 }
+      );
+    }
+
     return NextResponse.json({
-      invitationsPaused: ws?.invitations_paused ?? true,
+      invitationsPaused: ws?.invitations_paused ?? false,
       allowInvitationAcceptance: ws?.allow_invitation_acceptance ?? true,
       allowInvitationEmails: ws?.allow_invitation_emails ?? false,
     });
@@ -221,18 +219,12 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------------------------------
-    // FLOW A: Explicit invitation acceptance via secure link (?id=...&token=...)
+    // FLOW A: Explicit invitation acceptance via secure token (token or id + token)
     // -------------------------------------------------------------------------
-    if (invitationId) {
-      if (!token || typeof token !== "string" || !token.trim()) {
-        return NextResponse.json(
-          { error: "الرمز السري للدعوة (token) مطلوب لإتمام التفعيل." },
-          { status: 400 }
-        );
-      }
+    if (token) {
+      const computedHash = hashToken(token.trim());
 
-      // Fetch invitation
-      const { data: inv, error: invErr } = await admin
+      let query = admin
         .from("workspace_invitations")
         .select(`
           id,
@@ -245,22 +237,18 @@ export async function POST(req: NextRequest) {
           expires_at,
           roster_person:roster_people!fk_invitation_roster(id, display_name, job_title, role, access_scope, custom_permissions)
         `)
-        .eq("id", invitationId)
-        .maybeSingle();
+        .eq("token_hash", computedHash);
+
+      if (invitationId) {
+        query = query.eq("id", invitationId);
+      }
+
+      const { data: inv, error: invErr } = await query.maybeSingle();
 
       if (invErr || !inv) {
         return NextResponse.json(
-          { error: "رابط الدعوة غير صالح أو غير موجود." },
+          { error: "رابط الدعوة غير صالح أو غير موجود (This invitation is invalid)." },
           { status: 404 }
-        );
-      }
-
-      // Cryptographic verification
-      const computedHash = hashToken(token.trim());
-      if (computedHash !== inv.token_hash) {
-        return NextResponse.json(
-          { error: "رمز الدعوة السري غير مطابق. تم رفض طلب التفعيل." },
-          { status: 403 }
         );
       }
 
@@ -273,27 +261,28 @@ export async function POST(req: NextRequest) {
 
       if (inv.status === "revoked") {
         return NextResponse.json(
-          { error: "تم إلغاء هذه الدعوة من قِبل إدارة الايجنسي." },
+          { error: "تم إلغاء هذه الدعوة من قِبل إدارة الايجنسي (This invitation has been revoked)." },
           { status: 410 }
         );
       }
 
       if (inv.status === "accepted") {
         return NextResponse.json(
-          { error: "تم قبول هذه الدعوة بالفعل مسبقاً. يمكنك التوجه لتسجيل الدخول مباشرة." },
+          { error: "تم قبول هذه الدعوة بالفعل مسبقاً (This invitation has already been accepted). يمكنك التوجه لتسجيل الدخول مباشرة." },
           { status: 400 }
         );
       }
 
       if (new Date(inv.expires_at).getTime() < Date.now()) {
         return NextResponse.json(
-          { error: "انتهت صلاحية رابط الدعوة (مدة الصلاحية 7 أيام). يرجى طلب رابط جديد من الإدارة." },
+          { error: "انتهت صلاحية رابط الدعوة (This invitation has expired). يرجى طلب رابط جديد من الإدارة." },
           { status: 410 }
         );
       }
 
       const cleanEmail = inv.invited_email.trim().toLowerCase();
       const targetRosterId = inv.roster_person_id;
+      // ROLE SECURITY (Prompt Section 5): Strictly determined by the invitation record!
       const targetRole = inv.role || "designer";
 
       // Session Mismatch Check
@@ -319,7 +308,7 @@ export async function POST(req: NextRequest) {
             { status: 400 }
           );
         }
-        // User is already authenticated with the correct matching email
+        // User is already authenticated with matching email
         authUserId = sessionUser.id;
       } else {
         // User is not authenticated in current session, requires password
@@ -395,7 +384,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // ATOMIC UPDATE on workspace_invitations to prevent double acceptance race condition
+      // ATOMIC UPDATE on workspace_invitations to prevent double acceptance race condition (Test 3)
       const { data: updatedInv, error: acceptErr } = await admin
         .from("workspace_invitations")
         .update({
@@ -411,7 +400,7 @@ export async function POST(req: NextRequest) {
 
       if (acceptErr || !updatedInv) {
         return NextResponse.json(
-          { error: "هذه الدعوة لم تعد معلقة أو تم قبولها بالفعل من جلسة أخرى." },
+          { error: "هذه الدعوة لم تعد معلقة أو تم قبولها بالفعل من جلسة أخرى (This invitation has already been accepted)." },
           { status: 409 }
         );
       }
@@ -445,11 +434,12 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Update roster_people role if different
+      // Update roster_people role & active status
       await admin
         .from("roster_people")
         .update({
           role: targetRole,
+          is_active: true,
           updated_at: new Date().toISOString(),
         })
         .eq("id", rosterPerson.id);
@@ -477,12 +467,12 @@ export async function POST(req: NextRequest) {
         email: cleanEmail,
         memberName: rosterPerson.display_name,
         role: targetRole,
-        message: `تم تفعيل حسابك بنجاح يا ${rosterPerson.display_name}! يمكنك الآن تسجيل الدخول.`,
+        message: `تم تفعيل حسابك بنجاح يا ${rosterPerson.display_name}! يمكنك الآن الدخول لمساحة العمل.`,
       });
     }
 
     // -------------------------------------------------------------------------
-    // FLOW B: Existing authenticated session acceptance fallback (No explicit invitationId)
+    // FLOW B: Existing authenticated session acceptance fallback (No explicit token)
     // -------------------------------------------------------------------------
     const serverClient = await createServerSupabaseClient().catch(() => null);
     if (!serverClient) {
@@ -536,7 +526,7 @@ export async function POST(req: NextRequest) {
 
     if (new Date(inviteRecord.expires_at).getTime() < Date.now()) {
       return NextResponse.json(
-        { error: "انتهت صلاحية رابط الدعوة. يرجى التواصل مع الإدارة لتجديد الدعوة." },
+        { error: "انتهت صلاحية رابط الدعوة (This invitation has expired). يرجى التواصل مع الإدارة لتجديد الدعوة." },
         { status: 410 }
       );
     }
@@ -591,7 +581,7 @@ export async function POST(req: NextRequest) {
 
     if (updateInviteErr || !updatedInviteRecord) {
       return NextResponse.json(
-        { error: "تم قبول هذه الدعوة بالفعل مسبقاً أو أنها لم تعد معلقة." },
+        { error: "تم قبول هذه الدعوة بالفعل مسبقاً (This invitation has already been accepted) أو أنها لم تعد معلقة." },
         { status: 409 }
       );
     }
