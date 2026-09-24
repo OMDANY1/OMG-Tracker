@@ -124,34 +124,82 @@ function getDefaultScopeForRole(role: string): AccessScope {
 }
 
 function getMemberStatus(member: WorkloadMember, invitations: InvitationRecord[]) {
+  const isOwner = member.role === "owner" || member.displayName.includes("عماد");
+  if (isOwner) {
+    return {
+      key: "active" as const,
+      label: "نشط",
+      badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200",
+      invitation: null,
+    };
+  }
+
   if (member.isActive === false) {
     return {
       key: "deactivated" as const,
       label: "معطل مؤقتاً",
       badgeClass: "bg-rose-50 text-rose-700 border-rose-200",
+      invitation: null,
     };
   }
+
   if (member.hasJoined) {
     return {
-      key: "joined" as const,
-      label: "انضم للعمل",
+      key: "active" as const,
+      label: "نشط",
       badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200",
+      invitation: null,
     };
   }
-  const hasPendingInvite = invitations.some(
-    (inv) => inv.roster_person?.id === member.id && ["pending", "draft"].includes(inv.status)
+
+  const matchingInvite = invitations.find(
+    (inv) => inv.roster_person?.id === member.id || (inv as any).roster_person_id === member.id
   );
-  if (hasPendingInvite) {
-    return {
-      key: "pending_invite" as const,
-      label: "دعوة معلقة",
-      badgeClass: "bg-amber-50 text-amber-800 border-amber-200",
-    };
+
+  if (matchingInvite) {
+    const isExpired =
+      matchingInvite.isExpired ||
+      (matchingInvite.status === "pending" && new Date(matchingInvite.expires_at).getTime() < Date.now());
+
+    if (matchingInvite.status === "accepted") {
+      return {
+        key: "active" as const,
+        label: "نشط",
+        badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200",
+        invitation: matchingInvite,
+      };
+    }
+    if (matchingInvite.status === "pending" || matchingInvite.status === "draft") {
+      if (isExpired) {
+        return {
+          key: "expired" as const,
+          label: "انتهت الدعوة",
+          badgeClass: "bg-amber-100 text-amber-900 border-amber-300",
+          invitation: matchingInvite,
+        };
+      }
+      return {
+        key: "pending" as const,
+        label: "الدعوة معلقة",
+        badgeClass: "bg-amber-50 text-amber-800 border-amber-200",
+        invitation: matchingInvite,
+      };
+    }
+    if (matchingInvite.status === "revoked") {
+      return {
+        key: "revoked" as const,
+        label: "تم إلغاء الدعوة",
+        badgeClass: "bg-slate-100 text-slate-500 border-slate-200",
+        invitation: matchingInvite,
+      };
+    }
   }
+
   return {
     key: "not_invited" as const,
     label: "لم تتم دعوته",
     badgeClass: "bg-slate-100 text-slate-600 border-slate-200",
+    invitation: null,
   };
 }
 
@@ -633,6 +681,19 @@ export default function TeamPage() {
     setTimeout(() => setCopySuccessId(null), 2500);
   };
 
+  const handleOpenInviteForMember = (member: WorkloadMember) => {
+    setInviteMode("existing_roster");
+    setSelectedRosterId(member.id);
+    setInviteRole(member.role || "designer");
+    setInviteFullName("");
+    setInviteJobTitle("");
+    setInviteEmail("");
+    setInviteModalError(null);
+    setInviteModalSuccess(null);
+    setInvitePendingConflictId(null);
+    setShowInviteModal(true);
+  };
+
   return (
     <div className="space-y-8 max-w-7xl mx-auto">
       {/* Page Header */}
@@ -892,6 +953,113 @@ export default function TeamPage() {
                           />
                         </div>
                       </div>
+
+                      {/* CRM Access Status & Invitation Actions */}
+                      {!isLegacyOwner && member.role !== "owner" && (
+                        <div className="pt-2.5 border-t border-slate-100 space-y-2">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-slate-500 font-semibold flex items-center gap-1">
+                              <Mail className="w-3 h-3 text-slate-400" />
+                              <span>حساب الـ CRM:</span>
+                            </span>
+                            <span className={cn("px-2 py-0.5 rounded-md font-bold text-[10px] border", memberStatus.badgeClass)}>
+                              {memberStatus.label}
+                            </span>
+                          </div>
+
+                          {!isViewer && (
+                            <div>
+                              {memberStatus.key === "not_invited" && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenInviteForMember(member)}
+                                  className="w-full py-1.5 px-3 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-2xs"
+                                >
+                                  <Send className="w-3.5 h-3.5" />
+                                  <span>إرسال دعوة</span>
+                                </button>
+                              )}
+
+                              {memberStatus.key === "pending" && memberStatus.invitation && (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyLink(memberStatus.invitation!)}
+                                    className="flex-1 py-1.5 px-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"
+                                  >
+                                    {copySuccessId === memberStatus.invitation!.id ? (
+                                      <>
+                                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                        <span className="text-emerald-700">تم النسخ</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3 h-3" />
+                                        <span>نسخ الرابط</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleResendInvite(memberStatus.invitation!.id)}
+                                    className="flex-1 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"
+                                  >
+                                    <RefreshCw className="w-3 h-3" />
+                                    <span>إعادة إرسال</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRevokeInvite(memberStatus.invitation!.id)}
+                                    className="py-1.5 px-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"
+                                    title="إلغاء الدعوة"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                    <span>إلغاء</span>
+                                  </button>
+                                </div>
+                              )}
+
+                              {memberStatus.key === "expired" && memberStatus.invitation && (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleResendInvite(memberStatus.invitation!.id)}
+                                    className="flex-1 py-1.5 px-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition-colors shadow-2xs"
+                                  >
+                                    <RefreshCw className="w-3 h-3" />
+                                    <span>تجديد الدعوة</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRevokeInvite(memberStatus.invitation!.id)}
+                                    className="py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-[10px] font-semibold"
+                                  >
+                                    إلغاء
+                                  </button>
+                                </div>
+                              )}
+
+                              {memberStatus.key === "revoked" && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenInviteForMember(member)}
+                                  className="w-full py-1.5 px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-2xs"
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                  <span>إرسال دعوة جديدة</span>
+                                </button>
+                              )}
+
+                              {memberStatus.key === "active" && (
+                                <div className="text-[10px] text-emerald-700 font-bold flex items-center justify-center gap-1.5 py-1 bg-emerald-50/60 rounded-lg border border-emerald-100">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span>عضو نشط ومفعل في مساحة العمل</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {/* Member Actions */}
                       <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
