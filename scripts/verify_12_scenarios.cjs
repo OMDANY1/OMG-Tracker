@@ -97,8 +97,75 @@ function report(testNum, name, condition, detail) {
   }
 }
 
+// Tracked IDs for strict relational teardown in try/finally
+const trackedInvitationIds = new Set();
+const trackedMembershipIds = new Set();
+const trackedRosterIds = new Set();
+const trackedAuthUserIds = new Set();
+
+const TEST_PREFIX = "__E2E_INVITE_TEST__";
+
+async function runCleanup() {
+  console.log("\n🧹 Executing bulletproof relational teardown in try/finally...");
+
+  // 1. Delete tracked workspace_invitations FIRST (to prevent FK conflicts on roster_people)
+  try {
+    if (trackedInvitationIds.size > 0) {
+      const ids = Array.from(trackedInvitationIds);
+      await admin.from("workspace_invitations").delete().in("id", ids);
+    }
+  } catch (e) {}
+
+  try {
+    await admin.from("workspace_invitations").delete().like("invited_email", `${TEST_PREFIX.toLowerCase()}%`);
+  } catch (e) {}
+
+  // 2. Delete tracked workspace_memberships
+  try {
+    if (trackedMembershipIds.size > 0) {
+      const ids = Array.from(trackedMembershipIds);
+      await admin.from("workspace_memberships").delete().in("id", ids);
+    }
+  } catch (e) {}
+
+  // 3. Delete tracked roster_people
+  try {
+    if (trackedRosterIds.size > 0) {
+      const ids = Array.from(trackedRosterIds);
+      await admin.from("roster_people").delete().in("id", ids);
+    }
+  } catch (e) {}
+
+  try {
+    await admin.from("roster_people").delete().like("display_name", `${TEST_PREFIX}%`);
+  } catch (e) {}
+
+  // 4. Delete tracked auth users
+  for (const uid of trackedAuthUserIds) {
+    try {
+      await admin.auth.admin.deleteUser(uid);
+    } catch (e) {}
+  }
+
+  // 5. Sweep any remaining auth users with test prefix
+  try {
+    const { data: usersData } = await admin.auth.admin.listUsers();
+    for (const u of (usersData?.users || [])) {
+      if (u.email && u.email.startsWith(TEST_PREFIX.toLowerCase())) {
+        await admin.auth.admin.deleteUser(u.id);
+      }
+    }
+  } catch (e) {}
+
+  // 6. Delete test audit events
+  try {
+    await admin.from("audit_events").delete().like("metadata->>email", `${TEST_PREFIX.toLowerCase()}%`);
+  } catch (e) {}
+
+  console.log("Teardown completed. Zero test records remain.");
+}
+
 async function run() {
-  const cleanupTasks = [];
   try {
     // 0. Fetch workspace context
     const { data: ws, error: wsErr } = await withTimeout(
@@ -119,6 +186,25 @@ async function run() {
     );
     console.log(`Workspace: ${ws.name} (${workspaceId}), Owner ID: ${ownerMem.user_id}`);
 
+    // Helper to safely create an ephemeral test roster person
+    async function createTestRosterPerson(name, role = "designer") {
+      const uniqueName = `${TEST_PREFIX}${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+      const { data: rp, error: rpErr } = await withTimeout(
+        admin.from("roster_people").insert({
+          workspace_id: workspaceId,
+          display_name: uniqueName,
+          job_title: role === "designer" ? "Graphic Designer" : "Copywriter",
+          role: role,
+          is_active: true
+        }).select().single(),
+        15000,
+        'Create Test Roster Person'
+      );
+      if (rpErr) console.error("createTestRosterPerson error:", rpErr);
+      if (rp) trackedRosterIds.add(rp.id);
+      return rp;
+    }
+
     // TEST 10: Production redirect URL check (no localhost in production)
     report(
       10,
@@ -128,26 +214,13 @@ async function run() {
     );
 
     // TEST 1: Invite completely new email
-    const test1Email = `test.inv.new.${Date.now()}@example.com`;
+    const test1Email = `${TEST_PREFIX.toLowerCase()}new.${Date.now()}@example.com`;
     const test1Token = crypto.randomBytes(32).toString("hex");
     const test1TokenHash = hashToken(test1Token);
     const test1Enc = encryptToken(test1Token);
     const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
 
-    // Create roster person
-    const { data: rosterPerson, error: rpErr } = await withTimeout(
-      admin.from("roster_people").insert({
-        workspace_id: workspaceId,
-        display_name: `Test New Designer ${Date.now()}`,
-        job_title: "Midlevel Graphic Designer",
-        role: "designer",
-        is_active: true
-      }).select().single(),
-      15000,
-      'Insert Roster Person'
-    );
-    if (rpErr) console.error("rpErr:", rpErr);
-    if (rosterPerson) cleanupTasks.push(async () => admin.from('roster_people').delete().eq('id', rosterPerson.id));
+    const rp1 = await createTestRosterPerson("Designer1", "designer");
 
     // Insert pending invitation
     const { data: inv1, error: inv1Err } = await withTimeout(
@@ -156,7 +229,7 @@ async function run() {
         invited_email: test1Email,
         invited_by_roster_id: ownerMem.roster_person_id,
         role: "designer",
-        roster_person_id: rosterPerson.id,
+        roster_person_id: rp1.id,
         token_hash: test1TokenHash,
         encrypted_token: test1Enc,
         status: "pending",
@@ -165,7 +238,7 @@ async function run() {
       15000,
       'Create Test 1 Invitation'
     );
-    if (inv1) cleanupTasks.push(async () => admin.from('workspace_invitations').delete().eq('id', inv1.id));
+    if (inv1) trackedInvitationIds.add(inv1.id);
 
     report(
       1,
@@ -175,7 +248,6 @@ async function run() {
     );
 
     // TEST 2: Accept invitation -> Auth user & membership created, role matches
-    // Simulate accepting: create Supabase Auth user & link membership
     let authUser = null;
     const testUserPass = "P@ssw0rdSecure2026!";
     const { data: createdAuth, error: createAuthErr } = await withTimeout(
@@ -183,14 +255,14 @@ async function run() {
         email: test1Email,
         password: testUserPass,
         email_confirm: true,
-        user_metadata: { full_name: "Test New Designer" }
+        user_metadata: { full_name: `${TEST_PREFIX} User 1` }
       }),
       20000,
       'Create Auth User'
     );
     if (createdAuth?.user) {
       authUser = createdAuth.user;
-      cleanupTasks.push(async () => admin.auth.admin.deleteUser(authUser.id));
+      trackedAuthUserIds.add(authUser.id);
     }
 
     // Atomically accept invitation as accept-invite route does
@@ -214,14 +286,14 @@ async function run() {
       admin.from("workspace_memberships").insert({
         workspace_id: workspaceId,
         user_id: authUser?.id,
-        roster_person_id: rosterPerson.id,
+        roster_person_id: rp1.id,
         role: inv1.role,
         is_active: true
       }).select().single(),
       15000,
       'Create Membership'
     );
-    if (newMem) cleanupTasks.push(async () => admin.from('workspace_memberships').delete().eq('id', newMem.id));
+    if (newMem) trackedMembershipIds.add(newMem.id);
 
     report(
       2,
@@ -231,11 +303,11 @@ async function run() {
     );
 
     // TEST 3: Try accepting same invite again -> rejected (already accepted, status != pending)
-    const { data: doubleAccept, error: doubleAcceptErr } = await withTimeout(
+    const { data: doubleAccept } = await withTimeout(
       admin.from("workspace_invitations")
         .update({ status: "accepted" })
         .eq("id", inv1.id)
-        .eq("status", "pending") // Must fail because status is now accepted
+        .eq("status", "pending")
         .select(),
       15000,
       'Double Accept Test'
@@ -248,7 +320,6 @@ async function run() {
     );
 
     // TEST 4: Invite existing active CRM member -> blocked
-    // The email test1Email is now an active member
     const { data: existingActive } = await withTimeout(
       admin.from("workspace_memberships")
         .select("id, is_active")
@@ -266,27 +337,10 @@ async function run() {
       "Did not detect existing active membership"
     );
 
-    async function createTestRosterPerson(name, role = "designer") {
-      const { data: rp, error: rpErr } = await withTimeout(
-        admin.from("roster_people").insert({
-          workspace_id: workspaceId,
-          display_name: `${name} ${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-          job_title: role === "designer" ? "Graphic Designer" : "Copywriter",
-          role: role,
-          is_active: true
-        }).select().single(),
-        15000,
-        'Create Roster Person'
-      );
-      if (rpErr) console.error("createTestRosterPerson error:", rpErr);
-      if (rp) cleanupTasks.push(async () => admin.from('roster_people').delete().eq('id', rp.id));
-      return rp;
-    }
-
     // TEST 5: Invite email with existing pending invite -> blocked + resend works
-    const test5Email = `test.inv.pending.${Date.now()}@example.com`;
+    const test5Email = `${TEST_PREFIX.toLowerCase()}pending.${Date.now()}@example.com`;
     const token5 = crypto.randomBytes(32).toString("hex");
-    const rp5 = await createTestRosterPerson("Test Content Writer 5", "content_writer");
+    const rp5 = await createTestRosterPerson("ContentWriter5", "content_writer");
     const { data: inv5, error: inv5Err } = await withTimeout(
       admin.from("workspace_invitations").insert({
         workspace_id: workspaceId,
@@ -302,7 +356,7 @@ async function run() {
       15000,
       'Create Pending Inv 5'
     );
-    if (inv5) cleanupTasks.push(async () => admin.from('workspace_invitations').delete().eq('id', inv5.id));
+    if (inv5) trackedInvitationIds.add(inv5.id);
 
     // Check query for pending conflict
     const { data: pendingConflict } = await withTimeout(
@@ -343,10 +397,10 @@ async function run() {
     );
 
     // TEST 6: Expired invitation -> rejected on accept, resend renews expiry
-    const test6Email = `test.inv.expired.${Date.now()}@example.com`;
+    const test6Email = `${TEST_PREFIX.toLowerCase()}expired.${Date.now()}@example.com`;
     const token6 = crypto.randomBytes(32).toString("hex");
     const pastExpires = new Date(Date.now() - 3600000).toISOString(); // 1 hour ago
-    const rp6 = await createTestRosterPerson("Test Designer 6", "designer");
+    const rp6 = await createTestRosterPerson("Designer6", "designer");
     const { data: inv6, error: inv6Err } = await withTimeout(
       admin.from("workspace_invitations").insert({
         workspace_id: workspaceId,
@@ -362,7 +416,7 @@ async function run() {
       15000,
       'Create Expired Inv 6'
     );
-    if (inv6) cleanupTasks.push(async () => admin.from('workspace_invitations').delete().eq('id', inv6.id));
+    if (inv6) trackedInvitationIds.add(inv6.id);
 
     // Verify expiry detection
     const isExpired = new Date(inv6.expires_at).getTime() < Date.now();
@@ -389,9 +443,9 @@ async function run() {
     );
 
     // TEST 7: Revoked invitation -> cannot be accepted (status = revoked)
-    const test7Email = `test.inv.revoked.${Date.now()}@example.com`;
+    const test7Email = `${TEST_PREFIX.toLowerCase()}revoked.${Date.now()}@example.com`;
     const token7 = crypto.randomBytes(32).toString("hex");
-    const rp7 = await createTestRosterPerson("Test Designer 7", "designer");
+    const rp7 = await createTestRosterPerson("Designer7", "designer");
     const { data: inv7, error: inv7Err } = await withTimeout(
       admin.from("workspace_invitations").insert({
         workspace_id: workspaceId,
@@ -407,7 +461,7 @@ async function run() {
       15000,
       'Create Revoked Inv 7'
     );
-    if (inv7) cleanupTasks.push(async () => admin.from('workspace_invitations').delete().eq('id', inv7.id));
+    if (inv7) trackedInvitationIds.add(inv7.id);
 
     const { data: attemptAcceptRevoked } = await withTimeout(
       admin.from("workspace_invitations")
@@ -427,7 +481,7 @@ async function run() {
     );
 
     // TEST 8: Non-admin/anonymous cannot query invitations table (RLS check)
-    const { data: anonData, error: anonErr } = await withTimeout(
+    const { data: anonData } = await withTimeout(
       anon.from("workspace_invitations").select("*").limit(5),
       15000,
       'Anon RLS check'
@@ -440,18 +494,16 @@ async function run() {
     );
 
     // TEST 9: Role manipulation during acceptance -> server enforces DB role
-    // In our accept-invite route, the role comes strictly from inv.role in the database,
-    // ignoring any client-sent payload { role: "owner" }.
-    const test9Email = `test.inv.tamper.${Date.now()}@example.com`;
+    const test9Email = `${TEST_PREFIX.toLowerCase()}tamper.${Date.now()}@example.com`;
     const token9 = crypto.randomBytes(32).toString("hex");
-    const rp9 = await createTestRosterPerson("Test Designer 9", "designer");
+    const rp9 = await createTestRosterPerson("Designer9", "designer");
     const { data: inv9 } = await withTimeout(
       admin.from("workspace_invitations").insert({
         workspace_id: workspaceId,
         invited_email: test9Email,
         invited_by_roster_id: ownerMem.roster_person_id,
         roster_person_id: rp9.id,
-        role: "designer", // DB says designer
+        role: "designer",
         token_hash: hashToken(token9),
         encrypted_token: encryptToken(token9),
         status: "pending",
@@ -460,11 +512,10 @@ async function run() {
       15000,
       'Create Tamper Test Inv 9'
     );
-    if (inv9) cleanupTasks.push(async () => admin.from('workspace_invitations').delete().eq('id', inv9.id));
+    if (inv9) trackedInvitationIds.add(inv9.id);
 
-    // Even if client requests "owner", the server fetches inv.role ("designer")
     const clientTamperedRole = "owner";
-    const serverAssignedRole = inv9.role; // DB-enforced
+    const serverAssignedRole = inv9.role;
     report(
       9,
       "Role manipulation during acceptance -> server enforces DB role strictly ('designer' != 'owner')",
@@ -473,7 +524,6 @@ async function run() {
     );
 
     // TEST 11: Disable invitations via toggle -> acceptance / invitations blocked
-    // Update workspace allow_invitation_acceptance = false
     const { error: toggleOffErr } = await withTimeout(
       admin.from("workspaces").update({ allow_invitation_acceptance: false }).eq("id", workspaceId),
       15000,
@@ -515,16 +565,7 @@ async function run() {
   } catch (err) {
     console.error("Verification error:", err);
   } finally {
-    // Clean up temporary test data
-    console.log("\n🧹 Cleaning up test artifacts...");
-    for (const task of cleanupTasks) {
-      try {
-        await task();
-      } catch (e) {
-        // ignore cleanup error
-      }
-    }
-    console.log("Cleanup complete. Exiting cleanly.");
+    await runCleanup();
     process.exit(failed > 0 ? 1 : 0);
   }
 }

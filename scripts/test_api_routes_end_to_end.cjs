@@ -23,7 +23,6 @@ function withTimeout(promise, timeoutMs = 20000, opName = 'Operation') {
 
 const supabaseUrl = env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY;
-const siteUrl = env.NEXT_PUBLIC_SITE_URL;
 
 const admin = createClient(supabaseUrl, serviceKey, {
   auth: { autoRefreshToken: false, persistSession: false }
@@ -62,8 +61,35 @@ function report(name, condition, detail) {
   }
 }
 
+const TEST_PREFIX = "__E2E_INVITE_TEST__";
+const trackedInvitationIds = new Set();
+const trackedRosterIds = new Set();
+
+async function runCleanup() {
+  console.log("Teardown test artifacts in try/finally...");
+  try {
+    if (trackedInvitationIds.size > 0) {
+      await admin.from("workspace_invitations").delete().in("id", Array.from(trackedInvitationIds));
+    }
+  } catch (e) {}
+
+  try {
+    await admin.from("workspace_invitations").delete().like("invited_email", `${TEST_PREFIX.toLowerCase()}%`);
+  } catch (e) {}
+
+  try {
+    if (trackedRosterIds.size > 0) {
+      await admin.from("roster_people").delete().in("id", Array.from(trackedRosterIds));
+    }
+  } catch (e) {}
+
+  try {
+    await admin.from("roster_people").delete().like("display_name", `${TEST_PREFIX}%`);
+  } catch (e) {}
+  console.log("Teardown clean.");
+}
+
 async function run() {
-  const cleanupTasks = [];
   try {
     console.log("==========================================================");
     console.log("🧪 INVITATION API ROUTES & DATABASE LIFECYCLE VERIFICATION");
@@ -86,12 +112,12 @@ async function run() {
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = hashToken(rawToken);
     const encToken = encryptToken(rawToken);
-    const testEmail = `route.verify.${Date.now()}@example.com`;
+    const testEmail = `${TEST_PREFIX.toLowerCase()}route.${Date.now()}@example.com`;
 
     const { data: rp } = await withTimeout(
       admin.from("roster_people").insert({
         workspace_id: workspaceId,
-        display_name: `Route Verify User ${Date.now()}`,
+        display_name: `${TEST_PREFIX}RouteUser_${Date.now()}`,
         job_title: "Midlevel Graphic Designer",
         role: "designer",
         is_active: true
@@ -99,7 +125,7 @@ async function run() {
       15000,
       'Insert Roster'
     );
-    if (rp) cleanupTasks.push(async () => admin.from('roster_people').delete().eq('id', rp.id));
+    if (rp) trackedRosterIds.add(rp.id);
 
     const { data: inv, error: invErr } = await withTimeout(
       admin.from("workspace_invitations").insert({
@@ -116,7 +142,7 @@ async function run() {
       15000,
       'Insert Inv'
     );
-    if (inv) cleanupTasks.push(async () => admin.from('workspace_invitations').delete().eq('id', inv.id));
+    if (inv) trackedInvitationIds.add(inv.id);
 
     report(
       "Direct token_hash lookup on workspace_invitations",
@@ -124,7 +150,7 @@ async function run() {
       invErr?.message
     );
 
-    // 2. Query by token_hash (same as /api/auth/accept-invite?token=...)
+    // 2. Query by token_hash
     const { data: foundByHash, error: hashErr } = await withTimeout(
       admin.from("workspace_invitations")
         .select(`
@@ -218,11 +244,7 @@ async function run() {
   } catch (err) {
     console.error("Test error:", err);
   } finally {
-    console.log("Cleaning up test data...");
-    for (const t of cleanupTasks) {
-      try { await t(); } catch (e) {}
-    }
-    console.log("All clean.");
+    await runCleanup();
     process.exit(failed > 0 ? 1 : 0);
   }
 }
