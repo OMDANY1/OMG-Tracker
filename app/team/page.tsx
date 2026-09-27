@@ -108,7 +108,7 @@ const AVAILABLE_ROLES = [
   { value: "strategist", label: "استراتيجي (Strategist)" },
   { value: "content_writer", label: "كاتب محتوى (Content Writer)" },
   { value: "video_editor", label: "مونتير (Video Editor)" },
-  { value: "business_owner_viewer", label: "مالك الشركة (مشاهد فقط)" },
+  { value: "business_owner_viewer", label: "مراقب مستقل (مشاهد فقط)" },
 ];
 
 function getDefaultScopeForRole(role: string): AccessScope {

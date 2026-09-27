@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
             .eq("is_active", true)
             .maybeSingle();
 
-          if (membership?.role === "owner") {
+          if (membership?.role === "owner" || membership?.role === "company_owner") {
             isAuthorized = true;
           }
         }

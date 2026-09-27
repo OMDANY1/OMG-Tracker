@@ -83,6 +83,7 @@ export function AddClientModal({
   const reviewerCandidates = allTeamMembers.filter(
     (m) =>
       m.role === "owner" ||
+      m.role === "company_owner" ||
       m.role === "manager" ||
       m.role === "senior_reviewer" ||
       m.role === "strategy_lead" ||

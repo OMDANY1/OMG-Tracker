@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
         if (member) {
           workspaceId = member.workspace_id;
           userRosterId = member.roster_person_id;
-          if (member.role === "owner") {
+          if (member.role === "owner" || member.role === "company_owner") {
             isOwner = true;
           }
         }

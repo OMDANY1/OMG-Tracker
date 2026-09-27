@@ -699,8 +699,8 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RosterRole, RolePermissionConfig> =
     canManageWorkspace: false,
   },
   business_owner_viewer: {
-    label: "مالك الشركة (مشاهد فقط)",
-    description: "اطلاع وقراءة كاملة للعملاء والفرق والتقارير دون أي صلاحيات كتابة أو تصدير أو تعديل",
+    label: "مراقب مستقل (مشاهد فقط)",
+    description: "اطلاع وقراءة كاملة للمؤشرات والتقارير الرقابية دون أي صلاحيات كتابة أو تعديل أو تصدير",
     scope: "workspace",
     canViewData: true,
     canManageClients: false,

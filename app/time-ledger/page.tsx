@@ -21,6 +21,8 @@ import { formatCairoDateTime } from "@/lib/timezone";
 
 export default function TimeLedgerPage() {
   const [entries, setEntries] = useState<any[]>([]);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [selectedMonth, setSelectedMonth] = useState("2026-09");
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPerson, setSelectedPerson] = useState("");
@@ -31,65 +33,20 @@ export default function TimeLedgerPage() {
   const [voidReason, setVoidReason] = useState("");
   const [isVoiding, setIsVoiding] = useState(false);
 
-  const fetchLedger = async () => {
+  const fetchLedger = async (month = selectedMonth) => {
     setLoading(true);
     try {
-      // Fetch report or direct time entries
-      const res = await fetch("/api/reports/monthly?monthKey=2026-09");
+      const res = await fetch(`/api/timer/ledger?monthKey=${month}`);
       if (res.ok) {
-        // Fallback or demo sample if DB empty
+        const data = await res.json();
+        setEntries(data.entries || []);
+        if (data.teamMembers) {
+          setTeamMembers(data.teamMembers);
+        }
       }
     } catch (e) {
-      console.error(e);
+      console.error("Failed to load time ledger:", e);
     } finally {
-      // Mock seed preview records for ledger display if empty
-      setEntries([
-        {
-          id: "entry-01",
-          started_at: "2026-09-06T08:00:00Z", // 11:00 Cairo
-          ended_at: "2026-09-06T09:00:00Z",   // 12:00 Cairo
-          person: { display_name: "سارة" },
-          task: {
-            title: "Post 01",
-            deliverable_number: "01",
-            campaign: { title: "حملة سبتمبر", client: { name: "wael samir" } },
-          },
-          category: "initial_design",
-          entry_source: "timer",
-          is_voided: false,
-          note: "جلسة العمل المعتمدة لاختبار القبول (60 دقيقة)",
-        },
-        {
-          id: "entry-02",
-          started_at: "2026-09-06T06:00:00Z", // 09:00 Cairo
-          ended_at: "2026-09-06T07:30:00Z",   // 10:30 Cairo
-          person: { display_name: "ندى" },
-          task: {
-            title: "Rebranding Concept",
-            deliverable_number: "01",
-            campaign: { title: "تطوير الهوية", client: { name: "masar" } },
-          },
-          category: "research_references",
-          entry_source: "timer",
-          is_voided: false,
-          note: "بحث مراجع الألوان والخطوط",
-        },
-        {
-          id: "entry-03",
-          started_at: "2026-09-06T09:00:00Z",
-          ended_at: "2026-09-06T10:00:00Z",
-          person: { display_name: "شهد" },
-          task: {
-            title: "Post 04 Revisions",
-            deliverable_number: "04",
-            campaign: { title: "سوشيال ميديا", client: { name: "nasef" } },
-          },
-          category: "internal_revision",
-          entry_source: "manual",
-          is_voided: false,
-          note: "تعديل النصوص بناءً على ملاحظات عماد",
-        },
-      ]);
       setLoading(false);
     }
   };
@@ -134,11 +91,14 @@ export default function TimeLedgerPage() {
   };
 
   const handleExportCsv = () => {
-    window.location.href = "/api/reports/export-pack?monthKey=2026-09";
+    window.location.href = `/api/reports/export-pack?monthKey=${selectedMonth}`;
   };
 
   const filteredEntries = entries.filter((e) => {
-    if (selectedPerson && e.person?.display_name !== selectedPerson) return false;
+    if (selectedPerson) {
+      const personName = e.person?.display_name || e.worker_name_snapshot;
+      if (personName !== selectedPerson) return false;
+    }
     if (selectedCategory && e.category !== selectedCategory) return false;
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
@@ -176,6 +136,21 @@ export default function TimeLedgerPage() {
           <span className="font-semibold text-slate-700">تصفية السجل:</span>
         </div>
 
+        {/* Month Selector */}
+        <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs">
+          <Calendar className="w-3.5 h-3.5 text-slate-400" />
+          <input
+            type="month"
+            value={selectedMonth}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSelectedMonth(val);
+              fetchLedger(val);
+            }}
+            className="border-0 bg-transparent text-slate-700 text-xs font-semibold focus:outline-none"
+          />
+        </div>
+
         <div className="relative flex-1 min-w-[200px]">
           <Search className="w-3.5 h-3.5 absolute right-3 top-2.5 text-slate-400" />
           <input
@@ -190,12 +165,12 @@ export default function TimeLedgerPage() {
         <select
           value={selectedPerson}
           onChange={(e) => setSelectedPerson(e.target.value)}
-          className="border border-slate-200 rounded-xl px-3 py-1.5 text-xs bg-white text-slate-700"
+          className="border border-slate-200 rounded-xl px-3 py-1.5 text-xs bg-white text-slate-700 font-medium"
         >
-          <option value="">جميع المصممين</option>
-          {["ندى", "عماد", "سارة", "آلاء", "شهد", "آية"].map((p) => (
-            <option key={p} value={p}>
-              {p}
+          <option value="">جميع أعضاء الفريق ({teamMembers.length})</option>
+          {teamMembers.map((p: any) => (
+            <option key={p.id} value={p.display_name}>
+              {p.display_name}
             </option>
           ))}
         </select>
@@ -203,7 +178,7 @@ export default function TimeLedgerPage() {
         <select
           value={selectedCategory}
           onChange={(e) => setSelectedCategory(e.target.value)}
-          className="border border-slate-200 rounded-xl px-3 py-1.5 text-xs bg-white text-slate-700"
+          className="border border-slate-200 rounded-xl px-3 py-1.5 text-xs bg-white text-slate-700 font-medium"
         >
           <option value="">جميع التصنيفات</option>
           {Object.entries(TIME_CATEGORY_LABELS).map(([cat, label]) => (
@@ -220,7 +195,7 @@ export default function TimeLedgerPage() {
           <table className="w-full text-xs text-right divide-y divide-slate-100">
             <thead className="bg-slate-50 text-slate-600 font-bold">
               <tr>
-                <th className="px-4 py-3">المصمم</th>
+                <th className="px-4 py-3">العضو / المصمم</th>
                 <th className="px-4 py-3">العميل</th>
                 <th className="px-4 py-3">الكامبين والمهمة</th>
                 <th className="px-4 py-3">البداية (القاهرة)</th>
@@ -233,65 +208,94 @@ export default function TimeLedgerPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredEntries.map((entry) => {
-                const durationMins = entry.ended_at
-                  ? Math.round((new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()) / 60000)
-                  : 0;
-
-                return (
-                  <tr
-                    key={entry.id}
-                    className={cn(
-                      "hover:bg-slate-50/80 transition-colors",
-                      entry.is_voided && "bg-rose-50/40 text-slate-400 line-through"
-                    )}
-                  >
-                    <td className="px-4 py-3 font-bold text-slate-900">
-                      {entry.person?.display_name}
-                    </td>
-                    <td className="px-4 py-3 font-medium text-slate-700">
-                      {entry.task?.campaign?.client?.name}
-                    </td>
-                    <td className="px-4 py-3 text-slate-800">
-                      <div>{entry.task?.title}</div>
-                      <div className="text-[10px] text-slate-400">
-                        {entry.task?.campaign?.title} (#{entry.task?.deliverable_number})
+              {loading ? (
+                <tr>
+                  <td colSpan={10} className="py-16 text-center text-slate-400">
+                    <div className="flex items-center justify-center gap-2">
+                      <Clock className="w-4 h-4 animate-spin text-sky-600" />
+                      <span>جاري تحميل سجل الجلسات المعتمدة...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : filteredEntries.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="py-16 text-center">
+                    <div className="space-y-3 max-w-sm mx-auto">
+                      <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                        <Clock className="w-6 h-6" />
                       </div>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-slate-600">
-                      {formatCairoDateTime(entry.started_at)}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-slate-600">
-                      {entry.ended_at ? formatCairoDateTime(entry.ended_at) : "قيد التشغيل"}
-                    </td>
-                    <td className="px-4 py-3 font-bold font-mono text-emerald-700">
-                      {entry.ended_at ? `${durationMins} دقيقة` : "—"}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="px-2 py-0.5 rounded bg-slate-100 font-semibold text-[10px] text-slate-700">
-                        {TIME_CATEGORY_LABELS[entry.category as keyof typeof TIME_CATEGORY_LABELS] || entry.category}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-slate-500">
-                      {entry.entry_source === "timer" ? "عداد تلقائي" : "تسجيل يدوي"}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600 max-w-xs truncate">
-                      {entry.note || "—"}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      {!entry.is_voided && (
-                        <button
-                          onClick={() => setVoidingEntry(entry)}
-                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                          title="إبطال الجلسة (Void with reason)"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                      <div className="text-sm font-bold text-slate-700">لا توجد جلسات مسجلة في هذا الشهر ({selectedMonth})</div>
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        سجل الوقت نظيف ومعتمد. تظهر هنا الجلسات الفعلية بمجرد تشغيل العداد من بطاقة المهمة أو إضافة وقت عمل يدوي.
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                filteredEntries.map((entry) => {
+                  const durationMins = entry.duration_seconds
+                    ? Math.round(entry.duration_seconds / 60)
+                    : entry.ended_at
+                    ? Math.round((new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()) / 60000)
+                    : 0;
+
+                  return (
+                    <tr
+                      key={entry.id}
+                      className={cn(
+                        "hover:bg-slate-50/80 transition-colors",
+                        entry.is_voided && "bg-rose-50/40 text-slate-400 line-through"
                       )}
-                    </td>
-                  </tr>
-                );
-              })}
+                    >
+                      <td className="px-4 py-3 font-bold text-slate-900">
+                        {entry.person?.display_name || entry.worker_name_snapshot || "غير محدد"}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-700">
+                        {entry.task?.campaign?.client?.name || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-slate-800">
+                        <div>{entry.task?.title || "جلسة عامة"}</div>
+                        {entry.task?.campaign?.title && (
+                          <div className="text-[10px] text-slate-400">
+                            {entry.task?.campaign?.title} (#{entry.task?.deliverable_number || "—"})
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-slate-600">
+                        {formatCairoDateTime(entry.started_at)}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-slate-600">
+                        {entry.ended_at ? formatCairoDateTime(entry.ended_at) : "قيد التشغيل"}
+                      </td>
+                      <td className="px-4 py-3 font-bold font-mono text-emerald-700">
+                        {entry.ended_at ? `${durationMins} دقيقة` : "—"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="px-2 py-0.5 rounded bg-slate-100 font-semibold text-[10px] text-slate-700">
+                          {TIME_CATEGORY_LABELS[entry.category as keyof typeof TIME_CATEGORY_LABELS] || entry.category}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-500">
+                        {entry.entry_source === "timer" || entry.source === "timer" ? "عداد تلقائي" : "تسجيل يدوي"}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600 max-w-xs truncate">
+                        {entry.note || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {!entry.is_voided && (
+                          <button
+                            onClick={() => setVoidingEntry(entry)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                            title="إبطال الجلسة (Void with reason)"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>

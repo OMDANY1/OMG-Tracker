@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       settings,
-      isOwner: membership.role === "owner",
+      isOwner: membership.role === "owner" || membership.role === "company_owner",
     });
   } catch (err: any) {
     console.error("Error in GET /api/workspace/deadline-settings:", err);

@@ -20,7 +20,7 @@ export async function GET(
       return NextResponse.json({ error: "معرف العضو مطلوب." }, { status: 400 });
     }
 
-    // Call get_member_delete_impact RPC
+    // Call get_member_delete_impact (supersedes get_member_deactivation_impact with company_owner support) RPC
     const { data: impact, error: rpcErr } = await admin.rpc("get_member_delete_impact", {
       p_workspace_id: membership.workspaceId,
       p_roster_person_id: rosterPersonId,

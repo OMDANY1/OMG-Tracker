@@ -60,6 +60,11 @@ export default function OperationsHubPage() {
   const [error, setError] = useState<string | null>(null);
   const [isOwner, setIsOwner] = useState(true);
 
+  // Dynamic system counts
+  const [clientsCount, setClientsCount] = useState<number>(0);
+  const [tasksCount, setTasksCount] = useState<number>(0);
+  const [dbConnected, setDbConnected] = useState<boolean>(true);
+
   // Queue state
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [queueCounts, setQueueCounts] = useState({
@@ -84,8 +89,13 @@ export default function OperationsHubPage() {
     setError(null);
 
     try {
-      // 1. Fetch AI Jobs Queue
-      const jobsRes = await fetch("/api/ai/jobs?limit=15");
+      const [jobsRes, workloadRes, clientsRes, tasksRes] = await Promise.all([
+        fetch("/api/ai/jobs?limit=15"),
+        fetch("/api/team/workload"),
+        fetch("/api/clients"),
+        fetch("/api/tasks"),
+      ]);
+
       if (jobsRes.status === 403) {
         setIsOwner(false);
         setLoading(false);
@@ -97,7 +107,6 @@ export default function OperationsHubPage() {
         const rawJobs: JobItem[] = jobsData.jobs || [];
         setJobs(rawJobs);
 
-        // Calculate counts
         const counts = { pending: 0, processing: 0, waiting_for_retry: 0, completed: 0, failed: 0 };
         rawJobs.forEach((j) => {
           if (counts[j.status] !== undefined) {
@@ -107,8 +116,6 @@ export default function OperationsHubPage() {
         setQueueCounts(counts);
       }
 
-      // 2. Fetch Team Workload
-      const workloadRes = await fetch("/api/team/workload");
       if (workloadRes.ok) {
         const wlData = await workloadRes.json();
         setWorkloadMembers(wlData.members || []);
@@ -116,8 +123,21 @@ export default function OperationsHubPage() {
           setInvitationsPaused(wlData.invitationsPaused);
         }
       }
+
+      if (clientsRes.ok) {
+        const cData = await clientsRes.json();
+        setClientsCount(cData.clients?.length || 0);
+      }
+
+      if (tasksRes.ok) {
+        const tData = await tasksRes.json();
+        setTasksCount(tData.tasks?.length || 0);
+      }
+
+      setDbConnected(jobsRes.ok && clientsRes.ok);
     } catch (err: any) {
       setError(err.message || "فشل تحميل بيانات العمليات.");
+      setDbConnected(false);
     } finally {
       setLoading(false);
     }
@@ -168,16 +188,16 @@ export default function OperationsHubPage() {
   if (!isOwner) {
     return (
       <div className="py-24 text-center space-y-4 text-right max-w-md mx-auto" dir="rtl">
-        <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
+        <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600 mx-auto">
           <Lock className="w-8 h-8" />
         </div>
-        <h2 className="text-xl font-bold text-white">صلاحيات مالك الايجنسي مطلوبة</h2>
-        <p className="text-xs text-zinc-400">
-          هذه الصفحة مخصصة لمالك مساحة العمل (Owner) لمراقبة البنية التحتية، طوابير المعالجة، وسجلات الأمان.
+        <h2 className="text-xl font-bold text-slate-900">صلاحيات إدارة مساحة العمل مطلوبة</h2>
+        <p className="text-xs text-slate-500">
+          هذه الصفحة مخصصة لمالك الشركة والمدير العام لمراقبة البنية التحتية، طوابير المعالجة، وسجلات الأمان.
         </p>
         <Link
           href="/"
-          className="inline-block px-5 py-2.5 rounded-xl bg-sky-600 text-white font-semibold text-xs"
+          className="inline-block px-5 py-2.5 rounded-xl bg-sky-600 text-white font-semibold text-xs hover:bg-sky-700 transition-all shadow-xs"
         >
           العودة للرئيسية
         </Link>
@@ -188,18 +208,18 @@ export default function OperationsHubPage() {
   return (
     <div className="space-y-8 text-right max-w-7xl mx-auto pb-16" dir="rtl">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800 pb-5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
-          <div className="flex items-center gap-2 text-xs text-sky-400 font-semibold mb-1">
+          <div className="flex items-center gap-2 text-xs text-sky-600 font-semibold mb-1">
             <span>مركز القيادة والعمليات</span>
             <span>•</span>
             <span>OMG Operations Hub</span>
           </div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Activity className="w-6 h-6 text-sky-400" />
+          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <Activity className="w-6 h-6 text-sky-600" />
             مركز العمليات وإدارة الإنتاج الإبداعي
           </h1>
-          <p className="text-xs text-zinc-400 mt-1">
+          <p className="text-xs text-slate-500 mt-1">
             مراقبة طابور معالجة الذكاء الاصطناعي، ضغط العمل ومواعيد التسليم، وصحة البنية التحتية للايجنسي.
           </p>
         </div>
@@ -208,7 +228,7 @@ export default function OperationsHubPage() {
           <button
             onClick={() => fetchOperationsData()}
             disabled={loading}
-            className="p-2.5 rounded-xl border border-zinc-700 bg-zinc-800/80 text-zinc-300 hover:text-white hover:bg-zinc-700 transition-all text-xs flex items-center gap-1.5"
+            className="p-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-all text-xs flex items-center gap-1.5 shadow-xs"
             title="تحديث البيانات"
           >
             <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
@@ -217,30 +237,30 @@ export default function OperationsHubPage() {
 
           <Link
             href="/operations/audit"
-            className="px-4 py-2.5 rounded-xl bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-white font-semibold text-xs transition-all flex items-center gap-2"
+            className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs transition-all flex items-center gap-2 shadow-xs"
           >
-            <ShieldCheck className="w-4 h-4 text-teal-400" />
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
             <span>سجل التدقيق والأمان</span>
           </Link>
         </div>
       </div>
 
       {/* Security & Invitations Paused Banner */}
-      <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 flex items-start justify-between gap-4 text-xs">
+      <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 flex items-start justify-between gap-4 text-xs">
         <div className="flex items-start gap-3">
-          <ShieldCheck className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <ShieldCheck className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <p className="font-bold text-amber-200">
+            <p className="font-bold text-amber-900">
               نظام الحماية والأمان النشط: إرسال الدعوات الحقيقية متوقف مؤقتاً (Safety Paused)
             </p>
-            <p className="text-amber-300/80 leading-relaxed">
+            <p className="text-amber-700/90 leading-relaxed">
               وفقاً لسياسة الأمان الصارمة للايجنسي، تم تثبيت `invitations_paused = true` لحماية الفريق والعملاء. تعمل نافذة الدعوات بنظام المسودات الداخلية (Draft Mode) فقط بدون إرسال رسائل بريد إلكتروني حقيقية.
             </p>
           </div>
         </div>
         <Link
           href="/team"
-          className="shrink-0 px-3.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-semibold border border-amber-500/40 text-xs transition-all"
+          className="shrink-0 px-3.5 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-900 font-semibold border border-amber-300 text-xs transition-all shadow-xs"
         >
           مركز الدعوات
         </Link>
@@ -248,68 +268,76 @@ export default function OperationsHubPage() {
 
       {/* System Health KPIs Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="p-5 rounded-2xl bg-zinc-900/60 border border-zinc-800">
+        <div className="p-5 rounded-2xl bg-surface border border-slate-200/90 shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400">قاعدة البيانات (Supabase)</span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span className="text-xs font-semibold text-slate-500">قاعدة البيانات (Supabase)</span>
+            {dbConnected ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-rose-500" />
+            )}
           </div>
-          <p className="mt-2 text-xl font-bold text-white">متصل وآمن</p>
-          <p className="text-[11px] text-zinc-500 mt-1">28 عميل • 18 مهمة • 7 أعضاء</p>
+          <p className="mt-2 text-xl font-bold text-slate-900">
+            {dbConnected ? "متصل وآمن" : "فحص الاتصال"}
+          </p>
+          <p className="text-[11px] text-slate-500 mt-1 font-medium">
+            {clientsCount} عميل • {tasksCount} مهمة • {workloadMembers.length} أعضاء
+          </p>
         </div>
 
-        <div className="p-5 rounded-2xl bg-zinc-900/60 border border-zinc-800">
+        <div className="p-5 rounded-2xl bg-surface border border-slate-200/90 shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400">طابور AI Jobs</span>
-            <Cpu className="w-4 h-4 text-sky-400" />
+            <span className="text-xs font-semibold text-slate-500">طابور AI Jobs</span>
+            <Cpu className="w-4 h-4 text-sky-600" />
           </div>
-          <p className="mt-2 text-xl font-bold text-white">{jobs.length} مهمة</p>
-          <p className="text-[11px] text-zinc-500 mt-1">
+          <p className="mt-2 text-xl font-bold text-slate-900">{jobs.length} مهمة</p>
+          <p className="text-[11px] text-slate-500 mt-1">
             {queueCounts.processing} قيد التنفيذ • {queueCounts.failed} فشل
           </p>
         </div>
 
-        <div className="p-5 rounded-2xl bg-zinc-900/60 border border-zinc-800">
+        <div className="p-5 rounded-2xl bg-surface border border-slate-200/90 shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400">فريق التصميم</span>
-            <Users className="w-4 h-4 text-purple-400" />
+            <span className="text-xs font-semibold text-slate-500">فريق العمل</span>
+            <Users className="w-4 h-4 text-purple-600" />
           </div>
-          <p className="mt-2 text-xl font-bold text-white">{workloadMembers.length} مصممين</p>
-          <p className="text-[11px] text-zinc-500 mt-1">
+          <p className="mt-2 text-xl font-bold text-slate-900">{workloadMembers.length} أعضاء</p>
+          <p className="text-[11px] text-slate-500 mt-1">
             توزيع الحمل ذكي مع مراعاة الصعوبة
           </p>
         </div>
 
-        <div className="p-5 rounded-2xl bg-zinc-900/60 border border-zinc-800">
+        <div className="p-5 rounded-2xl bg-surface border border-slate-200/90 shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400">محرك التحليل (Gemini)</span>
-            <Sparkles className="w-4 h-4 text-teal-400" />
+            <span className="text-xs font-semibold text-slate-500">محرك التحليل (Gemini)</span>
+            <Sparkles className="w-4 h-4 text-teal-600" />
           </div>
-          <p className="mt-2 text-xl font-bold text-white">Gemini 2.5 Flash</p>
-          <p className="text-[11px] text-zinc-500 mt-1">Worker غير متزامن + Backoff</p>
+          <p className="mt-2 text-xl font-bold text-slate-900">Gemini 2.5 Flash</p>
+          <p className="text-[11px] text-slate-500 mt-1">Worker غير متزامن + Backoff</p>
         </div>
       </div>
 
       {/* AI Jobs Queue Section */}
-      <div className="p-6 rounded-2xl bg-zinc-900/60 border border-zinc-800 space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-800/80 pb-4">
+      <div className="p-6 rounded-2xl bg-surface border border-slate-200/90 shadow-xs space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
           <div>
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <Cpu className="w-5 h-5 text-sky-400" />
+            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+              <Cpu className="w-5 h-5 text-sky-600" />
               طابور معالجة ملفات التقويم بالذكاء الاصطناعي (Durable Job Queue)
             </h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
+            <p className="text-xs text-slate-500 mt-0.5">
               يعمل في الخلفية بنظام الحجز الذري (Lease Locking) واستعادة الأعطال التلقائية.
             </p>
           </div>
 
           <div className="flex items-center gap-3">
             {workerMessage && (
-              <span className="text-xs text-emerald-400 font-medium">{workerMessage}</span>
+              <span className="text-xs text-emerald-700 font-medium">{workerMessage}</span>
             )}
             <button
               onClick={handleTriggerWorker}
               disabled={workerRunning}
-              className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs flex items-center gap-2 transition-all shadow-lg shadow-sky-600/20 disabled:opacity-50"
+              className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-semibold text-xs flex items-center gap-2 transition-all shadow-xs disabled:opacity-50"
             >
               <Play className={cn("w-3.5 h-3.5", workerRunning && "animate-spin")} />
               <span>{workerRunning ? "جاري تشغيل الـWorker..." : "تشغيل فوري للـWorker"}</span>
@@ -319,49 +347,49 @@ export default function OperationsHubPage() {
 
         {/* Queue Status Pills */}
         <div className="flex flex-wrap gap-2 text-xs">
-          <span className="px-3 py-1.5 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-300">
-            في الانتظار: <strong className="text-white">{queueCounts.pending}</strong>
+          <span className="px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-slate-700">
+            في الانتظار: <strong className="text-slate-900">{queueCounts.pending}</strong>
           </span>
-          <span className="px-3 py-1.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400">
-            قيد التحليل: <strong className="text-white">{queueCounts.processing}</strong>
+          <span className="px-3 py-1.5 rounded-xl bg-sky-50 border border-sky-200 text-sky-700">
+            قيد التحليل: <strong className="text-sky-900">{queueCounts.processing}</strong>
           </span>
-          <span className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
-            في انتظار الإعادة: <strong className="text-white">{queueCounts.waiting_for_retry}</strong>
+          <span className="px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-700">
+            في انتظار الإعادة: <strong className="text-amber-900">{queueCounts.waiting_for_retry}</strong>
           </span>
-          <span className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
-            اكتمل بنجاح: <strong className="text-white">{queueCounts.completed}</strong>
+          <span className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700">
+            اكتمل بنجاح: <strong className="text-emerald-900">{queueCounts.completed}</strong>
           </span>
-          <span className="px-3 py-1.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400">
-            فشل نهائي: <strong className="text-white">{queueCounts.failed}</strong>
+          <span className="px-3 py-1.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700">
+            فشل نهائي: <strong className="text-rose-900">{queueCounts.failed}</strong>
           </span>
         </div>
 
         {/* Jobs List Table */}
-        <div className="rounded-xl border border-zinc-800 overflow-hidden">
+        <div className="rounded-xl border border-slate-200 overflow-hidden">
           {jobs.length === 0 ? (
-            <div className="py-12 text-center text-zinc-500 text-xs">
+            <div className="py-12 text-center text-slate-400 text-xs">
               لا توجد عمليات مسجلة في طابور الذكاء الاصطناعي حالياً.
             </div>
           ) : (
-            <div className="divide-y divide-zinc-800">
+            <div className="divide-y divide-slate-100">
               {jobs.map((job) => {
                 const isFailed = job.status === "failed";
                 const isProcessing = job.status === "processing";
                 const isSuccess = job.status === "completed";
 
                 return (
-                  <div key={job.id} className="p-4 hover:bg-zinc-800/30 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+                  <div key={job.id} className="p-4 hover:bg-slate-50/60 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
                     <div className="flex items-center gap-3">
                       <span
                         className={cn(
                           "px-2.5 py-1 rounded-lg border font-semibold text-[11px]",
                           isSuccess
-                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                             : isFailed
-                            ? "bg-rose-500/10 text-rose-400 border-rose-500/30"
+                            ? "bg-rose-50 text-rose-700 border-rose-200"
                             : isProcessing
-                            ? "bg-sky-500/10 text-sky-400 border-sky-500/30 animate-pulse"
-                            : "bg-amber-500/10 text-amber-400 border-amber-500/30"
+                            ? "bg-sky-50 text-sky-700 border-sky-200 animate-pulse"
+                            : "bg-amber-50 text-amber-700 border-amber-200"
                         )}
                       >
                         {isSuccess
@@ -374,20 +402,20 @@ export default function OperationsHubPage() {
                       </span>
 
                       <div>
-                        <div className="flex items-center gap-2 font-medium text-white">
+                        <div className="flex items-center gap-2 font-medium text-slate-900">
                           <span>{job.campaign?.client?.name || "تقويم محتوى"}</span>
-                          <span className="text-zinc-500">•</span>
-                          <span className="text-zinc-400 font-mono text-[11px]">
+                          <span className="text-slate-400">•</span>
+                          <span className="text-slate-500 font-mono text-[11px]">
                             {job.campaign?.month_key || "N/A"}
                           </span>
                         </div>
-                        <p className="text-zinc-500 text-[11px] font-mono mt-0.5">
+                        <p className="text-slate-400 text-[11px] font-mono mt-0.5">
                           Job ID: {job.id} (المحاولة {job.attempt_count} من {job.max_attempts})
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-4 text-zinc-400">
+                    <div className="flex items-center gap-4 text-slate-500">
                       {job.processing_duration_ms && (
                         <span className="font-mono text-[11px]">
                           {(job.processing_duration_ms / 1000).toFixed(1)} ثانية
@@ -402,7 +430,7 @@ export default function OperationsHubPage() {
                         <button
                           onClick={() => handleRetryJob(job.id)}
                           disabled={retryingJobId === job.id}
-                          className="px-3 py-1 rounded-lg border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-semibold text-[11px] flex items-center gap-1.5 transition-all"
+                          className="px-3 py-1 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 font-semibold text-[11px] flex items-center gap-1.5 transition-all"
                         >
                           <RotateCcw className={cn("w-3 h-3", retryingJobId === job.id && "animate-spin")} />
                           <span>إعادة المحاولة</span>
@@ -418,13 +446,13 @@ export default function OperationsHubPage() {
       </div>
 
       {/* Designer Workload & Deadlines Radar Section */}
-      <div className="p-6 rounded-2xl bg-zinc-900/60 border border-zinc-800 space-y-5">
-        <div className="border-b border-zinc-800/80 pb-4">
-          <h2 className="text-base font-bold text-white flex items-center gap-2">
-            <Users className="w-5 h-5 text-purple-400" />
+      <div className="p-6 rounded-2xl bg-surface border border-slate-200/90 shadow-xs space-y-5">
+        <div className="border-b border-slate-100 pb-4">
+          <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+            <Users className="w-5 h-5 text-purple-600" />
             رادار مواعيد التسليم وتوزيع الحمل الإبداعي (Workload Radar)
           </h2>
-          <p className="text-xs text-zinc-400 mt-0.5">
+          <p className="text-xs text-slate-500 mt-0.5">
             توزيع متوازن للمصممين طبقاً لصعوبة الحسابات وتوقيت القاهرة، مع فصل مواعيد التصميم عن مواعيد النشر.
           </p>
         </div>
@@ -435,20 +463,20 @@ export default function OperationsHubPage() {
             const isUnder = m.status === "underutilized";
 
             return (
-              <div key={m.id} className="p-4 rounded-xl bg-zinc-800/40 border border-zinc-800 space-y-3">
+              <div key={m.id} className="p-4 rounded-xl bg-slate-50/50 border border-slate-200 space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h3 className="font-bold text-sm text-white">{m.displayName}</h3>
-                    <p className="text-[11px] text-zinc-400">{m.jobTitle}</p>
+                    <h3 className="font-bold text-sm text-slate-900">{m.displayName}</h3>
+                    <p className="text-[11px] text-slate-500">{m.jobTitle}</p>
                   </div>
                   <span
                     className={cn(
                       "px-2 py-0.5 rounded text-[10px] font-semibold border",
                       isOver
-                        ? "bg-rose-500/10 text-rose-400 border-rose-500/30"
+                        ? "bg-rose-50 text-rose-700 border-rose-200"
                         : isUnder
-                        ? "bg-sky-500/10 text-sky-400 border-sky-500/30"
-                        : "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                        ? "bg-sky-50 text-sky-700 border-sky-200"
+                        : "bg-emerald-50 text-emerald-700 border-emerald-200"
                     )}
                   >
                     {isOver ? "حمل مرتفع" : isUnder ? "سعة متاحة" : "متوازن"}
@@ -457,11 +485,11 @@ export default function OperationsHubPage() {
 
                 {/* Progress bar */}
                 <div>
-                  <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+                  <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
                     <span>نسبة التحميل:</span>
-                    <strong className="text-white font-mono">{m.loadRatio}%</strong>
+                    <strong className="text-slate-800 font-mono">{m.loadRatio}%</strong>
                   </div>
-                  <div className="w-full bg-zinc-700 h-1.5 rounded-full overflow-hidden">
+                  <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
                     <div
                       className={cn(
                         "h-full transition-all",
@@ -473,14 +501,14 @@ export default function OperationsHubPage() {
                 </div>
 
                 {/* Deadlines radar */}
-                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-zinc-800 text-[11px]">
-                  <div className="p-2 rounded-lg bg-zinc-900/60">
-                    <span className="text-zinc-500 block text-[10px]">تسليم خلال 7 أيام:</span>
-                    <strong className="text-amber-400 font-bold text-xs">{m.dueNext7Days} مهمة</strong>
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 text-[11px]">
+                  <div className="p-2 rounded-lg bg-white border border-slate-100">
+                    <span className="text-slate-500 block text-[10px]">تسليم خلال 7 أيام:</span>
+                    <strong className="text-amber-700 font-bold text-xs">{m.dueNext7Days} مهمة</strong>
                   </div>
-                  <div className="p-2 rounded-lg bg-zinc-900/60">
-                    <span className="text-zinc-500 block text-[10px]">تسليم خلال 14 يوم:</span>
-                    <strong className="text-zinc-300 font-bold text-xs">{m.dueNext14Days} مهمة</strong>
+                  <div className="p-2 rounded-lg bg-white border border-slate-100">
+                    <span className="text-slate-500 block text-[10px]">تسليم خلال 14 يوم:</span>
+                    <strong className="text-slate-700 font-bold text-xs">{m.dueNext14Days} مهمة</strong>
                   </div>
                 </div>
               </div>
@@ -493,14 +521,14 @@ export default function OperationsHubPage() {
       <DeadlineSettingsCard />
 
       {/* Agency Scale Blueprint Card */}
-      <div className="p-6 rounded-2xl bg-gradient-to-l from-sky-950/40 to-zinc-900/60 border border-sky-500/20 space-y-4">
+      <div className="p-6 rounded-2xl bg-sky-50/50 border border-sky-200 shadow-xs space-y-4">
         <div className="flex items-center justify-between">
           <div className="space-y-1">
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-sky-400" />
+            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-sky-600" />
               مخطط التوسع المؤسسي للايجنسي (Agency Scale Blueprint)
             </h2>
-            <p className="text-xs text-zinc-400">
+            <p className="text-xs text-slate-600">
               وثيقة التصميم الهندسي والمعايير التشغيلية للتوسع من 10 مصممين إلى 200 مصمم مع الحفاظ على الأمان والسرعة.
             </p>
           </div>
@@ -508,7 +536,7 @@ export default function OperationsHubPage() {
             href="https://github.com/OMDANY1/OMG-Tracker/blob/main/docs/AGENCY_SCALE_BLUEPRINT.md"
             target="_blank"
             rel="noreferrer"
-            className="px-4 py-2 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/30 font-semibold text-xs flex items-center gap-1.5 transition-all"
+            className="px-4 py-2 rounded-xl bg-white hover:bg-sky-50 text-sky-700 border border-sky-300 font-semibold text-xs flex items-center gap-1.5 transition-all shadow-xs"
           >
             <span>عرض الوثيقة الكاملة</span>
             <ExternalLink className="w-3.5 h-3.5" />
@@ -516,21 +544,21 @@ export default function OperationsHubPage() {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-          <div className="p-3 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-1">
-            <p className="font-bold text-white">1. الأمان والعزل التام</p>
-            <p className="text-zinc-400 text-[11px]">
+          <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-1 shadow-2xs">
+            <p className="font-bold text-slate-900">1. الأمان والعزل التام</p>
+            <p className="text-slate-600 text-[11px] leading-relaxed">
               Multi-Tenant RLS على مستوى الـDatabase يضمن عدم تسرب أي بيانات بين العملاء أو الموظفين.
             </p>
           </div>
-          <div className="p-3 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-1">
-            <p className="font-bold text-white">2. طابور خلفي مستقر</p>
-            <p className="text-zinc-400 text-[11px]">
+          <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-1 shadow-2xs">
+            <p className="font-bold text-slate-900">2. طابور خلفي مستقر</p>
+            <p className="text-slate-600 text-[11px] leading-relaxed">
               معالجة الـPDF في الخلفية عبر Worker مستقل يمنع Vercel Timeout مع استعادة تلقائية عند الأعطال.
             </p>
           </div>
-          <div className="p-3 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-1">
-            <p className="font-bold text-white">3. حماية المهام النشطة</p>
-            <p className="text-zinc-400 text-[11px]">
+          <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-1 shadow-2xs">
+            <p className="font-bold text-slate-900">3. حماية المهام النشطة</p>
+            <p className="text-slate-600 text-[11px] leading-relaxed">
               محرك Revisions ذري يمنع حذف أو الكتابة فوق أي مهمة بدأ المصمم العمل عليها.
             </p>
           </div>

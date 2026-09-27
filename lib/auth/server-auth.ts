@@ -26,6 +26,13 @@ export type AuthResult<T> =
   | { success: false; data?: never; errorResponse: NextResponse };
 
 /**
+ * Returns true if the role has full administrative authority (owner or company_owner).
+ */
+export function isFullAdminRole(role?: string | null): boolean {
+  return role === "owner" || role === "company_owner";
+}
+
+/**
  * Validates Same-Origin header for state-mutating requests (POST, PATCH, PUT, DELETE).
  */
 export function validateSameOrigin(req: NextRequest): boolean {

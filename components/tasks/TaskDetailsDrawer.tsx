@@ -563,7 +563,7 @@ export default function TaskDetailsDrawer({
     border: "border-slate-200",
   };
 
-  const isOwner = currentUser?.role === "owner";
+  const isOwner = currentUser?.role === "owner" || currentUser?.role === "company_owner";
   const isAssignee = currentUser?.rosterPersonId === task.primary_assignee_id;
   const isReviewer = currentUser?.rosterPersonId === task.reviewer_id;
   const isPendingReview = task.status === "internal_review";

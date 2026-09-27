@@ -64,41 +64,51 @@ export function PermissionsMatrixModal({ isOpen, onClose }: PermissionsMatrixMod
         </div>
 
         {/* Informational Guidance Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
           <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-xl space-y-1">
             <span className="font-bold text-purple-900 flex items-center gap-1.5">
               <Lock className="w-3.5 h-3.5 text-purple-700" />
-              مدير النظام (عماد)
+              مدير النظام (عماد) — كامل
             </span>
             <p className="text-purple-800 text-[11px] leading-relaxed">
-              إدارة كاملة للنظام والفريق والعملاء والمهام. محمي بقيد صارم يمنع تعطيل أو خفض رتبة آخر مدير عام نشط.
+              إدارة كاملة للمنظومة والعملاء والفرق والدعوات والإعدادات والتقارير والمهام.
+            </p>
+          </div>
+
+          <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl space-y-1">
+            <span className="font-bold text-sky-900 flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-sky-700" />
+              مالك الشركة (أحمد النحاس) — كامل
+            </span>
+            <p className="text-sky-800 text-[11px] leading-relaxed">
+              صلاحيات كاملة وشاملة للمنظومة والعمليات والعملاء والفرق والتقارير والتحكم الإداري.
+            </p>
+          </div>
+
+          <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-1">
+            <span className="font-bold text-indigo-900 flex items-center gap-1.5">
+              <FileSpreadsheet className="w-3.5 h-3.5 text-indigo-700" />
+              مدير التسويق (عطا)
+            </span>
+            <p className="text-indigo-800 text-[11px] leading-relaxed">
+              صلاحيات قراءة شاملة وتصدير التقارير وسجلات الوقت، دون صلاحية تعديل العملاء أو إسناد الفريق.
             </p>
           </div>
 
           <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl space-y-1">
             <span className="font-bold text-amber-900 flex items-center gap-1.5">
               <Eye className="w-3.5 h-3.5 text-amber-700" />
-              مالك الشركة (مشاهد فقط)
+              مراقب مستقل (مشاهد فقط)
             </span>
             <p className="text-amber-800 text-[11px] leading-relaxed">
-              قراءة واسعة وشاملة لكافة البيانات والتقارير. حظر كامل ومطلق لكافة عمليات الكتابة أو التعديل أو التصدير.
-            </p>
-          </div>
-
-          <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl space-y-1">
-            <span className="font-bold text-sky-900 flex items-center gap-1.5">
-              <FileSpreadsheet className="w-3.5 h-3.5 text-sky-700" />
-              مدير التسويق (عطا)
-            </span>
-            <p className="text-sky-800 text-[11px] leading-relaxed">
-              صلاحيات قراءة شاملة وتصدير التقارير وسجلات الوقت والتقييمات، دون صلاحية تعديل العملاء أو إسناد الفريق.
+              قراءة واسعة وشاملة للتقارير والبيانات دون أي صلاحية تعديل أو كتابة أو تصدير.
             </p>
           </div>
         </div>
 
         {/* Matrix Table */}
-        <div className="border border-slate-200 rounded-xl overflow-x-auto">
-          <table className="w-full text-right text-xs">
+        <div className="border border-slate-200 rounded-xl overflow-x-auto shadow-2xs">
+          <table className="w-full min-w-[920px] text-right text-xs">
             <thead className="bg-slate-50 text-slate-700 font-bold border-b border-slate-200">
               <tr>
                 <th className="p-3 whitespace-nowrap">الدور في النظام</th>

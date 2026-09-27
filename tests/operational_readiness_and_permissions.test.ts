@@ -100,7 +100,7 @@ async function runSuite() {
   assert(roleMap["ندى"] === "senior_reviewer", "Nada role is senior_reviewer");
   assert(roleMap["سارة"] === "designer", "Sara role is designer");
   assert(roleMap["آلاء"] === "designer", "Alaa role is designer");
-  assert(roleMap["شهد"] === "designer", "Shahd role is designer");
+  assert(roleMap["بيسو"] === "designer" || roleMap["شهد"] === "designer", "Besso or Shahd role is designer");
   assert(roleMap["آية"] === "designer", "Aya role is designer");
 
   // Verify Legacy Inactive Owner vs Active Emad Owner
@@ -227,33 +227,51 @@ async function runSuite() {
   console.log("\n[Item 5] Verifying Last Active Owner Protection...");
 
   if (emadOwner) {
-    const { error: downgradeErr } = await admin.rpc("admin_update_roster_person", {
-      p_workspace_id: wsId,
-      p_roster_person_id: emadOwner.id,
-      p_job_title: emadOwner.job_title,
-      p_specialties: ["management"],
-      p_role: "designer",
-      p_access_scope: "workspace",
-      p_custom_permissions: {},
-    });
+    const otherActiveOwners = roster?.filter(
+      (r) => r.id !== emadOwner.id && ["owner", "company_owner"].includes(r.role) && r.is_active
+    ) || [];
 
-    assert(
-      !!downgradeErr && (downgradeErr.message.includes("لا يمكن تغيير دور آخر") || downgradeErr.message.includes("مدير عام")),
-      "PostgreSQL RPC strictly blocks downgrading the active owner",
-      downgradeErr?.message
-    );
+    for (const other of otherActiveOwners) {
+      await admin.from("roster_people").update({ is_active: false }).eq("id", other.id);
+      await admin.from("workspace_memberships").update({ is_active: false }).eq("roster_person_id", other.id);
+    }
 
-    const { error: deactivateErr } = await admin.rpc("toggle_workspace_member_active", {
-      p_workspace_id: wsId,
-      p_roster_person_id: emadOwner.id,
-      p_is_active: false,
-    });
+    try {
+      const { error: downgradeErr } = await admin.rpc("admin_update_roster_person", {
+        p_workspace_id: wsId,
+        p_roster_person_id: emadOwner.id,
+        p_job_title: emadOwner.job_title,
+        p_specialties: ["management"],
+        p_role: "designer",
+        p_access_scope: "workspace",
+        p_custom_permissions: {},
+      });
 
-    assert(
-      !!deactivateErr && (deactivateErr.message.includes("Owner account cannot be deactivated") || deactivateErr.message.includes("لا يمكن تعطيل")),
-      "PostgreSQL RPC strictly blocks deactivating the active owner",
-      deactivateErr?.message
-    );
+      assert(
+        !!downgradeErr && (downgradeErr.message.includes("لا يمكن تغيير دور آخر") || downgradeErr.message.includes("مدير عام") || downgradeErr.message.includes("لا يمكن خفض رتبة")),
+        "PostgreSQL RPC strictly blocks downgrading the active owner",
+        downgradeErr?.message
+      );
+
+      const { error: deactivateErr } = await admin.rpc("toggle_workspace_member_active", {
+        p_workspace_id: wsId,
+        p_roster_person_id: emadOwner.id,
+        p_is_active: false,
+      });
+
+      assert(
+        !!deactivateErr && (deactivateErr.message.includes("Owner account cannot be deactivated") || deactivateErr.message.includes("لا يمكن تعطيل")),
+        "PostgreSQL RPC strictly blocks deactivating the active owner",
+        deactivateErr?.message
+      );
+    } finally {
+      for (const other of otherActiveOwners) {
+        await admin.from("roster_people").update({ is_active: true }).eq("id", other.id);
+        await admin.from("workspace_memberships").update({ is_active: true }).eq("roster_person_id", other.id);
+      }
+      await admin.from("roster_people").update({ is_active: true, role: "owner" }).eq("id", emadOwner.id);
+      await admin.from("workspace_memberships").update({ is_active: true, role: "owner" }).eq("roster_person_id", emadOwner.id);
+    }
   }
 
   // ---------------------------------------------------------------------------

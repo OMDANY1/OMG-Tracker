@@ -23,6 +23,8 @@ export async function GET(req: NextRequest) {
       rosterPersonId: membership.rosterPersonId,
       role: membership.role,
       displayName: membership.displayName,
+      accessScope: membership.accessScope,
+      customPermissions: membership.customPermissions,
     },
   });
 }

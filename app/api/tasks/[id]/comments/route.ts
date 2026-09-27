@@ -150,9 +150,10 @@ export async function PATCH(
       return NextResponse.json({ error: "بيانات غير صالحة لتحديث حالة التعليق." }, { status: 400 });
     }
 
-    // Only Owner, task assignee, or task reviewer can resolve/reopen comments
+    // Only Owner, Company Owner, task assignee, or task reviewer can resolve/reopen comments
     const canResolve =
       membership.role === "owner" ||
+      membership.role === "company_owner" ||
       task.primary_assignee_id === membership.rosterPersonId ||
       task.reviewer_id === membership.rosterPersonId;
 

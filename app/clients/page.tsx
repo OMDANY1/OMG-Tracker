@@ -24,6 +24,7 @@ import {
   Clock,
   Sparkles,
   Info,
+  AlertCircle,
 } from "lucide-react";
 import {
   CLIENT_DIFFICULTY_LABELS,
@@ -63,6 +64,7 @@ export default function ClientsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDifficulty, setSelectedDifficulty] = useState("");
   const [selectedMemberId, setSelectedMemberId] = useState("");
+  const [selectedState, setSelectedState] = useState<string>("all");
   const [videoFilter, setVideoFilter] = useState<string>("all"); // "all" | "needs_video_unassigned" | "assigned" | "not_needed"
 
   // Modals state
@@ -77,14 +79,18 @@ export default function ClientsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
-  const fetchClients = async () => {
-    setLoading(true);
-    setFetchError(null);
+  const fetchClients = async (isBackground = false) => {
+    if (!isBackground) {
+      setLoading(true);
+      setFetchError(null);
+    }
     try {
       const res = await fetch("/api/clients");
       const data = await res.json();
       if (!res.ok || data.error) {
-        setFetchError(data.error || `خطأ في الاتصال بقاعدة البيانات (كود ${res.status})`);
+        if (!isBackground) {
+          setFetchError(data.error || `خطأ في الاتصال بقاعدة البيانات (كود ${res.status})`);
+        }
         return;
       }
       setClients(data.clients || []);
@@ -97,10 +103,14 @@ export default function ClientsPage() {
       if (typeof data.isOwner === "boolean") setIsOwner(data.isOwner);
       if (typeof data.isViewer === "boolean") setIsViewer(data.isViewer);
     } catch (e: any) {
-      console.error(e);
-      setFetchError(e.message || "حدث خطأ غير متوقع أثناء الاتصال بالخادم");
+      console.error("Failed to load clients:", e);
+      if (!isBackground) {
+        setFetchError(e.message || "حدث خطأ غير متوقع أثناء الاتصال بالخادم");
+      }
     } finally {
-      setLoading(false);
+      if (!isBackground) {
+        setLoading(false);
+      }
     }
   };
 
@@ -108,10 +118,10 @@ export default function ClientsPage() {
     fetchClients();
   }, []);
 
-  // Realtime updates & sync
+  // Realtime updates & sync (background update without wipe or flash)
   useEffect(() => {
     const handleSync = () => {
-      fetchClients();
+      fetchClients(true);
     };
     window.addEventListener("clients_data_changed", handleSync);
     window.addEventListener("window_reconnected_sync", handleSync);
@@ -232,9 +242,12 @@ export default function ClientsPage() {
         }
       }
 
+      // Operational State filter (All, Active, Draft, Archived)
+      if (selectedState !== "all" && c.state !== selectedState) return false;
+
       return true;
     });
-  }, [clients, activeView, searchQuery, selectedDifficulty, selectedMemberId, videoFilter]);
+  }, [clients, activeView, searchQuery, selectedDifficulty, selectedMemberId, videoFilter, selectedState]);
 
   // Calculate open tasks on the currently editing client
   const clientOpenTasksCount = editingClient
@@ -349,7 +362,7 @@ export default function ClientsPage() {
             </button>
           )}
           <button
-            onClick={fetchClients}
+            onClick={() => fetchClients(false)}
             disabled={loading}
             className="p-2 border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 transition-colors"
             title="تحديث البيانات"
@@ -367,7 +380,7 @@ export default function ClientsPage() {
             <h4 className="font-bold text-sm">تعذر تحميل بيانات العملاء من قاعدة البيانات</h4>
             <p className="text-slate-600">{fetchError}</p>
             <button
-              onClick={fetchClients}
+              onClick={() => fetchClients(false)}
               className="mt-2 px-3 py-1.5 bg-rose-600 text-white rounded-lg font-bold text-xs hover:bg-rose-700"
             >
               إعادة محاولة الاتصال
@@ -872,6 +885,18 @@ export default function ClientsPage() {
           </select>
         )}
 
+        {/* Operational State Filter */}
+        <select
+          value={selectedState}
+          onChange={(e) => setSelectedState(e.target.value)}
+          className="border border-slate-200 rounded-xl px-3 py-1.5 text-xs bg-white text-slate-700 font-medium"
+        >
+          <option value="all">جميع الحالات التشغيلية ({clients.length})</option>
+          <option value="Active">نشط (Active)</option>
+          <option value="Draft">مسودة (Draft)</option>
+          <option value="Archived">مؤرشف (Archived)</option>
+        </select>
+
         {/* Counter of matching clients */}
         <div className="text-[11px] font-semibold text-slate-500 mr-auto">
           المطابق: <span className="text-sky-700 font-extrabold">{filteredClients.length}</span> من {clients.length}
@@ -879,7 +904,38 @@ export default function ClientsPage() {
       </div>
 
       {/* Clients Cards Grid */}
-      {clients.length === 0 ? (
+      {loading && clients.length === 0 ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="bg-surface rounded-2xl border border-slate-200 p-5 space-y-4 animate-pulse">
+              <div className="flex items-center justify-between">
+                <div className="h-5 w-28 bg-slate-200 rounded-lg" />
+                <div className="h-5 w-16 bg-slate-100 rounded-full" />
+              </div>
+              <div className="space-y-2">
+                <div className="h-3 w-3/4 bg-slate-100 rounded" />
+                <div className="h-3 w-1/2 bg-slate-100 rounded" />
+              </div>
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+                <div className="h-4 w-20 bg-slate-100 rounded" />
+                <div className="h-4 w-12 bg-slate-200 rounded" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : fetchError && clients.length === 0 ? (
+        <div className="p-8 text-center bg-rose-50/60 rounded-2xl border border-rose-200 space-y-3 max-w-md mx-auto my-6">
+          <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+          <h3 className="font-bold text-rose-900 text-sm">تعذر تحميل بيانات العملاء</h3>
+          <p className="text-xs text-rose-700 leading-relaxed">{fetchError}</p>
+          <button
+            onClick={() => fetchClients(false)}
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs"
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      ) : clients.length === 0 ? (
         <div className="p-12 sm:p-16 text-center bg-surface rounded-2xl border-2 border-dashed border-slate-200 space-y-4 max-w-xl mx-auto my-6">
           <div className="w-16 h-16 bg-sky-50 text-sky-600 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
             <Building2 className="w-8 h-8" />
@@ -1046,7 +1102,7 @@ export default function ClientsPage() {
                             ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
                             : "bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200"
                         )}
-                        title={isViewer ? "حساب مشاهد فقط" : isOwner ? "توزيع فريق العمل متعدد التخصصات" : "صلاحية حصرية للمدير العام"}
+                        title={isViewer ? "حساب مشاهد فقط" : isOwner ? "توزيع فريق العمل متعدد التخصصات" : "صلاحية حصرية لإدارة وملاك المنظومة"}
                       >
                         <Users className="w-3 h-3 text-sky-600" />
                         <span>توزيع فريق العميل</span>
@@ -1064,7 +1120,7 @@ export default function ClientsPage() {
                       <button
                         onClick={() => handleOpenReassignModal(client)}
                         className="w-full px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-xl font-medium flex items-center justify-center gap-1.5 transition-colors text-[10px]"
-                        title={isOwner ? "نقل المصمم المسؤول" : "صلاحية حصرية للمدير العام"}
+                        title={isOwner ? "نقل المصمم المسؤول" : "صلاحية حصرية لإدارة وملاك المنظومة"}
                       >
                         <ArrowRightLeft className="w-3 h-3 text-slate-500" />
                         <span>إعادة إسناد المصمم</span>
@@ -1301,7 +1357,7 @@ export default function ClientsPage() {
         client={teamModalClient}
         isOpen={!!teamModalClient}
         onClose={() => setTeamModalClient(null)}
-        onSaved={fetchClients}
+        onSaved={() => fetchClients(false)}
         allTeamMembers={allTeamMembers}
         strategists={strategists}
         writers={writers}
@@ -1315,7 +1371,7 @@ export default function ClientsPage() {
         client={briefModalClient}
         isOpen={!!briefModalClient}
         onClose={() => setBriefModalClient(null)}
-        onSaved={fetchClients}
+        onSaved={() => fetchClients(false)}
         isOwner={isOwner}
       />
 
@@ -1323,7 +1379,7 @@ export default function ClientsPage() {
       <AddClientModal
         isOpen={isAddClientModalOpen}
         onClose={() => setIsAddClientModalOpen(false)}
-        onSuccess={fetchClients}
+        onSuccess={() => fetchClients(false)}
         designers={designers}
         writers={writers}
         strategists={strategists}

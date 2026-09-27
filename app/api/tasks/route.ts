@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Filters (for management/owner or within user scope)
-  if (assigneeId && (membership.role === "owner" || membership.role === "manager" || assigneeId === membership.rosterPersonId)) {
+  if (assigneeId && (membership.role === "owner" || membership.role === "company_owner" || membership.role === "manager" || assigneeId === membership.rosterPersonId)) {
     query = query.eq("primary_assignee_id", assigneeId);
   }
   if (clientId) query = query.eq("client_id", clientId);

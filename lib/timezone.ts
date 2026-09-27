@@ -137,3 +137,19 @@ export function calculateSessionOverlapSeconds(
   }
   return 0;
 }
+
+/**
+ * Computes the UTC interval [startUtc, endUtc) for today (or a given date) in target timezone (Africa/Cairo)
+ */
+export function getCairoDayIntervalUtc(
+  referenceDate: Date = new Date(),
+  timeZone = DEFAULT_TIMEZONE
+): { startUtc: Date; endUtc: Date } {
+  const zonedNow = toZonedTime(referenceDate, timeZone);
+  const localStart = new Date(zonedNow.getFullYear(), zonedNow.getMonth(), zonedNow.getDate(), 0, 0, 0, 0);
+  const startUtc = fromZonedTime(localStart, timeZone);
+  const localEnd = new Date(zonedNow.getFullYear(), zonedNow.getMonth(), zonedNow.getDate() + 1, 0, 0, 0, 0);
+  const endUtc = fromZonedTime(localEnd, timeZone);
+  return { startUtc, endUtc };
+}
+

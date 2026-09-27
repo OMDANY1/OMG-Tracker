@@ -197,7 +197,7 @@ export async function GET(req: NextRequest) {
 
       const capRecord = capacityMap.get(person.id);
       const weeklyHours = capRecord?.weekly_hours_limit || 40;
-      const reservedHours = role === "owner" ? 15 : role === "senior_reviewer" ? 8 : 0;
+      const reservedHours = role === "owner" || role === "company_owner" ? 15 : role === "senior_reviewer" ? 8 : 0;
       const maxWeighted = capRecord?.max_weighted_load || 15.0;
 
       const loadRatio = Math.min(100, Math.round((totalWeightedLoad / maxWeighted) * 100));
@@ -208,8 +208,8 @@ export async function GET(req: NextRequest) {
 
       const userId = membershipUserMap.get(person.id);
       // Strictly verify if member has truly joined:
-      // Must have userId AND (be the active Owner OR have an accepted invitation)
-      const hasJoined = Boolean(userId && (role === "owner" || acceptedInvitesRosterSet.has(person.id)));
+      // Must have userId AND (be the active Owner/Company Owner OR have an accepted invitation)
+      const hasJoined = Boolean(userId && (role === "owner" || role === "company_owner" || acceptedInvitesRosterSet.has(person.id)));
 
       return {
         id: person.id,
@@ -237,7 +237,7 @@ export async function GET(req: NextRequest) {
           difficulty: c.difficulty || "Medium",
         })),
         notes:
-          role === "owner"
+          role === "owner" || role === "company_owner"
             ? "مالك الايجنسي والمدير الفني: مراجعة الحسابات والتوجيه الإبداعي"
             : role === "senior_reviewer"
             ? "مراجع أول: مراجعة تصاميم المصممين وتدقيق الجودة"

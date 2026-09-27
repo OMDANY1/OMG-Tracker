@@ -28,9 +28,10 @@ export default function OverviewPage() {
     async function fetchData() {
       setLoading(true);
       try {
-        const [tasksRes, clientsRes] = await Promise.all([
+        const [tasksRes, clientsRes, todayRes] = await Promise.all([
           fetch("/api/tasks"),
           fetch("/api/clients"),
+          fetch("/api/timer/today"),
         ]);
 
         if (tasksRes.ok) {
@@ -40,6 +41,10 @@ export default function OverviewPage() {
         if (clientsRes.ok) {
           const cData = await clientsRes.json();
           setClients(cData.clients || []);
+        }
+        if (todayRes.ok) {
+          const todayData = await todayRes.json();
+          setTodayWork(todayData.members || []);
         }
       } catch (err) {
         console.error(err);
@@ -62,7 +67,9 @@ export default function OverviewPage() {
   const hardClients = clients.filter((c) => c.difficulty === "Hard");
   const mediumClients = clients.filter((c) => c.difficulty === "Medium");
   const easyClients = clients.filter((c) => c.difficulty === "Easy");
-  const unassignedClients = clients.filter((c) => !c.owner_roster_id);
+  const unassignedClients = clients.filter(
+    (c) => !c.difficulty || !["Hard", "Medium", "Easy"].includes(c.difficulty)
+  );
 
   return (
     <div className="space-y-8">
@@ -71,7 +78,7 @@ export default function OverviewPage() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">نظرة عامة على الايجنسي</h1>
           <p className="text-sm text-slate-500 mt-1">
-            متابعة حية لتوزيع الحسابات الـ 28، الجلسات النشطة، وقائمة المراجعات الداخلية
+            متابعة حية لتوزيع الحسابات ({clients.length})، الجلسات النشطة، وقائمة المراجعات الداخلية
           </p>
         </div>
 
@@ -166,41 +173,64 @@ export default function OverviewPage() {
           </div>
 
           <div className="py-4">
-            {/* Team Members List */}
-            <div className="divide-y divide-slate-100">
-              {[
-                { name: "ندى", role: "Senior Graphic Designer", status: "متاح", hours: "3.5 س", task: "تصميم هوية مسار" },
-                { name: "عماد", role: "Art Director", status: "متاح", hours: "4.0 س", task: "مراجعة حملات الفئة Hard" },
-                { name: "سارة", role: "Midlevel Designer", status: "عداد العمل نشط الآن", isRunning: true, hours: "1.0 س", task: "Post 01 (Wael Samir)" },
-                { name: "آلاء", role: "Midlevel Designer", status: "متاح", hours: "2.0 س", task: "بوستات سوشيال Travia Care" },
-                { name: "شهد", role: "Midlevel Designer", status: "متاح", hours: "2.5 س", task: "تعديلات تصميمات Nasef" },
-                { name: "آية", role: "Junior Designer", status: "متاح", hours: "1.5 س", task: "تصميمات Rejuva الأولية" },
-              ].map((member, i) => (
-                <div key={i} className="py-3 flex items-center justify-between gap-3 text-xs">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-xl bg-slate-100 font-bold text-slate-700 flex items-center justify-center">
-                      {member.name.charAt(0)}
-                    </div>
-                    <div>
-                      <div className="font-bold text-slate-800 flex items-center gap-2">
-                        {member.name}
-                        {member.isRunning && (
-                          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full font-semibold">
-                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                            عداد العمل يعمل الآن
-                          </span>
-                        )}
+            {loading ? (
+              <div className="space-y-3 py-2">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="animate-pulse flex items-center justify-between py-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-xl bg-slate-200" />
+                      <div className="space-y-1.5">
+                        <div className="h-3 w-24 bg-slate-200 rounded" />
+                        <div className="h-2 w-32 bg-slate-100 rounded" />
                       </div>
-                      <div className="text-slate-400 text-[11px]">{member.task}</div>
+                    </div>
+                    <div className="h-4 w-12 bg-slate-100 rounded" />
+                  </div>
+                ))}
+              </div>
+            ) : todayWork.length === 0 ? (
+              <div className="py-8 text-center bg-slate-50/60 rounded-xl border border-dashed border-slate-200 space-y-2 my-2">
+                <div className="w-10 h-10 rounded-full bg-sky-50 text-sky-600 flex items-center justify-center mx-auto">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div className="text-xs font-bold text-slate-700">لا توجد جلسات عمل مسجلة اليوم حتى الآن</div>
+                <p className="text-[11px] text-slate-400 max-w-sm mx-auto leading-relaxed">
+                  تظهر جلسات العمل وساعات الإنتاج والعدادات النشطة هنا لحظياً بمجرد تشغيل العداد أو تسجيل جلسة فعلية بتوقيت القاهرة.
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {todayWork.map((member, i) => (
+                  <div key={member.personId || i} className="py-3 flex items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-xl bg-slate-100 font-bold text-slate-700 flex items-center justify-center">
+                        {member.name.charAt(0)}
+                      </div>
+                      <div>
+                        <div className="font-bold text-slate-800 flex items-center gap-2">
+                          {member.name}
+                          {member.isRunning && (
+                            <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full font-semibold">
+                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                              عداد العمل يعمل الآن
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-slate-400 text-[11px]">
+                          {member.taskTitle
+                            ? `${member.taskTitle}${member.clientName ? ` (${member.clientName})` : ""}`
+                            : member.jobTitle}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-left font-mono font-semibold text-slate-700">
+                      {member.formattedHours}
                     </div>
                   </div>
-
-                  <div className="text-left font-mono font-semibold text-slate-700">
-                    {member.hours}
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -210,7 +240,7 @@ export default function OverviewPage() {
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <h2 className="font-bold text-base text-slate-900 flex items-center gap-2">
                 <Building2 className="w-4 h-4 text-sky-600" />
-                تكوين الحسابات (28 عميل)
+                تكوين الحسابات ({clients.length} عميل)
               </h2>
               <Link
                 href="/clients"
@@ -227,7 +257,7 @@ export default function OverviewPage() {
                   <div className="text-xs font-bold text-rose-800">عملاء صعبين (Hard)</div>
                   <div className="text-[11px] text-rose-600 mt-0.5">تتطلب توجيه آرت دايركتور ومراجعة مكثفة</div>
                 </div>
-                <div className="text-xl font-bold text-rose-700">{hardClients.length || 4}</div>
+                <div className="text-xl font-bold text-rose-700">{hardClients.length}</div>
               </div>
 
               <div className="p-3 rounded-xl bg-blue-50/50 border border-blue-100 flex items-center justify-between">
@@ -235,7 +265,7 @@ export default function OverviewPage() {
                   <div className="text-xs font-bold text-blue-800">عملاء متوسطين (Medium)</div>
                   <div className="text-[11px] text-blue-600 mt-0.5">معدل عمل اعتيادي مع طلبات دورية</div>
                 </div>
-                <div className="text-xl font-bold text-blue-700">{mediumClients.length || 15}</div>
+                <div className="text-xl font-bold text-blue-700">{mediumClients.length}</div>
               </div>
 
               <div className="p-3 rounded-xl bg-emerald-50/50 border border-emerald-100 flex items-center justify-between">
@@ -243,21 +273,21 @@ export default function OverviewPage() {
                   <div className="text-xs font-bold text-emerald-800">عملاء سهلين (Easy)</div>
                   <div className="text-[11px] text-emerald-600 mt-0.5">مهام مباشرة مناسبة لمصممي الفريق</div>
                 </div>
-                <div className="text-xl font-bold text-emerald-700">{easyClients.length || 8}</div>
+                <div className="text-xl font-bold text-emerald-700">{easyClients.length}</div>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
                 <div>
-                  <div className="text-xs font-bold text-slate-800">حسابات لم تبدأ بعد (Zanzi)</div>
-                  <div className="text-[11px] text-slate-500 mt-0.5">غير مسند وصعوبة غير محددة بعد</div>
+                  <div className="text-xs font-bold text-slate-800">حسابات غير مصنفة الصعوبة</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">عملاء مسجلون بانتظار تحديد مستوى الصعوبة</div>
                 </div>
-                <div className="text-xl font-bold text-slate-700">{unassignedClients.length || 1}</div>
+                <div className="text-xl font-bold text-slate-700">{unassignedClients.length}</div>
               </div>
             </div>
           </div>
 
           <div className="pt-4 border-t border-slate-100 text-xs text-slate-500">
-            تم تخصيص الحسابات بدقة: ندى (5)، عماد (3)، سارة (5)، آلاء (5)، شهد (5)، آية (4).
+            إجمالي الحسابات المسجلة: {clients.length} عميل في قاعدة البيانات.
           </div>
         </div>
       </div>
