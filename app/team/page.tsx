@@ -100,6 +100,7 @@ const AVAILABLE_SPECIALTIES = [
 ];
 
 const AVAILABLE_ROLES = [
+  { value: "company_owner", label: "مالك الشركة — صلاحيات كاملة" },
   { value: "designer", label: "مصمم (Designer)" },
   { value: "senior_reviewer", label: "مراجع أول (Senior Reviewer)" },
   { value: "marketing_director", label: "مدير تسويق (Marketing Director)" },
@@ -111,7 +112,7 @@ const AVAILABLE_ROLES = [
 ];
 
 function getDefaultScopeForRole(role: string): AccessScope {
-  if (role === "owner" || role === "manager" || role === "marketing_director" || role === "business_owner_viewer") {
+  if (role === "owner" || role === "company_owner" || role === "manager" || role === "marketing_director" || role === "business_owner_viewer") {
     return "workspace";
   }
   if (role === "strategy_lead" || role === "senior_reviewer") {
@@ -124,7 +125,7 @@ function getDefaultScopeForRole(role: string): AccessScope {
 }
 
 function getMemberStatus(member: WorkloadMember, invitations: InvitationRecord[]) {
-  const isOwner = member.role === "owner" || member.displayName.includes("عماد");
+  const isOwner = member.role === "owner" || member.role === "company_owner" || member.displayName.includes("عماد") || member.displayName.includes("نحاس");
   if (isOwner) {
     return {
       key: "active" as const,
@@ -255,6 +256,14 @@ export default function TeamPage() {
   const [confirmingDeactivate, setConfirmingDeactivate] = useState(false);
   const [deactivationError, setDeactivationError] = useState<string | null>(null);
 
+  // Hard Delete Modal State
+  const [deletingMember, setDeletingMember] = useState<WorkloadMember | null>(null);
+  const [deleteImpact, setDeleteImpact] = useState<any | null>(null);
+  const [loadingDeleteImpact, setLoadingDeleteImpact] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [reassignTargetId, setReassignTargetId] = useState<string>("");
+
   // Invite Modal State
   const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
   const [inviteMode, setInviteMode] = useState<"new_user" | "existing_roster">("new_user");
@@ -309,17 +318,19 @@ export default function TeamPage() {
     fetchTeamData();
   }, []);
 
-  // Listen for persona changes
+  // Realtime updates & sync
   useEffect(() => {
-    const handlePersonaChange = (e: any) => {
-      if (e.detail?.role === "business_owner_viewer") {
-        setIsViewer(true);
-      } else if (e.detail) {
-        setIsViewer(false);
-      }
+    const handleSync = () => {
+      fetchTeamData();
     };
-    window.addEventListener("persona_changed", handlePersonaChange);
-    return () => window.removeEventListener("persona_changed", handlePersonaChange);
+    window.addEventListener("team_data_changed", handleSync);
+    window.addEventListener("membership_data_changed", handleSync);
+    window.addEventListener("window_reconnected_sync", handleSync);
+    return () => {
+      window.removeEventListener("team_data_changed", handleSync);
+      window.removeEventListener("membership_data_changed", handleSync);
+      window.removeEventListener("window_reconnected_sync", handleSync);
+    };
   }, []);
 
   // Role change handler for adding member
@@ -524,6 +535,71 @@ export default function TeamPage() {
       setDeactivationError(err.message || "حدث خطأ أثناء تعطيل العضو.");
     } finally {
       setConfirmingDeactivate(false);
+    }
+  };
+
+  // Handlers for safe permanent hard deletion
+  const handleOpenHardDelete = async (member: WorkloadMember) => {
+    if (member.role === "owner" || member.role === "company_owner") {
+      alert("لا يمكن حذف حساب مالك مساحة العمل.");
+      return;
+    }
+
+    setDeletingMember(member);
+    setLoadingDeleteImpact(true);
+    setDeleteImpact(null);
+    setDeleteError(null);
+    setReassignTargetId("");
+
+    try {
+      const res = await fetch(`/api/team/members/${member.id}/impact`);
+      const data = await res.json();
+      if (res.ok && data.impact) {
+        setDeleteImpact(data.impact);
+      } else {
+        setDeleteError(data.error || "تعذر قراءة أثر الحذف.");
+      }
+    } catch (err: any) {
+      setDeleteError(err.message || "حدث خطأ أثناء الاتصال.");
+    } finally {
+      setLoadingDeleteImpact(false);
+    }
+  };
+
+  const handleConfirmHardDelete = async () => {
+    if (!deletingMember) return;
+
+    if (deleteImpact?.open_tasks_count > 0 && !reassignTargetId) {
+      setDeleteError("يجب تحديد إجراء للمهام المفتوحة (اختيار عضو بديل أو فك الارتباط).");
+      return;
+    }
+
+    setConfirmingDelete(true);
+    setDeleteError(null);
+
+    try {
+      const targetId = reassignTargetId === "unassign" ? null : (reassignTargetId || null);
+      const res = await fetch(`/api/team/members/${deletingMember.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reassignToRosterId: targetId,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "فشل حذف العضو نهائياً.");
+      }
+
+      setDeletingMember(null);
+      setTeamMembers((prev) => prev.filter((m) => m.id !== deletingMember.id));
+      window.dispatchEvent(new CustomEvent("team_data_changed"));
+      fetchTeamData();
+    } catch (err: any) {
+      setDeleteError(err.message || "حدث خطأ أثناء الحذف.");
+    } finally {
+      setConfirmingDelete(false);
     }
   };
 
@@ -1062,7 +1138,7 @@ export default function TeamPage() {
                       )}
 
                       {/* Member Actions */}
-                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-1 flex-wrap">
                         {isLegacyOwner ? (
                           <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1">
                             <Lock className="w-3 h-3 text-slate-400" />
@@ -1079,34 +1155,46 @@ export default function TeamPage() {
                           </button>
                         ) : <div />}
 
-                        {isLegacyOwner ? null : member.role === "owner" ? (
+                        {isLegacyOwner ? null : (member.role === "owner" || member.role === "company_owner") ? (
                           <span className="text-[10px] text-slate-400 flex items-center gap-1">
                             <Lock className="w-3 h-3 text-slate-400" />
                             <span>حساب المالك محمي</span>
                           </span>
                         ) : !isViewer ? (
-                          <button
-                            type="button"
-                            onClick={() => handleOpenDeactivation(member)}
-                            className={cn(
-                              "px-2.5 py-1 rounded-lg text-[10px] font-semibold transition-colors flex items-center gap-1",
-                              member.isActive !== false
-                                ? "bg-rose-50 text-rose-700 hover:bg-rose-100"
-                                : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-                            )}
-                          >
-                            {member.isActive !== false ? (
-                              <>
-                                <UserX className="w-3 h-3" />
-                                <span>تعطيل</span>
-                              </>
-                            ) : (
-                              <>
-                                <UserCheck className="w-3 h-3" />
-                                <span>إعادة تفعيل</span>
-                              </>
-                            )}
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenDeactivation(member)}
+                              className={cn(
+                                "px-2 py-1 rounded-lg text-[10px] font-semibold transition-colors flex items-center gap-1",
+                                member.isActive !== false
+                                  ? "bg-amber-50 text-amber-700 hover:bg-amber-100"
+                                  : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                              )}
+                              title={member.isActive !== false ? "تعطيل مؤقت للحساب" : "إعادة تفعيل الحساب"}
+                            >
+                              {member.isActive !== false ? (
+                                <>
+                                  <UserX className="w-3 h-3" />
+                                  <span>تعطيل</span>
+                                </>
+                              ) : (
+                                <>
+                                  <UserCheck className="w-3 h-3" />
+                                  <span>إعادة تفعيل</span>
+                                </>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenHardDelete(member)}
+                              className="px-2 py-1 rounded-lg text-[10px] font-semibold bg-rose-50 text-rose-700 hover:bg-rose-100 transition-colors flex items-center gap-1"
+                              title="حذف نهائي من سجلات الفريق"
+                            >
+                              <Trash2 className="w-3 h-3 text-rose-600" />
+                              <span>حذف</span>
+                            </button>
+                          </div>
                         ) : null}
                       </div>
 
@@ -1995,6 +2083,146 @@ export default function TeamPage() {
                 className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 text-white rounded-xl font-bold shadow-xs transition-colors"
               >
                 {confirmingDeactivate ? "جاري التعطيل..." : "تأكيد التعطيل المؤقت"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 3.5: Safe Permanent Hard Delete Modal */}
+      {deletingMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100 text-rose-700">
+              <div className="p-2.5 rounded-xl bg-rose-100 text-rose-700">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-slate-900">
+                  حذف العضو نهائياً من النظام: {deletingMember.displayName}
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  إجراء إداري دائم لحذف سجل العضو وإلغاء صلاحياته
+                </p>
+              </div>
+            </div>
+
+            {/* Distinction between Deactivate and Delete */}
+            <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-xl text-rose-900 space-y-1.5 text-[11px] leading-relaxed">
+              <div className="font-bold flex items-center gap-1.5 text-rose-800">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>تحذير: هذا الحذف نهائي وغير قابل للتراجع!</span>
+              </div>
+              <p>
+                التعطيل المؤقت يُبقي العضو في السجلات مع إيقاف وصوله. أما الحذف النهائي فسوف يُزيل سجله تماماً من قوائم الفريق وخيارات الإسناد وحسابات العضوية.
+              </p>
+              <p className="text-slate-600 text-[10px] pt-0.5">
+                * ملاحظة أمان: يتم حفظ اسم العضو كنص ثابت (Snapshot) في سجلات الوقت والمرفقات التاريخية حفاظاً على سلامة التقارير السابقة.
+              </p>
+            </div>
+
+            {loadingDeleteImpact ? (
+              <div className="py-8 text-center text-slate-400 space-y-2">
+                <RefreshCw className="w-5 h-5 animate-spin mx-auto text-rose-600" />
+                <p>جاري فحص الارتباطات والمهام والحسابات المفتوحة...</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* Impact Metrics */}
+                <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 space-y-2">
+                  <div className="font-bold text-slate-700 mb-1 text-[11px]">أثر الحذف على مساحة العمل:</div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">المهام المفتوحة المسندة:</span>
+                    <span className={cn("font-bold font-mono text-sm", (deleteImpact?.open_tasks_count || 0) > 0 ? "text-rose-600" : "text-emerald-700")}>
+                      {deleteImpact?.open_tasks_count || 0} مهام
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">العملاء المسندون:</span>
+                    <span className={cn("font-bold font-mono text-sm", (deleteImpact?.assigned_clients_count || 0) > 0 ? "text-amber-700" : "text-emerald-700")}>
+                      {deleteImpact?.assigned_clients_count || 0} عملاء
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">التايمر النشط:</span>
+                    <span className="font-bold text-xs text-slate-700">
+                      {deleteImpact?.active_timer ? "يوجد تايمر شغال (سيتم إيقافه وحفظ وقته تلقائياً)" : "لا يوجد"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">عضوية مساحة العمل والدعوات:</span>
+                    <span className="font-bold text-xs text-slate-700">
+                      {deleteImpact?.membership_status ? `عضوية مسجلة (${deleteImpact.membership_status}) — سيتم إلغاؤها` : "لا توجد عضوية نشطة"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Last Admin Guard */}
+                {deleteImpact?.is_last_admin && (
+                  <div className="p-3 bg-red-100 border border-red-300 rounded-xl text-red-900 font-bold flex items-center gap-2">
+                    <AlertTriangle className="w-5 h-5 text-red-600 shrink-0" />
+                    <span>لا يمكن حذف هذا العضو لأنه المسؤول أو المالك الأخير لمساحة العمل.</span>
+                  </div>
+                )}
+
+                {/* Task / Client Reassignment Options */}
+                {((deleteImpact?.open_tasks_count || 0) > 0 || (deleteImpact?.assigned_clients_count || 0) > 0) && (
+                  <div className="space-y-1.5 pt-1">
+                    <label className="font-bold text-slate-700 block text-xs">
+                      إعادة إسناد المهام والعملاء المفتوحة <span className="text-rose-500">*</span>:
+                    </label>
+                    <select
+                      value={reassignTargetId}
+                      onChange={(e) => setReassignTargetId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold focus:outline-rose-500"
+                    >
+                      <option value="">-- اختر الإجراء المطلوب للمهام والعملاء --</option>
+                      <option value="unassign">فك الارتباط وإبقاء المهام والعملاء بدون مسند (Unassign)</option>
+                      {teamMembers
+                        .filter((m) => m.id !== deletingMember.id && m.isActive !== false && !m.displayName.includes("المدير العام (Owner)"))
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            نقل إلى: {m.displayName} ({m.jobTitle})
+                          </option>
+                        ))}
+                    </select>
+                    <p className="text-[10px] text-slate-500">
+                      اختر عضواً لنقل المهام والعملاء المفتوحة إليه تلقائياً، أو اختر فك الارتباط لتركها بدون مسند.
+                    </p>
+                  </div>
+                )}
+
+                {deleteError && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-[11px]">
+                    {deleteError}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                disabled={confirmingDelete}
+                onClick={() => {
+                  setDeletingMember(null);
+                  setDeleteImpact(null);
+                  setDeleteError(null);
+                  setReassignTargetId("");
+                }}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold"
+              >
+                إلغاء
+              </button>
+
+              <button
+                type="button"
+                disabled={loadingDeleteImpact || confirmingDelete || deleteImpact?.is_last_admin}
+                onClick={handleConfirmHardDelete}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 text-white rounded-xl font-bold shadow-xs transition-colors flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{confirmingDelete ? "جاري الحذف النهائي..." : "تأكيد الحذف النهائي"}</span>
               </button>
             </div>
           </div>

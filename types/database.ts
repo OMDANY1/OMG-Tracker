@@ -2,6 +2,7 @@
 
 export type RosterRole =
   | 'owner'
+  | 'company_owner'
   | 'manager'
   | 'senior_reviewer'
   | 'designer'
@@ -577,6 +578,18 @@ export interface RolePermissionConfig {
 }
 
 export const ROLE_PERMISSIONS_MATRIX: Record<RosterRole, RolePermissionConfig> = {
+  company_owner: {
+    label: "مالك الشركة — صلاحيات كاملة",
+    description: "إدارة شاملة وكاملة للمنظومة والعملاء والفرق والدعوات والإعدادات والتقارير",
+    scope: "workspace",
+    canViewData: true,
+    canManageClients: true,
+    canAssignTeam: true,
+    canApproveReviews: true,
+    canTrackTime: true,
+    canExportReports: true,
+    canManageWorkspace: true,
+  },
   owner: {
     label: "المدير العام (Owner)",
     description: "إدارة كاملة للمنظومة والعملاء والفرق والدعوات والإعدادات والتقارير",
@@ -829,6 +842,22 @@ export const ACCESS_SCOPE_CONFIGS: Record<AccessScope, { label: string; descript
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<RosterRole, CustomPermissions> = {
   owner: {
+    manage_workspace: true,
+    invite_members: true,
+    manage_members: true,
+    manage_clients: true,
+    delete_clients: true,
+    assign_team: true,
+    create_campaigns: true,
+    create_tasks: true,
+    track_timer: true,
+    approve_strategy: true,
+    approve_reviews: true,
+    view_time_logs: true,
+    export_reports: true,
+    comment_and_attachments: true,
+  },
+  company_owner: {
     manage_workspace: true,
     invite_members: true,
     manage_members: true,

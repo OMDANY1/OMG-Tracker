@@ -68,3 +68,61 @@ export async function PATCH(
     return NextResponse.json({ error: err.message || "حدث خطأ غير متوقع." }, { status: 500 });
   }
 }
+
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    if (!validateSameOrigin(req)) {
+      return NextResponse.json(
+        { error: "طلب غير مصرح به (Same-Origin check failed)." },
+        { status: 403 }
+      );
+    }
+
+    const authRes = await requireOwner(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
+    }
+
+    const { membership, admin } = authRes.data;
+    const rosterPersonId = params.id;
+
+    if (!rosterPersonId) {
+      return NextResponse.json({ error: "معرف العضو مطلوب." }, { status: 400 });
+    }
+
+    let reassignToRosterId: string | null = null;
+    try {
+      const body = await req.json().catch(() => null);
+      if (body?.reassignToRosterId) {
+        reassignToRosterId = body.reassignToRosterId;
+      }
+    } catch {}
+
+    const { data: result, error: rpcErr } = await admin.rpc("admin_hard_delete_roster_member", {
+      p_workspace_id: membership.workspaceId,
+      p_roster_person_id: rosterPersonId,
+      p_reassign_to_roster_id: reassignToRosterId || null,
+    });
+
+    if (rpcErr) {
+      return NextResponse.json(
+        { error: rpcErr.message || "فشل حذف العضو نهائياً." },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: "تم حذف العضو نهائياً من مساحة العمل بنجاح.",
+      result,
+    });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err.message || "حدث خطأ غير متوقع أثناء حذف العضو." },
+      { status: 500 }
+    );
+  }
+}

@@ -134,6 +134,7 @@ export const CLIENT_EXTRA_WORKLOAD_LABELS: Record<ClientExtraWorkload, string> =
 
 export const ROSTER_ROLE_LABELS: Record<RosterRole, string> = {
   owner: "المدير العام (Owner)",
+  company_owner: "مالك الشركة — صلاحيات كاملة",
   manager: "مدير الفريق (Manager)",
   senior_reviewer: "مراجع أول (Senior Reviewer)",
   designer: "مصمم (Designer)",

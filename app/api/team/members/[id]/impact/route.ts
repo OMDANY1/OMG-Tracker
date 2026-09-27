@@ -20,15 +20,15 @@ export async function GET(
       return NextResponse.json({ error: "معرف العضو مطلوب." }, { status: 400 });
     }
 
-    // Call get_member_deactivation_impact RPC
-    const { data: impact, error: rpcErr } = await admin.rpc("get_member_deactivation_impact", {
+    // Call get_member_delete_impact RPC
+    const { data: impact, error: rpcErr } = await admin.rpc("get_member_delete_impact", {
       p_workspace_id: membership.workspaceId,
       p_roster_person_id: rosterPersonId,
     });
 
     if (rpcErr) {
       return NextResponse.json(
-        { error: rpcErr.message || "فشل احتساب تأثير تعطيل العضو." },
+        { error: rpcErr.message || "فشل احتساب تأثير حذف العضو." },
         { status: 400 }
       );
     }
@@ -40,6 +40,8 @@ export async function GET(
         open_tasks_count: 0,
         assigned_clients: [],
         assigned_clients_count: 0,
+        has_active_timer: false,
+        is_last_admin: false,
       },
     });
   } catch (err: any) {

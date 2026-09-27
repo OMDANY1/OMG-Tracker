@@ -41,31 +41,30 @@ export default function ReportsPage() {
   const [selectedClient, setSelectedClient] = useState<string>("");
   const [selectedCampaign, setSelectedCampaign] = useState<string>("");
 
-  // Role simulation state
+  // User profile & membership state
   const [isOwner, setIsOwner] = useState(true);
   const [currentUserRole, setCurrentUserRole] = useState<string>("owner");
-  const [currentUserName, setCurrentUserName] = useState<string>("عماد");
+  const [currentUserName, setCurrentUserName] = useState<string>("");
 
   useEffect(() => {
-    const saved = localStorage.getItem("omg_active_persona");
-    if (saved) {
-      try {
-        const p = JSON.parse(saved);
-        setIsOwner(p.role === "owner");
-        setCurrentUserRole(p.role || "owner");
-        setCurrentUserName(p.displayName || "عماد");
-      } catch {}
-    }
+    try {
+      localStorage.removeItem("omg_active_persona");
+    } catch {}
 
-    const handlePersonaChange = (e: any) => {
-      if (e.detail) {
-        setIsOwner(e.detail.role === "owner");
-        setCurrentUserRole(e.detail.role || "owner");
-        setCurrentUserName(e.detail.displayName || "عماد");
-      }
+    const fetchMe = async () => {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const data = await res.json();
+          const role = data.membership?.role || "owner";
+          setIsOwner(role === "owner" || role === "company_owner");
+          setCurrentUserRole(role);
+          setCurrentUserName(data.membership?.displayName || "المستخدم");
+        }
+      } catch {}
     };
-    window.addEventListener("persona_changed", handlePersonaChange);
-    return () => window.removeEventListener("persona_changed", handlePersonaChange);
+
+    fetchMe();
   }, []);
 
   const fetchReport = async () => {

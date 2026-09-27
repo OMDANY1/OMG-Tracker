@@ -236,7 +236,7 @@ export function hasGranularPermission(
   membership: ActiveMembershipContext,
   permission: GranularPermissionKey
 ): boolean {
-  if (membership.role === "owner") return true;
+  if (membership.role === "owner" || membership.role === "company_owner") return true;
   if (membership.role === "business_owner_viewer") return false;
 
   // Check custom override if explicitly defined
@@ -310,7 +310,7 @@ export async function requireWritableMembership(
 }
 
 /**
- * Ensures caller is specifically the Workspace Owner.
+ * Ensures caller is specifically the Workspace Owner or Company Owner with Full Permissions.
  */
 export async function requireOwner(
   req: NextRequest
@@ -322,7 +322,7 @@ export async function requireOwner(
     serverClient: SupabaseClient;
   }>
 > {
-  const result = await requireWorkspaceMembership(req, { allowedRoles: ["owner"] });
+  const result = await requireWorkspaceMembership(req, { allowedRoles: ["owner", "company_owner"] });
   if (!result.success) {
     return result;
   }
@@ -330,7 +330,7 @@ export async function requireOwner(
 }
 
 /**
- * Ensures caller is Owner or Business Owner Viewer.
+ * Ensures caller is Owner, Company Owner, or Business Owner Viewer.
  */
 export async function requireOwnerOrViewer(
   req: NextRequest
@@ -342,11 +342,11 @@ export async function requireOwnerOrViewer(
     serverClient: SupabaseClient;
   }>
 > {
-  return requireWorkspaceMembership(req, { allowedRoles: ["owner", "business_owner_viewer"] });
+  return requireWorkspaceMembership(req, { allowedRoles: ["owner", "company_owner", "business_owner_viewer"] });
 }
 
 /**
- * Ensures caller is Owner, Manager, or Marketing Director.
+ * Ensures caller is Owner, Company Owner, Manager, or Marketing Director.
  */
 export async function requireMarketingDirector(
   req: NextRequest
@@ -358,11 +358,11 @@ export async function requireMarketingDirector(
     serverClient: SupabaseClient;
   }>
 > {
-  return requireWorkspaceMembership(req, { allowedRoles: ["owner", "manager", "marketing_director"] });
+  return requireWorkspaceMembership(req, { allowedRoles: ["owner", "company_owner", "manager", "marketing_director"] });
 }
 
 /**
- * Ensures caller is specifically authorized to export data/reports (Owner, Manager, Marketing Director).
+ * Ensures caller is specifically authorized to export data/reports (Owner, Company Owner, Manager, Marketing Director).
  * Rejects Business Owner Viewer, Designers, and other unprivileged roles.
  */
 export async function requireExportPermission(
@@ -376,7 +376,7 @@ export async function requireExportPermission(
   }>
 > {
   const result = await requireWorkspaceMembership(req, {
-    allowedRoles: ["owner", "manager", "marketing_director"],
+    allowedRoles: ["owner", "company_owner", "manager", "marketing_director"],
   });
   if (!result.success) {
     return {
@@ -391,7 +391,7 @@ export async function requireExportPermission(
 }
 
 /**
- * Ensures caller is Owner, Manager, or Strategy Lead.
+ * Ensures caller is Owner, Company Owner, Manager, or Strategy Lead.
  */
 export async function requireStrategyLead(
   req: NextRequest
@@ -403,12 +403,12 @@ export async function requireStrategyLead(
     serverClient: SupabaseClient;
   }>
 > {
-  return requireWorkspaceMembership(req, { allowedRoles: ["owner", "manager", "strategy_lead"] });
+  return requireWorkspaceMembership(req, { allowedRoles: ["owner", "company_owner", "manager", "strategy_lead"] });
 }
 
 /**
  * Ensures caller is an active workspace member with legitimate access to a specific task.
- * Owner has full access.
+ * Owner and Company Owner have full access.
  * Designers have access ONLY if they are primary assignee, reviewer, collaborator, or part of a review round.
  */
 export async function requireTaskAccess(
@@ -448,8 +448,8 @@ export async function requireTaskAccess(
     };
   }
 
-  // Owner has universal access within the workspace
-  if (membership.role === "owner") {
+  // Owner and Company Owner have universal access within the workspace
+  if (membership.role === "owner" || membership.role === "company_owner") {
     return {
       success: true,
       data: { user, membership, task, admin, serverClient },

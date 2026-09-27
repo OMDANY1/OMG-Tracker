@@ -32,7 +32,7 @@ export async function GET() {
         .eq("user_id", authData.user.id)
         .eq("is_active", true)
         .maybeSingle();
-      if (member?.role === "owner") {
+      if (member?.role === "owner" || member?.role === "company_owner") {
         isOwner = true;
       }
       if (member?.role === "business_owner_viewer") {

@@ -108,22 +108,17 @@ export default function ClientsPage() {
     fetchClients();
   }, []);
 
-  // Listen for persona changes
+  // Realtime updates & sync
   useEffect(() => {
-    const handlePersonaChange = (e: any) => {
-      if (e.detail?.role === "owner") {
-        setIsOwner(true);
-        setIsViewer(false);
-      } else if (e.detail?.role === "business_owner_viewer") {
-        setIsOwner(false);
-        setIsViewer(true);
-      } else if (e.detail) {
-        setIsOwner(false);
-        setIsViewer(false);
-      }
+    const handleSync = () => {
+      fetchClients();
     };
-    window.addEventListener("persona_changed", handlePersonaChange);
-    return () => window.removeEventListener("persona_changed", handlePersonaChange);
+    window.addEventListener("clients_data_changed", handleSync);
+    window.addEventListener("window_reconnected_sync", handleSync);
+    return () => {
+      window.removeEventListener("clients_data_changed", handleSync);
+      window.removeEventListener("window_reconnected_sync", handleSync);
+    };
   }, []);
 
   // 1. Dynamic Design stats calculated from actual data

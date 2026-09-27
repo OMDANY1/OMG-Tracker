@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { LayoutShell } from "@/components/navigation/LayoutShell";
+import { RealtimeSyncProvider } from "@/components/common/RealtimeSyncProvider";
+import { VersionUpdateBanner } from "@/components/common/VersionUpdateBanner";
 
 export const metadata: Metadata = {
   title: "OMG Creative Workspace | مساحة عمل الايجنسي",
@@ -15,7 +17,10 @@ export default function RootLayout({
   return (
     <html lang="ar" dir="rtl">
       <body className="min-h-screen bg-background text-slate-900 flex flex-col font-cairo antialiased selection:bg-sky-100 selection:text-sky-900">
-        <LayoutShell>{children}</LayoutShell>
+        <RealtimeSyncProvider>
+          <LayoutShell>{children}</LayoutShell>
+          <VersionUpdateBanner />
+        </RealtimeSyncProvider>
       </body>
     </html>
   );

@@ -35,10 +35,10 @@ export function ActiveTimerBar() {
     fetchActive();
     const handleTimerChange = () => fetchActive();
     window.addEventListener("timer_state_changed", handleTimerChange);
-    window.addEventListener("persona_changed", handleTimerChange);
+    window.addEventListener("window_reconnected_sync", handleTimerChange);
     return () => {
       window.removeEventListener("timer_state_changed", handleTimerChange);
-      window.removeEventListener("persona_changed", handleTimerChange);
+      window.removeEventListener("window_reconnected_sync", handleTimerChange);
     };
   }, []);
 
