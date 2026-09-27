@@ -28,6 +28,26 @@ interface InviteInfo {
   sessionMatches?: boolean;
   loggedInEmail?: string | null;
 }
+ 
+function sanitizeUserFacingError(err: any): string {
+  const msg = typeof err === "string" ? err : err?.message || "";
+  if (!msg) return "حدث خطأ غير متوقع أثناء تفعيل الحساب. يرجى إعادة المحاولة.";
+
+  // Detect raw SQL / PostgreSQL / internal keywords and provide user-friendly Arabic
+  if (
+    msg.includes("ON CONFLICT") ||
+    msg.includes("constraint") ||
+    msg.includes("SQLSTATE") ||
+    msg.includes("database") ||
+    msg.includes("violates") ||
+    msg.includes("relation") ||
+    msg.includes("duplicate key")
+  ) {
+    return "حدث خطأ تقني في تفعيل الحساب بمساحة العمل. يرجى المحاولة مرة أخرى أو التواصل مع الإدارة.";
+  }
+
+  return msg;
+}
 
 function AcceptInviteContent() {
   const router = useRouter();
@@ -184,7 +204,7 @@ function AcceptInviteContent() {
         router.refresh();
       }, 1200);
     } catch (err: any) {
-      setErrorMsg(err.message || "حدث خطأ أثناء تفعيل الحساب.");
+      setErrorMsg(sanitizeUserFacingError(err));
     } finally {
       setSubmitting(false);
     }
@@ -261,7 +281,7 @@ function AcceptInviteContent() {
         }, 1200);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || "حدث خطأ أثناء تفعيل الحساب.");
+      setErrorMsg(sanitizeUserFacingError(err));
     } finally {
       setSubmitting(false);
     }

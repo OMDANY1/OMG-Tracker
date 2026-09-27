@@ -384,90 +384,44 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // ATOMIC UPDATE on workspace_invitations to prevent double acceptance race condition (Test 3)
-      const { data: updatedInv, error: acceptErr } = await admin
-        .from("workspace_invitations")
-        .update({
-          status: "accepted",
-          accepted_at: new Date().toISOString(),
-          accepted_by_id: authUserId,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", inv.id)
-        .eq("status", "pending")
-        .select()
-        .single();
+      // Atomic, consistent, and idempotent database acceptance via RPC
+      const { data: rpcRes, error: rpcErr } = await admin.rpc(
+        "accept_workspace_invitation_atomic",
+        {
+          p_invitation_id: inv.id,
+          p_user_id: authUserId,
+          p_token_hash: computedHash,
+          p_user_email: cleanEmail,
+        }
+      );
 
-      if (acceptErr || !updatedInv) {
+      if (rpcErr || !rpcRes) {
+        console.error("[accept-invite] Atomic RPC execution error:", rpcErr);
         return NextResponse.json(
-          { error: "هذه الدعوة لم تعد معلقة أو تم قبولها بالفعل من جلسة أخرى (This invitation has already been accepted)." },
-          { status: 409 }
-        );
-      }
-
-      // Create or activate workspace membership syncing scope and permissions
-      const targetScope = rosterPerson.access_scope || "assigned_tasks";
-      const targetPermissions = rosterPerson.custom_permissions || {};
-
-      const { data: memberRecord, error: memErr } = await admin
-        .from("workspace_memberships")
-        .upsert(
-          {
-            workspace_id: inv.workspace_id,
-            user_id: authUserId,
-            roster_person_id: rosterPerson.id,
-            role: targetRole,
-            access_scope: targetScope,
-            custom_permissions: targetPermissions,
-            is_active: true,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "workspace_id,user_id" }
-        )
-        .select()
-        .single();
-
-      if (memErr) {
-        return NextResponse.json(
-          { error: `فشل تفعيل عضوية مساحة العمل: ${memErr.message}` },
+          { error: "حدث خطأ أثناء حفظ بيانات تفعيل الحساب في قاعدة البيانات. يرجى إعادة المحاولة." },
           { status: 500 }
         );
       }
 
-      // Update roster_people role & active status
-      await admin
-        .from("roster_people")
-        .update({
-          role: targetRole,
-          is_active: true,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", rosterPerson.id);
+      if (!rpcRes.success) {
+        const statusCode =
+          rpcRes.code === "INVITATION_NOT_FOUND" ? 404 :
+          rpcRes.code === "INVITATIONS_PAUSED" ? 403 :
+          rpcRes.code === "INVITATION_REVOKED" || rpcRes.code === "INVITATION_EXPIRED" ? 410 :
+          rpcRes.code === "ROSTER_BOUND_TO_ANOTHER_USER" || rpcRes.code === "ALREADY_ACCEPTED_BY_ANOTHER" ? 409 : 400;
 
-      // Audit Event
-      await admin.from("audit_events").insert({
-        workspace_id: inv.workspace_id,
-        actor_id: rosterPerson.id,
-        action: "accept_invitation",
-        entity_type: "workspace_memberships",
-        entity_id: memberRecord.id,
-        metadata: {
-          invitation_id: inv.id,
-          email: cleanEmail,
-          user_id: authUserId,
-          roster_person_id: rosterPerson.id,
-          role: targetRole,
-          access_scope: targetScope,
-          display_name: rosterPerson.display_name,
-        },
-      });
+        return NextResponse.json(
+          { error: rpcRes.error || "تعذر إتمام قبول الدعوة." },
+          { status: statusCode }
+        );
+      }
 
       return NextResponse.json({
         success: true,
         email: cleanEmail,
-        memberName: rosterPerson.display_name,
-        role: targetRole,
-        message: `تم تفعيل حسابك بنجاح يا ${rosterPerson.display_name}! يمكنك الآن الدخول لمساحة العمل.`,
+        memberName: rpcRes.display_name || rosterPerson.display_name,
+        role: rpcRes.role || targetRole,
+        message: rpcRes.message || `تم تفعيل حسابك بنجاح يا ${rosterPerson.display_name}! يمكنك الآن الدخول لمساحة العمل.`,
       });
     }
 
@@ -565,65 +519,31 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Atomic update on invitation
-    const { data: updatedInviteRecord, error: updateInviteErr } = await admin
-      .from("workspace_invitations")
-      .update({
-        status: "accepted",
-        accepted_at: new Date().toISOString(),
-        accepted_by_id: user.id,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", inviteRecord.id)
-      .eq("status", "pending")
-      .select()
-      .single();
+    // Atomic, consistent, and idempotent database acceptance via RPC
+    const { data: rpcRes, error: rpcErr } = await admin.rpc(
+      "accept_workspace_invitation_atomic",
+      {
+        p_invitation_id: inviteRecord.id,
+        p_user_id: user.id,
+        p_token_hash: null,
+        p_user_email: userEmail,
+      }
+    );
 
-    if (updateInviteErr || !updatedInviteRecord) {
+    if (rpcErr || !rpcRes) {
+      console.error("[accept-invite] Atomic RPC error (Flow B):", rpcErr);
       return NextResponse.json(
-        { error: "تم قبول هذه الدعوة بالفعل مسبقاً (This invitation has already been accepted) أو أنها لم تعد معلقة." },
-        { status: 409 }
+        { error: "حدث خطأ أثناء تفعيل العضوية في قاعدة البيانات. يرجى إعادة المحاولة." },
+        { status: 500 }
       );
     }
 
-    // Create or activate workspace membership
-    const { data: newMember, error: memberErr } = await admin
-      .from("workspace_memberships")
-      .upsert(
-        {
-          workspace_id: rosterPerson.workspace_id,
-          user_id: user.id,
-          roster_person_id: rosterPerson.id,
-          role: targetRole,
-          access_scope: rosterPerson.access_scope || "assigned_tasks",
-          custom_permissions: rosterPerson.custom_permissions || {},
-          is_active: true,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "workspace_id,user_id" }
-      )
-      .select()
-      .single();
-
-    if (memberErr) {
-      return NextResponse.json({ error: `فشل تفعيل العضوية: ${memberErr.message}` }, { status: 500 });
+    if (!rpcRes.success) {
+      return NextResponse.json(
+        { error: rpcRes.error || "تعذر تفعيل العضوية." },
+        { status: 400 }
+      );
     }
-
-    // Audit Event
-    await admin.from("audit_events").insert({
-      workspace_id: rosterPerson.workspace_id,
-      actor_id: rosterPerson.id,
-      action: "accept_invitation",
-      entity_type: "workspace_memberships",
-      entity_id: newMember.id,
-      metadata: {
-        email: userEmail,
-        user_id: user.id,
-        roster_person_id: rosterPerson.id,
-        role: targetRole,
-        member_name: rosterPerson.display_name,
-      },
-    });
 
     return NextResponse.json({
       success: true,
