@@ -572,7 +572,7 @@ export default function TaskDetailsDrawer({
   const isAssignee = currentUser?.rosterPersonId === task.primary_assignee_id;
   const isReviewer = currentUser?.rosterPersonId === task.reviewer_id;
   const isPendingReview = task.status === "internal_review";
-  const isTaskAssignedToOwner = isOwner && isAssignee;
+  const isTaskAssignedToOwner = currentUser?.role === "owner" && isAssignee;
   const canDecideReview = !isReadOnly && isPendingReview && (isReviewer || isOwner) && !isAssignee;
   const reviewRounds = Array.isArray(task.review_rounds)
     ? [...task.review_rounds].sort((a: any, b: any) => (a.round_number || 0) - (b.round_number || 0))

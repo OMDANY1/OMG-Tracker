@@ -41,14 +41,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "بيانات غير مكتملة لاعتماد واستيراد التاسكات." }, { status: 400 });
     }
 
-    // Fetch assignable roster members in workspace (including pre-onboarding members)
+    // Fetch assignable active executor roster members in workspace (including pre-onboarding members)
     const { data: activeRoster } = await admin
       .from("roster_people")
-      .select("id")
+      .select("id, role")
       .eq("workspace_id", workspaceId)
-      .neq("role", "viewer");
+      .eq("is_active", true);
 
-    const activeRosterIds = new Set((activeRoster || []).map((r) => r.id));
+    const activeRosterIds = new Set(
+      (activeRoster || [])
+        .filter((r) => r.role !== "business_owner_viewer" && r.role !== "marketing_director" && (r.role as string) !== "viewer")
+        .map((r) => r.id)
+    );
 
     // Fetch campaign and client to resolve default designer & video editor
     const { data: campaign } = await admin

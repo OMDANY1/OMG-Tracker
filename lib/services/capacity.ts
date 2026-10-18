@@ -24,7 +24,7 @@ export async function getTeamCapacitySummaries(workspaceId: string, monthKey: st
 
   const { data: roster } = await supabase
     .from("roster_people")
-    .select("*, member_capacities(*), clients(id), tasks!tasks_primary_assignee_id_fkey(id, status, estimated_minutes), workspace_memberships(role)")
+    .select("*, member_capacities(*), clients!fk_client_owner(id), tasks!fk_task_assignee(id, status, estimated_minutes), workspace_memberships(role)")
     .eq("workspace_id", workspaceId);
 
   if (!roster) return [];

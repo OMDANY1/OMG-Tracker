@@ -220,7 +220,7 @@ export function recommendAssignee(params: {
 
   // Filter for production designers (prefer role === 'designer' over reviewers/owners)
   const designers = candidates.filter((c) => c.role === "designer");
-  const eligible = designers.length > 0 ? designers : candidates.filter((c) => c.role !== "client");
+  const eligible = designers.length > 0 ? designers : candidates.filter((c) => c.role !== "client" && c.role !== "viewer" && c.role !== "business_owner_viewer" && c.role !== "marketing_director");
   if (eligible.length === 0) {
     return { recommendedId: null, reason: "لا يوجد مصممون مؤهلون" };
   }

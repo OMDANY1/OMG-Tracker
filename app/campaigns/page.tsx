@@ -607,10 +607,9 @@ export default function CampaignsPage() {
     const assigneePerson = rosterList.find((r) => (r.id || r.rosterId) === designerId);
     const isAssigneeOwner =
       designerId === ownerRosterId ||
-      assigneePerson?.role === "owner" ||
-      assigneePerson?.role === "company_owner";
+      assigneePerson?.role === "owner";
 
-    // Review Bypass for Owner / Company Owner
+    // Review Bypass strictly for Owner (Emad) on his own assigned task
     if (isAssigneeOwner) {
       return { id: null, name: "لا يوجد (اعتماد مباشر / Review Bypass)", isBypass: true };
     }

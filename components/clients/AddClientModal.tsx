@@ -97,6 +97,8 @@ export function AddClientModal({
     ? reviewers
     : allTeamMembers.filter(
         (m) =>
+          m.role !== "marketing_director" &&
+          m.role !== "business_owner_viewer" &&
           !m.displayName?.includes("عطا") &&
           m.jobTitle !== "Marketing Director" &&
           (m.canApproveReviews === true ||

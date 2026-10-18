@@ -50,15 +50,20 @@ export async function PATCH(
       if (body.approved_assignee_id) {
         const { data: assignee } = await admin
           .from("roster_people")
-          .select("id, role")
+          .select("id, role, is_active")
           .eq("id", body.approved_assignee_id)
           .eq("workspace_id", membership.workspaceId)
-          .neq("role", "viewer")
+          .eq("is_active", true)
           .maybeSingle();
 
-        if (!assignee) {
+        if (
+          !assignee ||
+          assignee.role === "business_owner_viewer" ||
+          assignee.role === "marketing_director" ||
+          (assignee.role as string) === "viewer"
+        ) {
           return NextResponse.json(
-            { error: "العضو المختار غير صالح في مساحة العمل." },
+            { error: "العضو المختار غير مؤهل للتنفيذ في مساحة العمل (يجب أن يكون عضواً نشطاً في مسار تنفيذي)." },
             { status: 400 }
           );
         }

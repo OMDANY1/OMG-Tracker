@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
       return authRes.errorResponse;
     }
 
-    const { membership, admin } = authRes.data;
+    const { membership, serverClient } = authRes.data;
     const body = await req.json();
     const { displayName, jobTitle, specialties, role, accessScope, customPermissions } = body;
 
@@ -42,8 +42,8 @@ export async function POST(req: NextRequest) {
 
     const validRole: RosterRole = role || "designer";
 
-    // Call admin_create_roster_person RPC
-    const { data: result, error: rpcErr } = await admin.rpc("admin_create_roster_person", {
+    // Call admin_create_roster_person RPC with authenticated serverClient
+    const { data: result, error: rpcErr } = await serverClient.rpc("admin_create_roster_person", {
       p_workspace_id: membership.workspaceId,
       p_display_name: displayName.trim(),
       p_job_title: jobTitle.trim(),

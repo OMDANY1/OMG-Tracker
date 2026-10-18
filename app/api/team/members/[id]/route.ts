@@ -21,7 +21,7 @@ export async function PATCH(
       return authRes.errorResponse;
     }
 
-    const { membership, admin } = authRes.data;
+    const { membership, serverClient } = authRes.data;
     const rosterPersonId = params.id;
 
     if (!rosterPersonId) {
@@ -41,8 +41,8 @@ export async function PATCH(
 
     const validRole: RosterRole = role || "designer";
 
-    // Call admin_update_roster_person RPC
-    const { data: result, error: rpcErr } = await admin.rpc("admin_update_roster_person", {
+    // Call admin_update_roster_person RPC with authenticated serverClient
+    const { data: result, error: rpcErr } = await serverClient.rpc("admin_update_roster_person", {
       p_workspace_id: membership.workspaceId,
       p_roster_person_id: rosterPersonId,
       p_job_title: jobTitle.trim(),
@@ -86,7 +86,7 @@ export async function DELETE(
       return authRes.errorResponse;
     }
 
-    const { membership, admin } = authRes.data;
+    const { membership, serverClient } = authRes.data;
     const rosterPersonId = params.id;
 
     if (!rosterPersonId) {
@@ -101,7 +101,7 @@ export async function DELETE(
       }
     } catch {}
 
-    const { data: result, error: rpcErr } = await admin.rpc("admin_hard_delete_roster_member", {
+    const { data: result, error: rpcErr } = await serverClient.rpc("admin_hard_delete_roster_member", {
       p_workspace_id: membership.workspaceId,
       p_roster_person_id: rosterPersonId,
       p_reassign_to_roster_id: reassignToRosterId || null,

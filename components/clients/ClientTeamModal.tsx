@@ -65,15 +65,17 @@ export function ClientTeamModal({
     }
   }, [client, team]);
 
-  // Reviewers must exclude Marketing Director (Ata) and only include authorized reviewers
+  // Reviewers must exclude Marketing Director (Ata) and read-only viewers, and only include authorized reviewers
   const reviewerCandidates = (reviewers && reviewers.length > 0)
     ? reviewers
     : allTeamMembers.filter(
         (p) =>
+          p.role !== "marketing_director" &&
+          p.role !== "business_owner_viewer" &&
           !p.displayName?.includes("عطا") &&
           p.jobTitle !== "Marketing Director" &&
           (p.canApproveReviews === true ||
-            ["owner", "company_owner", "senior_reviewer", "strategy_lead"].includes(p.role) ||
+            ["owner", "company_owner", "manager", "senior_reviewer", "strategy_lead"].includes(p.role) ||
             p.custom_permissions?.approve_reviews === true)
       );
 
@@ -401,7 +403,7 @@ export function ClientTeamModal({
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-slate-500"
                 >
                   <option value="">-- غير مسند لمشرف محدد --</option>
-                  {allTeamMembers.map((p) => (
+                  {(managers && managers.length > 0 ? managers : allTeamMembers).map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle})`}
                     </option>
@@ -417,7 +419,7 @@ export function ClientTeamModal({
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 font-medium text-xs focus:ring-2 focus:ring-slate-500"
                 >
                   <option value="">-- غير مسند لليدر محدد --</option>
-                  {allTeamMembers.map((p) => (
+                  {(strategists && strategists.length > 0 ? strategists : reviewerCandidates).map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle})`}
                     </option>

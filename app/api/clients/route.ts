@@ -101,8 +101,8 @@ export async function GET(req: NextRequest) {
   membershipsRes.data?.filter((m) => m.user_id && m.roster_person_id).forEach((m) => joinedSet.add(m.roster_person_id!));
   invitesRes.data?.filter((i) => i.status === "accepted" && i.roster_person_id).forEach((i) => joinedSet.add(i.roster_person_id!));
 
-  // Calculate stats for each team member
-  const allTeamMembers = (roster || []).map((designer) => {
+  // Calculate stats for each active roster member
+  const allActiveMembers = (roster || []).map((designer) => {
     const memberClients = (clients || []).filter((c) => {
       const team = c.team_assignment;
       if (team) {
@@ -130,7 +130,8 @@ export async function GET(req: NextRequest) {
     const canApproveReviews = Boolean(
       designer.role !== "marketing_director" &&
         designer.role !== "business_owner_viewer" &&
-        (["owner", "company_owner", "senior_reviewer", "strategy_lead"].includes(designer.role) ||
+        designer.role !== "viewer" &&
+        (["owner", "company_owner", "manager", "senior_reviewer", "strategy_lead"].includes(designer.role) ||
           designer.custom_permissions?.approve_reviews === true)
     );
 
@@ -153,6 +154,11 @@ export async function GET(req: NextRequest) {
     };
   });
 
+  // Assignable execution & review members exclude read-only viewers and marketing_director (Ata)
+  const allTeamMembers = allActiveMembers.filter(
+    (m) => m.role !== "business_owner_viewer" && m.role !== "marketing_director" && m.role !== "viewer"
+  );
+
   const designers = allTeamMembers.filter(
     (m) => m.role === "designer" || !m.specialties.length || m.specialties.includes("design")
   );
@@ -165,8 +171,11 @@ export async function GET(req: NextRequest) {
   const videoEditors = allTeamMembers.filter(
     (m) => m.role === "video_editor" || m.specialties.includes("video_editing") || m.specialties.includes("video")
   );
-  const managers = allTeamMembers.filter(
-    (m) => m.role === "owner" || m.role === "company_owner" || m.role === "marketing_director" || m.specialties.includes("management")
+  const managers = allActiveMembers.filter(
+    (m) =>
+      m.role !== "business_owner_viewer" &&
+      m.role !== "viewer" &&
+      (m.role === "owner" || m.role === "company_owner" || m.role === "manager" || m.role === "marketing_director" || m.specialties.includes("management"))
   );
   const reviewers = allTeamMembers.filter((m) => m.canApproveReviews);
 

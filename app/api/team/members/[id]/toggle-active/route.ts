@@ -17,7 +17,7 @@ export async function PATCH(
       return authRes.errorResponse;
     }
 
-    const { membership, admin } = authRes.data;
+    const { membership, serverClient } = authRes.data;
     const rosterPersonId = params.id;
 
     if (!rosterPersonId) {
@@ -31,8 +31,8 @@ export async function PATCH(
       return NextResponse.json({ error: "حالة التفعيل غير صالحة." }, { status: 400 });
     }
 
-    // Call toggle_workspace_member_active RPC
-    const { data: rpcResult, error: rpcErr } = await admin.rpc("toggle_workspace_member_active", {
+    // Call toggle_workspace_member_active RPC with authenticated serverClient
+    const { data: rpcResult, error: rpcErr } = await serverClient.rpc("toggle_workspace_member_active", {
       p_workspace_id: membership.workspaceId,
       p_roster_person_id: rosterPersonId,
       p_is_active: isActive,

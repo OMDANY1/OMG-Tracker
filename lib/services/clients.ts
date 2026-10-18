@@ -17,7 +17,7 @@ export async function getClients(workspaceId: string): Promise<Client[]> {
     .from("clients")
     .select(`
       *,
-      owner:roster_people!clients_owner_roster_id_fkey(id, display_name, job_title),
+      owner:roster_people!fk_client_owner(id, display_name, job_title),
       campaigns(id, title, status),
       tasks(id, status, primary_assignee_id, work_stage),
       team_assignment:client_team_assignments(*),

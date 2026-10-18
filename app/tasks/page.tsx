@@ -704,7 +704,12 @@ export default function TasksPage() {
                       {(reviewers.length > 0
                         ? reviewers
                         : allTeamMembers.filter(
-                            (m) => !m.displayName.includes("عطا") && m.jobTitle !== "Marketing Director"
+                            (m) =>
+                              m.role !== "marketing_director" &&
+                              m.role !== "business_owner_viewer" &&
+                              (m.canApproveReviews === true ||
+                                ["owner", "company_owner", "manager", "senior_reviewer", "strategy_lead"].includes(m.role) ||
+                                m.custom_permissions?.approve_reviews === true)
                           )
                       ).map((m) => (
                         <option key={m.id} value={m.id}>
