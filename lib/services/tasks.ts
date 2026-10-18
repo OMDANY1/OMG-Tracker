@@ -33,8 +33,9 @@ export async function createTask(params: {
   estimatedMinutes?: number | null;
   brief?: string | null;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("create_task", {
@@ -62,6 +63,7 @@ export async function createBatchTasks(params: {
   campaignId: string;
   clientId: string;
   tasks: BatchTaskDraft[];
+  client?: any;
 }) {
   const createdTasks: any[] = [];
 
@@ -79,6 +81,7 @@ export async function createBatchTasks(params: {
       estimatedMinutes: draft.estimatedMinutes,
       priority: draft.priority,
       brief: draft.brief,
+      client: params.client,
     });
     createdTasks.push(res?.task || res);
   }
@@ -116,8 +119,9 @@ export async function reassignTask(params: {
   newAssigneeId: string;
   reason?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("reassign_task", {
@@ -136,8 +140,9 @@ export async function changeTaskReviewer(params: {
   newReviewerId: string;
   reason: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("change_task_reviewer", {
@@ -157,8 +162,9 @@ export async function updateTaskDueDate(params: {
   newDueDate?: string;
   reason?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const targetDueDate = params.newDueDate || params.newDueAt;
@@ -181,15 +187,16 @@ export async function bulkUpdateTasks(params: {
     primaryAssigneeId?: string;
     dueAt?: string;
   };
+  client?: any;
 }) {
   const results = [];
   for (const taskId of params.taskIds) {
     if (params.updates.primaryAssigneeId) {
-      const res = await reassignTask({ taskId, newAssigneeId: params.updates.primaryAssigneeId });
+      const res = await reassignTask({ taskId, newAssigneeId: params.updates.primaryAssigneeId, client: params.client });
       results.push(res);
     }
     if (params.updates.dueAt) {
-      const res = await updateTaskDueDate({ taskId, newDueAt: params.updates.dueAt });
+      const res = await updateTaskDueDate({ taskId, newDueAt: params.updates.dueAt, client: params.client });
       results.push(res);
     }
   }
@@ -200,8 +207,9 @@ export async function updateTaskPriority(params: {
   taskId: string;
   newPriority: TaskPriority;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("update_task_priority", {
@@ -218,8 +226,9 @@ export async function addTaskCollaborator(params: {
   taskId: string;
   rosterPersonId: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("add_task_collaborator", {
@@ -236,8 +245,9 @@ export async function removeTaskCollaborator(params: {
   taskId: string;
   rosterPersonId: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("remove_task_collaborator", {
@@ -255,8 +265,9 @@ export async function createTaskChecklistItem(params: {
   title: string;
   sortOrder?: number;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("create_task_checklist_item", {
@@ -276,8 +287,9 @@ export async function updateTaskChecklistItem(params: {
   isCompleted?: boolean;
   sortOrder?: number;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("update_task_checklist_item", {
@@ -294,8 +306,9 @@ export async function updateTaskChecklistItem(params: {
 export async function deleteTaskChecklistItem(params: {
   itemId: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("delete_task_checklist_item", {
@@ -314,8 +327,9 @@ export async function createTaskAttachment(params: {
   fileSizeBytes: number;
   mimeType: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("create_task_attachment", {
@@ -334,8 +348,9 @@ export async function createTaskAttachment(params: {
 export async function deleteTaskAttachment(params: {
   attachmentId: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("delete_task_attachment", {
@@ -356,8 +371,9 @@ export async function submitTaskDeliverable(params: {
   deliverableUrl?: string;
   notes?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("submit_task_deliverable", {
@@ -381,8 +397,9 @@ export async function setTaskWaitingState(params: {
   waitingReason?: string;
   waitingOnRosterId?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("set_task_waiting_state", {
@@ -401,8 +418,9 @@ export async function approveCopywritingAndUnlockDownstream(params: {
   copyTaskId: string;
   approvedCopy: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("approve_copywriting_and_unlock_downstream", {

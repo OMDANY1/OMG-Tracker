@@ -33,10 +33,11 @@ export async function POST(
       isWaiting,
       waitingReason: waitingReason?.trim() || undefined,
       waitingOnRosterId: waitingOnRosterId || undefined,
+      client: access.data.serverClient,
     });
 
     return NextResponse.json({ success: true, result });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || "Failed to update waiting state" }, { status: 500 });
+    return NextResponse.json({ error: err.message || "Failed to update waiting state" }, { status: 400 });
   }
 }

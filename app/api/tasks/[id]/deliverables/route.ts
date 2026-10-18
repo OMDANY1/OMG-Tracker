@@ -47,10 +47,11 @@ export async function POST(
       payload: payload || {},
       deliverableUrl: deliverableUrl || null,
       notes: notes || null,
+      client: access.data.serverClient,
     });
 
     return NextResponse.json({ success: true, result });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || "Failed to submit deliverable" }, { status: 500 });
+    return NextResponse.json({ error: err.message || "Failed to submit deliverable" }, { status: 400 });
   }
 }

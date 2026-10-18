@@ -1,8 +1,10 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Client, ClientDifficulty, ClientExtraWorkload, ClientState } from "@/types/database";
 
-async function getClient() {
+async function getClient(providedClient?: SupabaseClient | null) {
+  if (providedClient) return providedClient;
   const serverClient = await createServerSupabaseClient().catch(() => null);
   return serverClient || createAdminClient();
 }
@@ -43,8 +45,9 @@ export async function createClient(params: {
   brandGuideUrl?: string;
   briefUrl?: string;
   idempotencyKey?: string;
+  supabaseClient?: SupabaseClient;
 }) {
-  const supabase = await getClient();
+  const supabase = await getClient(params.supabaseClient);
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("create_client", {
@@ -57,6 +60,77 @@ export async function createClient(params: {
     p_notes: params.notes || null,
     p_brand_guide_url: params.brandGuideUrl || null,
     p_brief_url: params.briefUrl || null,
+    p_idempotency_key: params.idempotencyKey || null,
+  });
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export async function createClientAtomic(params: {
+  workspaceId: string;
+  name: string;
+  difficulty?: ClientDifficulty;
+  extraWorkload?: ClientExtraWorkload;
+  state?: ClientState;
+  notes?: string | null;
+  brandGuideUrl?: string | null;
+  briefUrl?: string | null;
+  primaryStrategistId?: string | null;
+  primaryCopywriterId?: string | null;
+  primaryDesignerId?: string | null;
+  primaryVideoEditorId?: string | null;
+  strategyReviewerId?: string | null;
+  copywritingReviewerId?: string | null;
+  designReviewerId?: string | null;
+  videoReviewerId?: string | null;
+  marketingDirectorId?: string | null;
+  strategyLeadId?: string | null;
+  requiresVideo?: boolean;
+  objectives?: string | null;
+  targetAudience?: string | null;
+  productsServices?: string | null;
+  toneOfVoice?: string | null;
+  contentPillars?: string[];
+  dosAndDonts?: string | null;
+  brandGuidelinesUrl?: string | null;
+  assetsDriveUrl?: string | null;
+  strategySummary?: string | null;
+  idempotencyKey?: string | null;
+  supabaseClient?: SupabaseClient;
+}) {
+  const supabase = await getClient(params.supabaseClient);
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const { data, error } = await supabase.rpc("create_client_atomic", {
+    p_workspace_id: params.workspaceId,
+    p_name: params.name,
+    p_difficulty: params.difficulty || "Medium",
+    p_extra_workload: params.extraWorkload || "None",
+    p_state: params.state || "Active",
+    p_notes: params.notes || null,
+    p_brand_guide_url: params.brandGuideUrl || null,
+    p_brief_url: params.briefUrl || null,
+    p_primary_strategist_id: params.primaryStrategistId || null,
+    p_primary_copywriter_id: params.primaryCopywriterId || null,
+    p_primary_designer_id: params.primaryDesignerId || null,
+    p_primary_video_editor_id: params.primaryVideoEditorId || null,
+    p_strategy_reviewer_id: params.strategyReviewerId || null,
+    p_copywriting_reviewer_id: params.copywritingReviewerId || null,
+    p_design_reviewer_id: params.designReviewerId || null,
+    p_video_reviewer_id: params.videoReviewerId || null,
+    p_marketing_director_id: params.marketingDirectorId || null,
+    p_strategy_lead_id: params.strategyLeadId || null,
+    p_requires_video: Boolean(params.requiresVideo),
+    p_objectives: params.objectives || null,
+    p_target_audience: params.targetAudience || null,
+    p_products_services: params.productsServices || null,
+    p_tone_of_voice: params.toneOfVoice || null,
+    p_content_pillars: params.contentPillars || [],
+    p_dos_and_donts: params.dosAndDonts || null,
+    p_brand_guidelines_url: params.brandGuidelinesUrl || null,
+    p_assets_drive_url: params.assetsDriveUrl || null,
+    p_strategy_summary: params.strategySummary || null,
     p_idempotency_key: params.idempotencyKey || null,
   });
 
@@ -78,8 +152,9 @@ export async function updateClient(params: {
   reassignOpenTasksToNewOwner?: boolean;
   actorId?: string;
   idempotencyKey?: string;
+  supabaseClient?: SupabaseClient;
 }) {
-  const supabase = await getClient();
+  const supabase = await getClient(params.supabaseClient);
   if (!supabase) throw new Error("Supabase is not configured.");
 
   let workspaceId = params.workspaceId;
@@ -126,8 +201,9 @@ export async function updateClientAssignment(params: {
   newOwnerRosterId?: string | null;
   reassignOpenTasks?: boolean;
   idempotencyKey?: string;
+  supabaseClient?: SupabaseClient;
 }) {
-  const supabase = await getClient();
+  const supabase = await getClient(params.supabaseClient);
   if (!supabase) throw new Error("Supabase is not configured.");
 
   let workspaceId = params.workspaceId;
@@ -165,8 +241,9 @@ export async function archiveClient(params: {
   workspaceId: string;
   clientId: string;
   idempotencyKey?: string;
+  supabaseClient?: SupabaseClient;
 }) {
-  const supabase = await getClient();
+  const supabase = await getClient(params.supabaseClient);
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const { data, error } = await supabase.rpc("archive_client", {
@@ -194,8 +271,9 @@ export async function upsertClientTeamAssignment(params: {
   strategyLeadId?: string | null;
   requiresVideo?: boolean | null;
   idempotencyKey?: string;
+  supabaseClient?: SupabaseClient;
 }) {
-  const supabase = await getClient();
+  const supabase = await getClient(params.supabaseClient);
   if (!supabase) throw new Error("Supabase is not configured.");
 
   let workspaceId = params.workspaceId;
@@ -251,8 +329,9 @@ export async function upsertClientBrief(params: {
   assetsDriveUrl?: string | null;
   strategySummary?: string | null;
   idempotencyKey?: string;
+  supabaseClient?: SupabaseClient;
 }) {
-  const supabase = await getClient();
+  const supabase = await getClient(params.supabaseClient);
   if (!supabase) throw new Error("Supabase is not configured.");
 
   let workspaceId = params.workspaceId;
@@ -299,8 +378,9 @@ export async function reviewClientBriefOperational(params: {
   decision?: "approved" | "changes_requested";
   feedback?: string | null;
   idempotencyKey?: string;
+  supabaseClient?: SupabaseClient;
 }) {
-  const supabase = await getClient();
+  const supabase = await getClient(params.supabaseClient);
   if (!supabase) throw new Error("Supabase is not configured.");
 
   let workspaceId = params.workspaceId;
@@ -339,8 +419,9 @@ export async function approveClientBriefStrategy(params: {
   clientId: string;
   approvedContent: string;
   idempotencyKey?: string;
+  supabaseClient?: SupabaseClient;
 }) {
-  const supabase = await getClient();
+  const supabase = await getClient(params.supabaseClient);
   if (!supabase) throw new Error("Supabase is not configured.");
 
   let workspaceId = params.workspaceId;

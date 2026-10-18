@@ -42,9 +42,14 @@ export default function ReportsPage() {
   const [selectedCampaign, setSelectedCampaign] = useState<string>("");
 
   // User profile & membership state
-  const [isOwner, setIsOwner] = useState(true);
-  const [currentUserRole, setCurrentUserRole] = useState<string>("owner");
+  const [isOwner, setIsOwner] = useState(false);
+  const [currentUserRole, setCurrentUserRole] = useState<string>("viewer");
   const [currentUserName, setCurrentUserName] = useState<string>("");
+  const canExport =
+    isOwner ||
+    currentUserRole === "marketing_director" ||
+    currentUserRole === "strategy_lead" ||
+    currentUserRole === "manager";
 
   useEffect(() => {
     try {
@@ -56,7 +61,7 @@ export default function ReportsPage() {
         const res = await fetch("/api/auth/me");
         if (res.ok) {
           const data = await res.json();
-          const role = data.membership?.role || "owner";
+          const role = data.membership?.role || "viewer";
           setIsOwner(role === "owner" || role === "company_owner");
           setCurrentUserRole(role);
           setCurrentUserName(data.membership?.displayName || "المستخدم");
@@ -97,7 +102,7 @@ export default function ReportsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          workspaceId: "00000000-0000-0000-0000-000000000000",
+          workspaceId: report?.workspaceId || undefined,
           monthKey,
           commentary,
           idempotencyKey: `finalize-${monthKey}-${Date.now()}`,
@@ -204,33 +209,37 @@ export default function ReportsPage() {
             <option value="2026-10">أكتوبر 2026 (October 2026)</option>
           </select>
 
-          {/* Export Timesheet CSV (Excel BOM) */}
-          <button
-            onClick={handleExportTimesheetCsv}
-            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-            title="تصدير كشف الساعات التفصيلي بصيغة Excel تدعم اللغة العربية"
-          >
-            <Download className="w-4 h-4" />
-            تصدير الساعات (Excel CSV)
-          </button>
+          {canExport && (
+            <>
+              {/* Export Timesheet CSV (Excel BOM) */}
+              <button
+                onClick={handleExportTimesheetCsv}
+                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                title="تصدير كشف الساعات التفصيلي بصيغة Excel تدعم اللغة العربية"
+              >
+                <Download className="w-4 h-4" />
+                تصدير الساعات (Excel CSV)
+              </button>
 
-          {/* Export Evaluations CSV (Excel BOM) */}
-          <button
-            onClick={handleExportEvaluationsCsv}
-            className="px-3.5 py-2 bg-sky-700 hover:bg-sky-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-            title="تصدير نتائج وتقييمات المراجعات الفعلية المسجلة"
-          >
-            <FileText className="w-4 h-4" />
-            تصدير التقييمات (Excel CSV)
-          </button>
+              {/* Export Evaluations CSV (Excel BOM) */}
+              <button
+                onClick={handleExportEvaluationsCsv}
+                className="px-3.5 py-2 bg-sky-700 hover:bg-sky-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                title="تصدير نتائج وتقييمات المراجعات الفعلية المسجلة"
+              >
+                <FileText className="w-4 h-4" />
+                تصدير التقييمات (Excel CSV)
+              </button>
 
-          <button
-            onClick={handleDownloadAnalysisPack}
-            className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-          >
-            <Download className="w-4 h-4" />
-            حزمة التحليل (ZIP)
-          </button>
+              <button
+                onClick={handleDownloadAnalysisPack}
+                className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+              >
+                <Download className="w-4 h-4" />
+                حزمة التحليل (ZIP)
+              </button>
+            </>
+          )}
 
           <button
             onClick={handlePrint}
@@ -246,7 +255,7 @@ export default function ReportsPage() {
               onClick={handleFinalizeSnapshot}
               disabled={isFinalizing}
               className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-              title="تجميد واعتماد التقرير (خاص بالمالك عماد)"
+              title="تجميد واعتماد التقرير (خاص بالمالك)"
             >
               <Lock className="w-3.5 h-3.5" />
               تجميد واعتماد التقرير
@@ -256,16 +265,19 @@ export default function ReportsPage() {
       </div>
 
       {/* Role Notice Banner */}
-      {!isOwner && (
+      {!isOwner && currentUserName && (
         <div className="p-3 bg-sky-50 border border-sky-200 rounded-xl text-xs text-sky-900 flex items-center justify-between no-print">
           <div className="flex items-center gap-2">
             <Users className="w-4 h-4 text-sky-600 shrink-0" />
             <span>
-              أنت مسجل الآن كـ: <strong>{currentUserName} ({currentUserRole})</strong> — صلاحية كاملة للاطلاع على ساعات العمل ومتابعة الأداء وتصدير التقارير لجميع الفرق.
+              أنت مسجل الآن كـ: <strong>{currentUserName} ({currentUserRole})</strong> —{" "}
+              {canExport
+                ? "صلاحية كاملة للاطلاع على ساعات العمل ومتابعة الأداء وتصدير التقارير لجميع الفرق."
+                : "وضع العرض والاطلاع على مؤشرات الأداء."}
             </span>
           </div>
           <span className="text-[11px] text-sky-700 font-semibold bg-white/70 px-2 py-0.5 rounded-lg border border-sky-200">
-            تصدير Excel مفعّل
+            {canExport ? "تصدير Excel مفعّل" : "وضع العرض فقط"}
           </span>
         </div>
       )}
@@ -536,7 +548,7 @@ export default function ReportsPage() {
               <thead className="bg-slate-50 text-slate-700 font-bold">
                 <tr>
                   <th className="px-4 py-2.5">العميل</th>
-                  <th className="px-4 py-2.5">المصمم المسند</th>
+                  <th className="px-4 py-2.5">المسؤول المسند</th>
                   <th className="px-4 py-2.5">مستوى الصعوبة</th>
                   <th className="px-4 py-2.5">إجمالي الساعات</th>
                   <th className="px-4 py-2.5">ساعات التعديل</th>
@@ -562,7 +574,7 @@ export default function ReportsPage() {
                         </span>
                       </td>
                       <td className="px-4 py-2.5 font-bold font-mono text-slate-900">{c.totalHours || "0.00"} ساعة</td>
-                      <td className="px-4 py-2.5 font-mono text-rose-700">{c.internalRevisionHours || "0.00"} ساعة</td>
+                      <td className="px-4 py-2.5 font-mono text-rose-700">{c.revisionHours ?? c.internalRevisionHours ?? "0.00"} ساعة</td>
                       <td className="px-4 py-2.5 font-bold font-mono text-emerald-700">{c.deliveredTasks || 0}</td>
                       <td className="px-4 py-2.5 font-mono text-slate-500">{c.activeTasks || 0}</td>
                     </tr>

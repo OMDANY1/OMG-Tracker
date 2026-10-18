@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import {
-  createClient,
+  createClientAtomic,
   updateClient,
   updateClientAssignment,
   upsertClientTeamAssignment,
@@ -10,39 +8,28 @@ import {
   reviewClientBriefOperational,
   approveClientBriefStrategy,
 } from "@/lib/services/clients";
-import { requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
+import {
+  requireWorkspaceMembership,
+  requireOwner,
+  validateSameOrigin,
+  isFullAdminRole,
+  hasGranularPermission,
+} from "@/lib/auth/server-auth";
 
-export async function GET() {
-  const admin = createAdminClient();
-  if (!admin) {
-    return NextResponse.json({ error: "Database unconfigured" }, { status: 503 });
+export async function GET(req: NextRequest) {
+  const authRes = await requireWorkspaceMembership(req);
+  if (!authRes.success) {
+    return authRes.errorResponse;
   }
 
-  // Determine caller role if session exists
-  let isOwner = false;
-  let isViewer = false;
-  let callerRosterId: string | null = null;
-  const serverClient = await createServerSupabaseClient().catch(() => null);
-  if (serverClient) {
-    const { data: authData } = await serverClient.auth.getUser();
-    if (authData?.user) {
-      const { data: member } = await admin
-        .from("workspace_memberships")
-        .select("role, roster_person_id")
-        .eq("user_id", authData.user.id)
-        .eq("is_active", true)
-        .maybeSingle();
-      if (member?.role === "owner" || member?.role === "company_owner") {
-        isOwner = true;
-      }
-      if (member?.role === "business_owner_viewer") {
-        isViewer = true;
-      }
-      callerRosterId = member?.roster_person_id || null;
-    }
-  }
+  const { membership, admin } = authRes.data;
+  const workspaceId = membership.workspaceId;
+  const isOwner = isFullAdminRole(membership.role);
+  const isViewer = membership.role === "business_owner_viewer";
+  const callerRosterId = membership.rosterPersonId || null;
+  const callerRole = membership.role;
 
-  // Fetch clients with full relations
+  // Fetch clients with full relations scoped to workspace
   const { data: rawClients, error } = await admin
     .from("clients")
     .select(`
@@ -65,6 +52,7 @@ export async function GET() {
       ),
       brief_data:client_briefs(*)
     `)
+    .eq("workspace_id", workspaceId)
     .order("name", { ascending: true });
 
   if (error) {
@@ -78,32 +66,40 @@ export async function GET() {
     brief_data: Array.isArray(c.brief_data) ? c.brief_data[0] || null : c.brief_data,
   }));
 
-  // Fetch active roster people with memberships and invitations
+  // Fetch active roster people with memberships and invitations scoped to workspace
   const [rosterRes, membershipsRes, invitesRes, reviewRulesRes] = await Promise.all([
     admin
       .from("roster_people")
       .select("id, display_name, job_title, specialties, is_active, role, custom_permissions")
+      .eq("workspace_id", workspaceId)
       .eq("is_active", true)
       .order("display_name", { ascending: true }),
     admin
       .from("workspace_memberships")
       .select("roster_person_id, user_id, is_active")
+      .eq("workspace_id", workspaceId)
       .eq("is_active", true),
     admin
       .from("workspace_invitations")
-      .select("roster_person_id, status"),
+      .select("roster_person_id, status")
+      .eq("workspace_id", workspaceId),
     admin
       .from("review_routing_rules")
       .select("*")
+      .eq("workspace_id", workspaceId)
       .order("priority", { ascending: false }),
   ]);
+
+  if (rosterRes.error) {
+    return NextResponse.json({ error: rosterRes.error.message }, { status: 500 });
+  }
 
   const roster = rosterRes.data || [];
   const reviewRules = reviewRulesRes.data || [];
 
   const joinedSet = new Set<string>();
-  membershipsRes.data?.filter(m => m.user_id && m.roster_person_id).forEach(m => joinedSet.add(m.roster_person_id!));
-  invitesRes.data?.filter(i => i.status === "accepted" && i.roster_person_id).forEach(i => joinedSet.add(i.roster_person_id!));
+  membershipsRes.data?.filter((m) => m.user_id && m.roster_person_id).forEach((m) => joinedSet.add(m.roster_person_id!));
+  invitesRes.data?.filter((i) => i.status === "accepted" && i.roster_person_id).forEach((i) => joinedSet.add(i.roster_person_id!));
 
   // Calculate stats for each team member
   const allTeamMembers = (roster || []).map((designer) => {
@@ -132,8 +128,10 @@ export async function GET() {
 
     const hasJoined = joinedSet.has(designer.id) || designer.role === "owner" || designer.role === "company_owner";
     const canApproveReviews = Boolean(
-      ["owner", "company_owner", "senior_reviewer", "strategy_lead"].includes(designer.role) ||
-      designer.custom_permissions?.approve_reviews === true
+      designer.role !== "marketing_director" &&
+        designer.role !== "business_owner_viewer" &&
+        (["owner", "company_owner", "senior_reviewer", "strategy_lead"].includes(designer.role) ||
+          designer.custom_permissions?.approve_reviews === true)
     );
 
     return {
@@ -185,31 +183,31 @@ export async function GET() {
     isOwner,
     isViewer,
     callerRosterId,
+    callerRole,
   });
 }
 
 export async function PUT(req: NextRequest) {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (serverClient) {
-      const { data: authData } = await serverClient.auth.getUser();
-      if (authData?.user) {
-        const admin = createAdminClient();
-        if (admin) {
-          const { data: member } = await admin
-            .from("workspace_memberships")
-            .select("role")
-            .eq("user_id", authData.user.id)
-            .eq("is_active", true)
-            .maybeSingle();
-          if (member?.role === "business_owner_viewer") {
-            return NextResponse.json(
-              { error: "غير مصرح: حساب مالك الشركة للمشاهدة فقط ولا يملك صلاحية التعديل." },
-              { status: 403 }
-            );
-          }
-        }
-      }
+    if (!validateSameOrigin(req)) {
+      return NextResponse.json(
+        { error: "طلب غير مصرح به (Same-Origin check failed)." },
+        { status: 403 }
+      );
+    }
+
+    const authRes = await requireWorkspaceMembership(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
+    }
+
+    const { membership, serverClient } = authRes.data;
+
+    if (membership.role === "business_owner_viewer" || membership.role === "marketing_director") {
+      return NextResponse.json(
+        { error: "غير مصرح: دورك الحالي للقراءة والتقارير فقط ولا يملك صلاحية التعديل أو الاعتماد." },
+        { status: 403 }
+      );
     }
 
     const body = await req.json();
@@ -227,6 +225,7 @@ export async function PUT(req: NextRequest) {
       brandGuideUrl,
       briefUrl,
       actorId,
+      idempotencyKey,
       // Team assignment fields
       primaryStrategistId,
       primaryCopywriterId,
@@ -255,10 +254,21 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "clientId is required" }, { status: 400 });
     }
 
+    const isAdminOrManager =
+      isFullAdminRole(membership.role) ||
+      membership.role === "manager" ||
+      hasGranularPermission(membership, "manage_clients");
+
     // 1. Update Team Assignment
     if (action === "update_team") {
+      if (!isAdminOrManager && !hasGranularPermission(membership, "assign_team")) {
+        return NextResponse.json(
+          { error: "غير مصرح: توزيع فريق العميل مقتصر على الإدارة فقط." },
+          { status: 403 }
+        );
+      }
       const result = await upsertClientTeamAssignment({
-        workspaceId: "00000000-0000-0000-0000-000000000000",
+        workspaceId: membership.workspaceId,
         clientId,
         primaryStrategistId,
         primaryCopywriterId,
@@ -271,7 +281,8 @@ export async function PUT(req: NextRequest) {
         marketingDirectorId,
         strategyLeadId,
         requiresVideo: body.requiresVideo !== undefined ? body.requiresVideo : null,
-        idempotencyKey: `cta-${clientId}-${Date.now()}`,
+        idempotencyKey: idempotencyKey || `cta-${clientId}-${Date.now()}`,
+        supabaseClient: serverClient,
       });
       return NextResponse.json({ success: true, result });
     }
@@ -279,7 +290,7 @@ export async function PUT(req: NextRequest) {
     // 2. Update Client Brief
     if (action === "update_brief") {
       const result = await upsertClientBrief({
-        workspaceId: "00000000-0000-0000-0000-000000000000",
+        workspaceId: membership.workspaceId,
         clientId,
         objectives,
         targetAudience,
@@ -290,48 +301,74 @@ export async function PUT(req: NextRequest) {
         brandGuidelinesUrl,
         assetsDriveUrl,
         strategySummary,
-        idempotencyKey: `cb-${clientId}-${Date.now()}`,
+        idempotencyKey: idempotencyKey || `cb-${clientId}-${Date.now()}`,
+        supabaseClient: serverClient,
       });
       return NextResponse.json({ success: true, result });
     }
 
-    // 2.1 Operational Review (Arwa - Strategy Lead / Designated Reviewer)
+    // 2.1 Operational Review (Arwa - Strategy Lead / Designated Reviewer / Owner / Company Owner)
     if (action === "review_strategy_operational") {
       const result = await reviewClientBriefOperational({
-        workspaceId: "00000000-0000-0000-0000-000000000000",
+        workspaceId: membership.workspaceId,
         clientId,
         decision: body.decision || "approved",
         feedback: body.feedback || null,
-        idempotencyKey: `rev-strat-${clientId}-${Date.now()}`,
+        idempotencyKey: idempotencyKey || `rev-strat-${clientId}-${Date.now()}`,
+        supabaseClient: serverClient,
       });
       return NextResponse.json({ success: true, result });
     }
 
-    // 3. Marketing Strategy Approval (Ata - Marketing Director / Owner Emad)
+    // 3. Final Strategy Approval (Strictly Owner / Company Owner only)
     if (action === "approve_strategy") {
+      if (!isFullAdminRole(membership.role)) {
+        return NextResponse.json(
+          { error: "غير مصرح: الاعتماد النهائي للاستراتيجية مقتصر على مالك النظام أو الشريك فقط." },
+          { status: 403 }
+        );
+      }
       if (!approvedContent || !approvedContent.trim()) {
         return NextResponse.json({ error: "Approved content cannot be empty" }, { status: 400 });
       }
       const result = await approveClientBriefStrategy({
-        workspaceId: "00000000-0000-0000-0000-000000000000",
+        workspaceId: membership.workspaceId,
         clientId,
         approvedContent,
-        idempotencyKey: `appr-strat-${clientId}-${Date.now()}`,
+        idempotencyKey: idempotencyKey || `appr-strat-${clientId}-${Date.now()}`,
+        supabaseClient: serverClient,
       });
       return NextResponse.json({ success: true, result });
     }
 
     // 4. Legacy Reassign
     if (action === "reassign" || newOwnerRosterId !== undefined) {
+      if (!isAdminOrManager && !hasGranularPermission(membership, "assign_team")) {
+        return NextResponse.json(
+          { error: "غير مصرح: إعادة إسناد العميل مقتصرة على الإدارة فقط." },
+          { status: 403 }
+        );
+      }
       const result = await updateClientAssignment({
+        workspaceId: membership.workspaceId,
         clientId,
         newOwnerRosterId: newOwnerRosterId !== undefined ? newOwnerRosterId : ownerRosterId,
         reassignOpenTasks: !!reassignOpenTasksToNewOwner,
+        idempotencyKey: idempotencyKey || `reassign-${clientId}-${Date.now()}`,
+        supabaseClient: serverClient,
       });
       return NextResponse.json({ success: true, result });
     }
 
+    if (!isAdminOrManager) {
+      return NextResponse.json(
+        { error: "غير مصرح: تعديل بيانات العميل مقتصر على الإدارة فقط." },
+        { status: 403 }
+      );
+    }
+
     const updated = await updateClient({
+      workspaceId: membership.workspaceId,
       clientId,
       name,
       ownerRosterId,
@@ -343,6 +380,8 @@ export async function PUT(req: NextRequest) {
       briefUrl,
       reassignOpenTasksToNewOwner,
       actorId,
+      idempotencyKey: idempotencyKey || `upd-client-${clientId}-${Date.now()}`,
+      supabaseClient: serverClient,
     });
 
     return NextResponse.json({ client: updated });
@@ -365,7 +404,7 @@ export async function POST(req: NextRequest) {
       return authRes.errorResponse;
     }
 
-    const { membership, admin } = authRes.data;
+    const { membership, admin, serverClient } = authRes.data;
     const body = await req.json();
     const {
       name,
@@ -375,6 +414,7 @@ export async function POST(req: NextRequest) {
       notes,
       brandGuideUrl,
       briefUrl,
+      idempotencyKey,
       // Team assignment fields
       primaryStrategistId,
       primaryCopywriterId,
@@ -403,31 +443,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "اسم العميل مطلوب ولا يمكن أن يكون فارغاً." }, { status: 400 });
     }
 
-    // 1. Create client
-    const clientResult = await createClient({
+    const cleanName = name.trim();
+    const stableKey =
+      typeof idempotencyKey === "string" && idempotencyKey.trim()
+        ? idempotencyKey.trim()
+        : `client-create-atomic-${membership.workspaceId}-${cleanName.toLowerCase()}`;
+
+    // Single atomic transaction for client + team assignment + brief
+    const atomicRes = await createClientAtomic({
       workspaceId: membership.workspaceId,
-      name: name.trim(),
-      ownerRosterId: primaryDesignerId || null,
+      name: cleanName,
       difficulty: difficulty || "Medium",
       extraWorkload: extraWorkload || "None",
       state: state || "Active",
       notes: notes || null,
       brandGuideUrl: brandGuideUrl || null,
       briefUrl: briefUrl || null,
-      idempotencyKey: `client-create-${Date.now()}`,
-    });
-
-    const createdClient = clientResult?.client || clientResult;
-    const clientId = createdClient?.id;
-
-    if (!clientId) {
-      throw new Error("فشل الحصول على معرف العميل الجديد.");
-    }
-
-    // 2. Upsert team assignment
-    await upsertClientTeamAssignment({
-      workspaceId: membership.workspaceId,
-      clientId,
       primaryStrategistId: primaryStrategistId || null,
       primaryCopywriterId: primaryCopywriterId || null,
       primaryDesignerId: primaryDesignerId || null,
@@ -438,57 +469,40 @@ export async function POST(req: NextRequest) {
       videoReviewerId: videoReviewerId || null,
       marketingDirectorId: marketingDirectorId || null,
       strategyLeadId: strategyLeadId || null,
-      requiresVideo: !!requiresVideo,
-      idempotencyKey: `cta-create-${clientId}-${Date.now()}`,
+      requiresVideo: Boolean(requiresVideo),
+      objectives: objectives || null,
+      targetAudience: targetAudience || null,
+      productsServices: productsServices || null,
+      toneOfVoice: toneOfVoice || null,
+      contentPillars: Array.isArray(contentPillars) ? contentPillars : [],
+      dosAndDonts: dosAndDonts || null,
+      brandGuidelinesUrl: brandGuidelinesUrl || null,
+      assetsDriveUrl: assetsDriveUrl || null,
+      strategySummary: strategySummary || null,
+      idempotencyKey: stableKey,
+      supabaseClient: serverClient,
     });
 
-    // 3. If brief details provided, create initial brief
-    if (
-      objectives ||
-      targetAudience ||
-      productsServices ||
-      toneOfVoice ||
-      contentPillars ||
-      dosAndDonts ||
-      strategySummary ||
-      brandGuidelinesUrl ||
-      assetsDriveUrl
-    ) {
-      await upsertClientBrief({
-        workspaceId: membership.workspaceId,
-        clientId,
-        objectives,
-        targetAudience,
-        productsServices,
-        toneOfVoice,
-        contentPillars,
-        dosAndDonts,
-        brandGuidelinesUrl,
-        assetsDriveUrl,
-        strategySummary,
-        idempotencyKey: `brief-create-${clientId}-${Date.now()}`,
-      });
+    const clientId = atomicRes?.client_id || atomicRes?.client?.id;
+    if (!clientId) {
+      throw new Error("فشل الحصول على معرف العميل الجديد.");
     }
 
-    // 4. Audit event
-    await admin.from("audit_events").insert({
-      workspace_id: membership.workspaceId,
-      actor_id: membership.rosterPersonId,
-      action: "create_client",
-      entity_type: "clients",
-      entity_id: clientId,
-      metadata: {
-        name: name.trim(),
-        difficulty: difficulty || "Medium",
-        primary_designer_id: primaryDesignerId || null,
-        requires_video: !!requiresVideo,
-      },
-    });
+    const { data: createdClient } = await admin
+      .from("clients")
+      .select(`
+        *,
+        team_assignment:client_team_assignments(*),
+        brief_data:client_briefs(*)
+      `)
+      .eq("id", clientId)
+      .maybeSingle();
 
     return NextResponse.json({
       success: true,
-      message: `تم إنشاء العميل (${name.trim()}) بنجاح.`,
-      client: createdClient,
+      message: `تم إنشاء العميل (${cleanName}) بنجاح.`,
+      client: createdClient || { id: clientId, name: cleanName },
+      clientId,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "فشل إنشاء العميل." }, { status: 400 });

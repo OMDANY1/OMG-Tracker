@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { processCalendarCampaign } from "@/lib/services/content-calendars";
 import { isGeminiConfigured, classifyGeminiError, getGeminiModel } from "@/lib/ai/gemini-client";
+import {
+  requireWorkspaceMembership,
+  validateSameOrigin,
+  isFullAdminRole,
+  hasGranularPermission,
+} from "@/lib/auth/server-auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -10,31 +14,20 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (!serverClient) {
-      return NextResponse.json({ error: "جلسة المستخدم غير متوفرة." }, { status: 401 });
+    const authRes = await requireWorkspaceMembership(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
     }
 
-    const { data: authData, error: authErr } = await serverClient.auth.getUser();
-    if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "يجب تسجيل الدخول أولاً." }, { status: 401 });
-    }
+    const { membership } = authRes.data;
 
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
-    }
-
-    const { data: membership } = await admin
-      .from("workspace_memberships")
-      .select("role")
-      .eq("user_id", authData.user.id)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (!membership || membership.role !== "owner") {
+    if (
+      !isFullAdminRole(membership.role) &&
+      membership.role !== "manager" &&
+      !hasGranularPermission(membership, "create_campaigns")
+    ) {
       return NextResponse.json(
-        { error: "صلاحية غير كافية: الفحص التشخيصي مسموح فقط للمدير العام (Owner)." },
+        { error: "صلاحية غير كافية: الفحص التشخيصي مسموح فقط للمدير العام أو الشريك." },
         { status: 403 }
       );
     }
@@ -58,32 +51,27 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (!serverClient) {
-      return NextResponse.json({ error: "جلسة المستخدم غير متوفرة." }, { status: 401 });
-    }
-
-    const { data: authData, error: authErr } = await serverClient.auth.getUser();
-    if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "يجب تسجيل الدخول أولاً." }, { status: 401 });
-    }
-
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
-    }
-
-    // Check membership & verify Owner
-    const { data: membership } = await admin
-      .from("workspace_memberships")
-      .select("workspace_id, roster_person_id, role")
-      .eq("user_id", authData.user.id)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (!membership || membership.role !== "owner") {
+    if (!validateSameOrigin(req)) {
       return NextResponse.json(
-        { error: "صلاحية غير كافية: معالجة تقويم المحتوى مسموح فقط للمدير العام (Owner)." },
+        { error: "طلب غير مصرح به (Same-Origin check failed)." },
+        { status: 403 }
+      );
+    }
+
+    const authRes = await requireWorkspaceMembership(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
+    }
+
+    const { membership } = authRes.data;
+
+    if (
+      !isFullAdminRole(membership.role) &&
+      membership.role !== "manager" &&
+      !hasGranularPermission(membership, "create_campaigns")
+    ) {
+      return NextResponse.json(
+        { error: "صلاحية غير كافية: معالجة تقويم المحتوى مسموح فقط للمدير العام أو الشريك." },
         { status: 403 }
       );
     }
@@ -112,7 +100,7 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await processCalendarCampaign({
-      workspaceId: membership.workspace_id,
+      workspaceId: membership.workspaceId,
       campaignId,
       forceRefresh: Boolean(forceRefresh || forceNewAnalysis),
     });

@@ -210,6 +210,8 @@ export default function TeamPage() {
   const [invitationsPaused, setInvitationsPaused] = useState<boolean>(true);
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [actionToast, setActionToast] = useState<string | null>(null);
+  const [isOwner, setIsOwner] = useState<boolean>(false);
   const [isViewer, setIsViewer] = useState<boolean>(false);
   const [copySuccessId, setCopySuccessId] = useState<string | null>(null);
   const [showPermissionsMatrix, setShowPermissionsMatrix] = useState<boolean>(false);
@@ -277,9 +279,11 @@ export default function TeamPage() {
   const [inviteModalSuccess, setInviteModalSuccess] = useState<string | null>(null);
   const [invitePendingConflictId, setInvitePendingConflictId] = useState<string | null>(null);
 
-  const fetchTeamData = async () => {
-    setLoading(true);
-    setErrorMsg(null);
+  const fetchTeamData = async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setErrorMsg(null);
+    }
     try {
       const [workloadRes, invitesRes] = await Promise.all([
         fetch("/api/team/workload"),
@@ -292,9 +296,15 @@ export default function TeamPage() {
         if (typeof data.invitationsPaused === "boolean") {
           setInvitationsPaused(data.invitationsPaused);
         }
+        if (typeof data.isOwner === "boolean") {
+          setIsOwner(data.isOwner);
+        }
         if (typeof data.isViewer === "boolean") {
           setIsViewer(data.isViewer);
         }
+      } else if (!silent) {
+        const errData = await workloadRes.json().catch(() => ({}));
+        setErrorMsg(errData.error || "تعذر تحميل بيانات الفريق والطاقة الاستيعابية.");
       }
 
       if (invitesRes.ok) {
@@ -303,25 +313,32 @@ export default function TeamPage() {
         if (typeof iData.invitationsPaused === "boolean") {
           setInvitationsPaused(iData.invitationsPaused);
         }
+        if (typeof iData.isOwner === "boolean") {
+          setIsOwner(iData.isOwner);
+        }
         if (typeof iData.isViewer === "boolean") {
           setIsViewer(iData.isViewer);
         }
       }
     } catch (err: any) {
-      setErrorMsg(err.message || "فشل تحميل بيانات الفريق");
+      if (!silent) {
+        setErrorMsg(err.message || "فشل تحميل بيانات الفريق");
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    fetchTeamData();
+    fetchTeamData(false);
   }, []);
 
   // Realtime updates & sync
   useEffect(() => {
     const handleSync = () => {
-      fetchTeamData();
+      fetchTeamData(true);
     };
     window.addEventListener("team_data_changed", handleSync);
     window.addEventListener("clients_data_changed", handleSync);
@@ -468,8 +485,8 @@ export default function TeamPage() {
 
   // Handler for opening safe deactivation impact check
   const handleOpenDeactivation = async (member: WorkloadMember) => {
-    if (member.role === "owner") {
-      alert("لا يمكن تعطيل حساب المدير العام (المالك) حفاظاً على استقرار مساحة العمل.");
+    if (member.role === "owner" || member.role === "company_owner") {
+      alert("لا يمكن تعطيل حساب المالك حفاظاً على استقرار مساحة العمل.");
       return;
     }
 
@@ -484,7 +501,9 @@ export default function TeamPage() {
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "فشل إعادة التفعيل.");
-          fetchTeamData();
+          setActionToast(`تمت إعادة تفعيل حساب "${member.displayName}" بنجاح.`);
+          setTimeout(() => setActionToast(null), 4000);
+          fetchTeamData(true);
         } catch (e: any) {
           alert(e.message);
         }
@@ -531,8 +550,11 @@ export default function TeamPage() {
         throw new Error(data.error || "فشل تعطيل حساب العضو.");
       }
 
+      const memberName = deactivatingMember.displayName;
       setDeactivatingMember(null);
-      fetchTeamData();
+      setActionToast(`تم تعطيل حساب "${memberName}" مؤقتاً مع الاحتفاظ بسجلاته التاريخية.`);
+      setTimeout(() => setActionToast(null), 4000);
+      fetchTeamData(true);
     } catch (err: any) {
       setDeactivationError(err.message || "حدث خطأ أثناء تعطيل العضو.");
     } finally {
@@ -571,8 +593,11 @@ export default function TeamPage() {
   const handleConfirmHardDelete = async () => {
     if (!deletingMember) return;
 
-    if (deleteImpact?.open_tasks_count > 0 && !reassignTargetId) {
-      setDeleteError("يجب تحديد إجراء للمهام المفتوحة (اختيار عضو بديل أو فك الارتباط).");
+    if (
+      ((deleteImpact?.open_tasks_count || 0) > 0 || (deleteImpact?.assigned_clients_count || 0) > 0) &&
+      !reassignTargetId
+    ) {
+      setDeleteError("يجب تحديد إجراء للمهام المفتوحة والعملاء المسندين (اختيار عضو بديل أو فك الارتباط).");
       return;
     }
 
@@ -594,10 +619,13 @@ export default function TeamPage() {
         throw new Error(data.error || "فشل حذف العضو نهائياً.");
       }
 
+      const memberName = deletingMember.displayName;
       setDeletingMember(null);
       setTeamMembers((prev) => prev.filter((m) => m.id !== deletingMember.id));
+      setActionToast(`تم حذف العضو "${memberName}" نهائياً من قاعدة البيانات وإلغاء عضوياته ودعواته.`);
+      setTimeout(() => setActionToast(null), 4000);
       window.dispatchEvent(new CustomEvent("team_data_changed"));
-      fetchTeamData();
+      fetchTeamData(true);
     } catch (err: any) {
       setDeleteError(err.message || "حدث خطأ أثناء الحذف.");
     } finally {
@@ -791,7 +819,7 @@ export default function TeamPage() {
             </div>
           )}
           <button
-            onClick={fetchTeamData}
+            onClick={() => fetchTeamData(false)}
             disabled={loading}
             className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
             title="تحديث البيانات"
@@ -806,7 +834,7 @@ export default function TeamPage() {
             <Shield className="w-4 h-4 text-purple-700" />
             <span>مصفوفة الصلاحيات</span>
           </button>
-          {!isViewer && (
+          {isOwner && (
             <>
               <button
                 onClick={() => {
@@ -833,6 +861,26 @@ export default function TeamPage() {
           )}
         </div>
       </div>
+
+      {errorMsg && (
+        <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 flex items-center justify-between text-xs font-semibold">
+          <span>{errorMsg}</span>
+          <button
+            type="button"
+            onClick={() => fetchTeamData(false)}
+            className="px-3 py-1 bg-rose-600 text-white rounded-lg text-[11px] font-bold hover:bg-rose-700"
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      )}
+
+      {actionToast && (
+        <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 flex items-center gap-2 text-xs font-bold">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>{actionToast}</span>
+        </div>
+      )}
 
       {/* Invitations Status Notice Banner */}
       {invitationsPaused && (
@@ -1033,7 +1081,7 @@ export default function TeamPage() {
                       </div>
 
                       {/* CRM Access Status & Invitation Actions */}
-                      {!isLegacyOwner && member.role !== "owner" && (
+                      {!isLegacyOwner && member.role !== "owner" && member.role !== "company_owner" && (
                         <div className="pt-2.5 border-t border-slate-100 space-y-2">
                           <div className="flex items-center justify-between text-[11px]">
                             <span className="text-slate-500 font-semibold flex items-center gap-1">
@@ -1045,7 +1093,7 @@ export default function TeamPage() {
                             </span>
                           </div>
 
-                          {!isViewer && (
+                          {isOwner && (
                             <div>
                               {memberStatus.key === "not_invited" && (
                                 <button
@@ -1146,7 +1194,7 @@ export default function TeamPage() {
                             <Lock className="w-3 h-3 text-slate-400" />
                             <span>سجل أرشيفي قديم (معطل)</span>
                           </span>
-                        ) : !isViewer ? (
+                        ) : isOwner ? (
                           <button
                             type="button"
                             onClick={() => handleOpenEditMember(member)}
@@ -1162,7 +1210,7 @@ export default function TeamPage() {
                             <Lock className="w-3 h-3 text-slate-400" />
                             <span>حساب المالك محمي</span>
                           </span>
-                        ) : !isViewer ? (
+                        ) : isOwner ? (
                           <div className="flex items-center gap-1">
                             <button
                               type="button"
@@ -1227,7 +1275,7 @@ export default function TeamPage() {
             </p>
           </div>
 
-          {!isViewer && (
+          {isOwner && (
             <button
               type="button"
               onClick={() => setShowInviteModal(true)}
@@ -1311,7 +1359,7 @@ export default function TeamPage() {
                       <td className="p-3">
                         <div className="flex items-center gap-1.5">
                           {/* Resend button for pending or expired */}
-                          {!isViewer && (inv.status === "pending" || isExpired) && (
+                          {isOwner && (inv.status === "pending" || isExpired) && (
                             <button
                               type="button"
                               onClick={() => handleResendInvite(inv.id)}
@@ -1324,7 +1372,7 @@ export default function TeamPage() {
                           )}
 
                           {/* Issue/Activate Draft button */}
-                          {!isViewer && inv.status === "draft" && (
+                          {isOwner && inv.status === "draft" && (
                             <button
                               type="button"
                               onClick={() => handleIssueExistingInvite(inv.id)}
@@ -1337,7 +1385,7 @@ export default function TeamPage() {
                           )}
 
                           {/* Copy Link button */}
-                          {inv.status !== "revoked" && inv.status !== "accepted" && (
+                          {isOwner && inv.status !== "revoked" && inv.status !== "accepted" && (
                             <button
                               type="button"
                               onClick={() => handleCopyLink(inv)}
@@ -1364,7 +1412,7 @@ export default function TeamPage() {
                           )}
 
                           {/* Revoke button */}
-                          {!isViewer && inv.status !== "revoked" && inv.status !== "accepted" && (
+                          {isOwner && inv.status !== "revoked" && inv.status !== "accepted" && (
                             <button
                               type="button"
                               onClick={() => handleRevokeInvite(inv.id)}
@@ -1761,16 +1809,16 @@ export default function TeamPage() {
                   )}
                 </select>
 
-                {editingMember.role === "owner" && (
+                {(editingMember.role === "owner" || editingMember.role === "company_owner") && (
                   <div className="mt-1.5 p-2 bg-purple-50 border border-purple-200 text-purple-900 rounded-lg text-[10px] flex items-center gap-1.5 font-semibold">
                     <Lock className="w-3.5 h-3.5 text-purple-700 shrink-0" />
-                    <span>حساب المدير العام محمي بموجب قواعد النظام بصلاحيات إدارية كاملة.</span>
+                    <span>حساب المالك محمي بموجب قواعد النظام بصلاحيات إدارية كاملة.</span>
                   </div>
                 )}
               </div>
 
               {/* Access Scope Selector for Edit Member */}
-              {editingMember.role !== "owner" && (
+              {editingMember.role !== "owner" && editingMember.role !== "company_owner" && (
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">
                     نطاق الصلاحيات التشغيلي (Access Scope):
@@ -1805,7 +1853,7 @@ export default function TeamPage() {
               )}
 
               {/* Granular Permissions (14 Permissions) for Edit Member */}
-              {editingMember.role !== "owner" && (
+              {editingMember.role !== "owner" && editingMember.role !== "company_owner" && (
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="font-bold text-slate-700 block">

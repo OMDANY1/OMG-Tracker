@@ -31,6 +31,7 @@ export function DeadlineSettingsCard() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [isOwner, setIsOwner] = useState(false);
 
   // Form State
   const [staticLead, setStaticLead] = useState(2);
@@ -52,7 +53,15 @@ export function DeadlineSettingsCard() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/workspace/deadline-settings");
+      const [res, meRes] = await Promise.all([
+        fetch("/api/workspace/deadline-settings"),
+        fetch("/api/auth/me"),
+      ]);
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        const role = meData?.membership?.role;
+        setIsOwner(role === "owner" || role === "company_owner");
+      }
       if (res.ok) {
         const data = await res.json();
         const s = data.settings;
@@ -88,6 +97,7 @@ export function DeadlineSettingsCard() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isOwner) return;
     setSaving(true);
     setError(null);
     setSuccessMsg(null);
@@ -123,6 +133,7 @@ export function DeadlineSettingsCard() {
   };
 
   const handleOpenPreview = async () => {
+    if (!isOwner) return;
     setRecalculating(true);
     setError(null);
     setRecalculateSuccess(null);
@@ -148,6 +159,7 @@ export function DeadlineSettingsCard() {
   };
 
   const handleConfirmRecalculate = async () => {
+    if (!isOwner) return;
     setRecalculating(true);
     setError(null);
     try {
@@ -176,6 +188,7 @@ export function DeadlineSettingsCard() {
   };
 
   const toggleWorkingDay = (dayId: number) => {
+    if (!isOwner) return;
     if (workingDays.includes(dayId)) {
       if (workingDays.length <= 1) return; // Must have at least 1 day
       setWorkingDays(workingDays.filter((d) => d !== dayId));
@@ -198,15 +211,17 @@ export function DeadlineSettingsCard() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={handleOpenPreview}
-          disabled={recalculating}
-          className="px-4 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 font-semibold text-xs flex items-center gap-1.5 transition-all self-start sm:self-auto shadow-xs"
-        >
-          <Eye className="w-4 h-4 text-purple-600" />
-          <span>معاينة إعادة الاحتساب للمهام المعلقة</span>
-        </button>
+        {isOwner && (
+          <button
+            type="button"
+            onClick={handleOpenPreview}
+            disabled={recalculating}
+            className="px-4 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 font-semibold text-xs flex items-center gap-1.5 transition-all self-start sm:self-auto shadow-xs"
+          >
+            <Eye className="w-4 h-4 text-purple-600" />
+            <span>معاينة إعادة الاحتساب للمهام المعلقة</span>
+          </button>
+        )}
       </div>
 
       {error && (
@@ -233,9 +248,10 @@ export function DeadlineSettingsCard() {
                 type="number"
                 min={1}
                 max={14}
+                disabled={!isOwner}
                 value={staticLead}
                 onChange={(e) => setStaticLead(parseInt(e.target.value, 10) || 1)}
-                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500"
+                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500 disabled:bg-slate-100"
               />
               <span className="text-xs text-slate-500">أيام عمل قبل النشر</span>
             </div>
@@ -249,9 +265,10 @@ export function DeadlineSettingsCard() {
                 type="number"
                 min={1}
                 max={14}
+                disabled={!isOwner}
                 value={carouselLead}
                 onChange={(e) => setCarouselLead(parseInt(e.target.value, 10) || 1)}
-                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500"
+                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500 disabled:bg-slate-100"
               />
               <span className="text-xs text-slate-500">أيام عمل قبل النشر</span>
             </div>
@@ -265,9 +282,10 @@ export function DeadlineSettingsCard() {
                 type="number"
                 min={1}
                 max={14}
+                disabled={!isOwner}
                 value={videoLead}
                 onChange={(e) => setVideoLead(parseInt(e.target.value, 10) || 1)}
-                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500"
+                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500 disabled:bg-slate-100"
               />
               <span className="text-xs text-slate-500">أيام عمل قبل النشر</span>
             </div>
@@ -281,9 +299,10 @@ export function DeadlineSettingsCard() {
                 type="number"
                 min={1}
                 max={7}
+                disabled={!isOwner}
                 value={reviewLead}
                 onChange={(e) => setReviewLead(parseInt(e.target.value, 10) || 1)}
-                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500"
+                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500 disabled:bg-slate-100"
               />
               <span className="text-xs text-slate-500">يوم عمل قبل النشر</span>
             </div>
@@ -297,9 +316,10 @@ export function DeadlineSettingsCard() {
                 type="number"
                 min={0}
                 max={7}
+                disabled={!isOwner}
                 value={hardExtra}
                 onChange={(e) => setHardExtra(parseInt(e.target.value, 10) || 0)}
-                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500"
+                className="w-20 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500 disabled:bg-slate-100"
               />
               <span className="text-xs text-slate-500">أيام إضافية</span>
             </div>
@@ -311,9 +331,10 @@ export function DeadlineSettingsCard() {
             <div className="flex items-center gap-2">
               <input
                 type="time"
+                disabled={!isOwner}
                 value={publishTime}
                 onChange={(e) => setPublishTime(e.target.value)}
-                className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500"
+                className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-800 font-mono text-xs text-center focus:outline-sky-500 disabled:bg-slate-100"
               />
               <span className="text-xs text-slate-500 font-mono">({timezone})</span>
             </div>
@@ -331,9 +352,10 @@ export function DeadlineSettingsCard() {
                 <button
                   type="button"
                   key={w.id}
+                  disabled={!isOwner}
                   onClick={() => toggleWorkingDay(w.id)}
                   className={cn(
-                    "px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all",
+                    "px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all disabled:cursor-not-allowed",
                     active
                       ? "bg-sky-50 border-sky-300 text-sky-800"
                       : "bg-white border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-50"
@@ -355,14 +377,20 @@ export function DeadlineSettingsCard() {
             * تعديل القواعد يؤثر على المهام الجديدة فقط ولا يغير المهام الحالية تلقائياً.
           </div>
 
-          <button
-            type="submit"
-            disabled={saving}
-            className="px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-semibold text-xs flex items-center gap-2 transition-all shadow-xs disabled:opacity-50"
-          >
-            <Save className="w-4 h-4" />
-            <span>{saving ? "جاري الحفظ..." : "حفظ إعدادات المواعيد"}</span>
-          </button>
+          {isOwner ? (
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-semibold text-xs flex items-center gap-2 transition-all shadow-xs disabled:opacity-50"
+            >
+              <Save className="w-4 h-4" />
+              <span>{saving ? "جاري الحفظ..." : "حفظ إعدادات المواعيد"}</span>
+            </button>
+          ) : (
+            <span className="text-[11px] text-slate-400 font-semibold">
+              للعرض فقط (التعديل متاح للمالك فقط)
+            </span>
+          )}
         </div>
       </form>
 

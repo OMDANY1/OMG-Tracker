@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { requireWorkspaceMembership } from "@/lib/auth/server-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
+    const authRes = await requireWorkspaceMembership(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
+    }
+
+    const { membership, admin } = authRes.data;
     const { searchParams } = new URL(req.url);
     const storagePath = searchParams.get("storagePath");
 
@@ -12,9 +18,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "مسار التخزين (storagePath) مطلوب." }, { status: 400 });
     }
 
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
+    if (!storagePath.startsWith(`${membership.workspaceId}/`)) {
+      return NextResponse.json({ error: "غير مصرح بالوصول إلى هذا الملف." }, { status: 403 });
     }
 
     const { data, error } = await admin.storage

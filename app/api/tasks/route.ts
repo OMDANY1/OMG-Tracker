@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireWorkspaceMembership, requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
+import {
+  requireWorkspaceMembership,
+  validateSameOrigin,
+  isFullAdminRole,
+  hasGranularPermission,
+} from "@/lib/auth/server-auth";
 import { determineDefaultReviewer } from "@/lib/services/reviews";
 import { createTask } from "@/lib/services/tasks";
 
@@ -19,6 +24,7 @@ export async function GET(req: NextRequest) {
   const clientId = searchParams.get("clientId");
   const status = searchParams.get("status");
   const priority = searchParams.get("priority");
+  const workStage = searchParams.get("workStage");
   const search = searchParams.get("search");
 
   let query = admin
@@ -36,11 +42,17 @@ export async function GET(req: NextRequest) {
     .eq("workspace_id", membership.workspaceId)
     .order("created_at", { ascending: false });
 
+  const hasGlobalTaskRead =
+    isFullAdminRole(membership.role) ||
+    membership.role === "manager" ||
+    membership.role === "marketing_director" ||
+    membership.role === "business_owner_viewer" ||
+    membership.accessScope === "workspace";
+
   // Role-based scoping
   if (myWork === "true") {
     query = query.eq("primary_assignee_id", membership.rosterPersonId);
-  } else if (membership.role === "designer") {
-    // Find task IDs where user is a collaborator
+  } else if (!hasGlobalTaskRead) {
     const { data: collabs } = await admin
       .from("task_collaborators")
       .select("task_id")
@@ -48,33 +60,48 @@ export async function GET(req: NextRequest) {
       .eq("roster_person_id", membership.rosterPersonId);
 
     const collabTaskIds = collabs?.map((c: any) => c.task_id) || [];
-    if (collabTaskIds.length > 0) {
-      query = query.or(`primary_assignee_id.eq.${membership.rosterPersonId},id.in.(${collabTaskIds.join(",")})`);
+    if (
+      membership.role === "senior_reviewer" ||
+      membership.role === "strategy_lead" ||
+      hasGranularPermission(membership, "approve_reviews")
+    ) {
+      if (collabTaskIds.length > 0) {
+        query = query.or(
+          `reviewer_id.eq.${membership.rosterPersonId},primary_assignee_id.eq.${membership.rosterPersonId},id.in.(${collabTaskIds.join(",")})`
+        );
+      } else {
+        query = query.or(
+          `reviewer_id.eq.${membership.rosterPersonId},primary_assignee_id.eq.${membership.rosterPersonId}`
+        );
+      }
     } else {
-      query = query.eq("primary_assignee_id", membership.rosterPersonId);
-    }
-  } else if (membership.role === "senior_reviewer") {
-    const { data: collabs } = await admin
-      .from("task_collaborators")
-      .select("task_id")
-      .eq("workspace_id", membership.workspaceId)
-      .eq("roster_person_id", membership.rosterPersonId);
-
-    const collabTaskIds = collabs?.map((c: any) => c.task_id) || [];
-    if (collabTaskIds.length > 0) {
-      query = query.or(`reviewer_id.eq.${membership.rosterPersonId},primary_assignee_id.eq.${membership.rosterPersonId},id.in.(${collabTaskIds.join(",")})`);
-    } else {
-      query = query.or(`reviewer_id.eq.${membership.rosterPersonId},primary_assignee_id.eq.${membership.rosterPersonId}`);
+      // designer, video_editor, content_writer, strategist
+      if (collabTaskIds.length > 0) {
+        query = query.or(
+          `primary_assignee_id.eq.${membership.rosterPersonId},reviewer_id.eq.${membership.rosterPersonId},id.in.(${collabTaskIds.join(",")})`
+        );
+      } else {
+        query = query.or(
+          `primary_assignee_id.eq.${membership.rosterPersonId},reviewer_id.eq.${membership.rosterPersonId}`
+        );
+      }
     }
   }
 
-  // Filters (for management/owner or within user scope)
-  if (assigneeId && (membership.role === "owner" || membership.role === "company_owner" || membership.role === "manager" || assigneeId === membership.rosterPersonId)) {
+  // Filters (for management/owner/global viewers or within user scope)
+  if (
+    assigneeId &&
+    (hasGlobalTaskRead ||
+      membership.role === "senior_reviewer" ||
+      membership.role === "strategy_lead" ||
+      assigneeId === membership.rosterPersonId)
+  ) {
     query = query.eq("primary_assignee_id", assigneeId);
   }
   if (clientId) query = query.eq("client_id", clientId);
   if (status) query = query.eq("status", status);
   if (priority) query = query.eq("priority", priority);
+  if (workStage) query = query.eq("work_stage", workStage);
   if (search) query = query.ilike("title", `%${search}%`);
 
   const { data: tasks, error } = await query;
@@ -93,12 +120,22 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const ownerRes = await requireOwner(req);
-  if (!ownerRes.success) {
-    return ownerRes.errorResponse;
+  const authRes = await requireWorkspaceMembership(req);
+  if (!authRes.success) {
+    return authRes.errorResponse;
   }
 
-  const { membership, admin } = ownerRes.data;
+  const { membership, admin, serverClient } = authRes.data;
+  if (
+    !isFullAdminRole(membership.role) &&
+    membership.role !== "manager" &&
+    !hasGranularPermission(membership, "create_tasks")
+  ) {
+    return NextResponse.json(
+      { error: "غير مصرح: إنشاء المهام مقتصر على الإدارة والمخولين فقط." },
+      { status: 403 }
+    );
+  }
 
   try {
     const body = await req.json();
@@ -125,6 +162,7 @@ export async function POST(req: NextRequest) {
       .from("clients")
       .select("owner_roster_id, difficulty, team_assignment:client_team_assignments(*)")
       .eq("id", clientId)
+      .eq("workspace_id", membership.workspaceId)
       .maybeSingle();
 
     const team = Array.isArray(client?.team_assignment) ? client.team_assignment[0] : client?.team_assignment;
@@ -166,6 +204,7 @@ export async function POST(req: NextRequest) {
       dueAt,
       estimatedMinutes,
       idempotencyKey: body.idempotencyKey,
+      client: serverClient,
     });
 
     const createdTask = task?.task || task;

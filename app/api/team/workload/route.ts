@@ -34,7 +34,8 @@ export async function GET(req: NextRequest) {
 
     const { membership, admin } = authResult.data;
     const workspaceId = membership.workspaceId;
-    const isViewer = membership.role === "business_owner_viewer";
+    const isOwner = ["owner", "company_owner"].includes(membership.role);
+    const isViewer = !isOwner;
 
     // 1. Get Workspace & Invitations Status
     const { data: ws } = await admin
@@ -218,8 +219,10 @@ export async function GET(req: NextRequest) {
       }
 
       const capRecord = capacityMap.get(person.id);
-      const weeklyHours = capRecord?.weekly_hours_limit || 40;
-      const reservedHours = role === "owner" || role === "company_owner" ? 15 : role === "senior_reviewer" ? 8 : 0;
+      const weeklyHours = capRecord?.weekly_hours ?? capRecord?.weekly_hours_limit ?? 40;
+      const reservedHours =
+        capRecord?.reserved_management_hours ??
+        (role === "owner" || role === "company_owner" ? 15 : role === "senior_reviewer" ? 8 : 0);
       const maxWeighted = capRecord?.max_weighted_load || 15.0;
 
       const loadRatio = Math.min(100, Math.round((totalWeightedLoad / maxWeighted) * 100));
@@ -270,7 +273,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       workspaceId,
+      isOwner,
       isViewer,
+      callerRole: membership.role,
       invitationsPaused: Boolean(ws?.invitations_paused),
       members: metrics,
     });

@@ -20,9 +20,9 @@ function escapeCsvField(val: any): string {
 
 export async function GET(req: NextRequest) {
   try {
-    // Marketing Director (Ata), Owner (Emad), and Manager are authorized to export reports
+    // Marketing Director (Ata), Owner (Emad), Company Owner (Ahmed Al-Nahhas), and Manager are authorized to export reports
     const authRes = await requireWorkspaceMembership(req, {
-      allowedRoles: ["owner", "manager", "marketing_director"],
+      allowedRoles: ["owner", "company_owner", "manager", "marketing_director"],
     });
     if (!authRes.success) {
       return authRes.errorResponse;
@@ -433,7 +433,7 @@ export async function GET(req: NextRequest) {
       ];
 
       const rows = roster.map((r: any) => {
-        const role = membershipRoleMap.get(r.id) || "designer";
+        const role = membershipRoleMap.get(r.id) || r.role || "designer";
         const cap = capacityMap.get(r.id);
         return [
           r.id,
@@ -441,9 +441,9 @@ export async function GET(req: NextRequest) {
           r.job_title || "",
           role,
           (r.specialties || []).join(" | "),
-          cap?.weekly_hours_limit || 40,
-          role === "owner" ? 15 : role === "senior_reviewer" ? 8 : 0,
-          cap?.max_weighted_load || 15.0,
+          cap?.weekly_hours ?? cap?.weekly_hours_limit ?? 40,
+          cap?.reserved_management_hours ?? (role === "owner" || role === "company_owner" ? 15 : role === "senior_reviewer" ? 8 : 0),
+          cap?.max_weighted_load ?? 15.0,
         ].map(escapeCsvField).join(",");
       });
 

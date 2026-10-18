@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { requireWorkspaceMembership, requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
 
 export async function GET(req: NextRequest) {
   try {
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
+    const authRes = await requireWorkspaceMembership(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
     }
+
+    const { membership, admin } = authRes.data;
 
     const { data: ws, error } = await admin
       .from("workspaces")
       .select("id, allow_invitation_emails, allow_invitation_acceptance, invitations_paused")
-      .limit(1)
+      .eq("id", membership.workspaceId)
       .single();
 
     if (error || !ws) {
@@ -32,22 +33,21 @@ export async function GET(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (!serverClient) {
-      return NextResponse.json({ error: "جلسة المستخدم غير متوفرة." }, { status: 401 });
+    if (!validateSameOrigin(req)) {
+      return NextResponse.json(
+        { error: "طلب غير مصرح به (Same-Origin check failed)." },
+        { status: 403 }
+      );
     }
 
-    const { data: authData, error: authErr } = await serverClient.auth.getUser();
-    if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "يجب تسجيل الدخول أولاً." }, { status: 401 });
+    const authRes = await requireOwner(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
     }
 
+    const { membership, serverClient } = authRes.data;
     const body = await req.json();
-    const { workspaceId, allowEmails, allowAcceptance, paused } = body;
-
-    if (!workspaceId) {
-      return NextResponse.json({ error: "معرف مساحة العمل مطلوب." }, { status: 400 });
-    }
+    const { allowEmails, allowAcceptance, paused } = body;
 
     // Determine target states supporting both new independent flags and legacy paused toggle
     let targetAcceptance = true;
@@ -59,9 +59,9 @@ export async function PATCH(req: NextRequest) {
 
     const targetEmails = typeof allowEmails === "boolean" ? allowEmails : false;
 
-    // Call secure set_workspace_invitation_settings RPC with caller context (replaces legacy set_workspace_invitations_paused)
-    const { data, error } = await serverClient.rpc("set_workspace_invitation_settings", {
-      p_workspace_id: workspaceId,
+    // Call secure set_workspace_invitation_settings RPC with caller context
+    const { error } = await serverClient.rpc("set_workspace_invitation_settings", {
+      p_workspace_id: membership.workspaceId,
       p_allow_emails: targetEmails,
       p_allow_acceptance: targetAcceptance,
     });

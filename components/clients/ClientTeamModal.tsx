@@ -186,7 +186,7 @@ export function ClientTeamModal({
                   <option value="">-- يحتاج تعيين مراجع --</option>
                   {reviewerCandidates.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
+                      {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle})`}
                     </option>
                   ))}
                 </select>
@@ -230,7 +230,7 @@ export function ClientTeamModal({
                   <option value="">-- يحتاج تعيين مراجع --</option>
                   {reviewerCandidates.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
+                      {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle})`}
                     </option>
                   ))}
                 </select>
@@ -274,7 +274,7 @@ export function ClientTeamModal({
                   <option value="">-- يحتاج تعيين مراجع --</option>
                   {reviewerCandidates.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
+                      {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle})`}
                     </option>
                   ))}
                 </select>
@@ -373,7 +373,7 @@ export function ClientTeamModal({
                       <option value="">-- يحتاج تعيين مراجع فيديو --</option>
                       {reviewerCandidates.map((p) => (
                         <option key={p.id} value={p.id}>
-                          {p.displayName} ({p.jobTitle})
+                          {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle})`}
                         </option>
                       ))}
                     </select>
@@ -403,7 +403,7 @@ export function ClientTeamModal({
                   <option value="">-- غير مسند لمشرف محدد --</option>
                   {allTeamMembers.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
+                      {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle})`}
                     </option>
                   ))}
                 </select>
@@ -419,7 +419,7 @@ export function ClientTeamModal({
                   <option value="">-- غير مسند لليدر محدد --</option>
                   {allTeamMembers.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
+                      {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle})`}
                     </option>
                   ))}
                 </select>

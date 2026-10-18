@@ -33,6 +33,10 @@ export default function TimeLedgerPage() {
   const [voidReason, setVoidReason] = useState("");
   const [isVoiding, setIsVoiding] = useState(false);
 
+  // Role & Permissions
+  const [isOwner, setIsOwner] = useState(false);
+  const [canExport, setCanExport] = useState(false);
+
   const fetchLedger = async (month = selectedMonth) => {
     setLoading(true);
     try {
@@ -53,6 +57,20 @@ export default function TimeLedgerPage() {
 
   useEffect(() => {
     fetchLedger();
+    fetch("/api/auth/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const role = d?.membership?.role || "viewer";
+        const ownerFlag = role === "owner" || role === "company_owner";
+        setIsOwner(ownerFlag);
+        setCanExport(
+          ownerFlag ||
+            role === "marketing_director" ||
+            role === "strategy_lead" ||
+            role === "manager"
+        );
+      })
+      .catch(() => {});
   }, []);
 
   const handleVoidEntry = async (e: React.FormEvent) => {
@@ -69,7 +87,6 @@ export default function TimeLedgerPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           timeEntryId: voidingEntry.id,
-          actorId: "owner-id",
           reason: voidReason.trim(),
         }),
       });
@@ -120,13 +137,15 @@ export default function TimeLedgerPage() {
           </p>
         </div>
 
-        <button
-          onClick={handleExportCsv}
-          className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-        >
-          <Download className="w-4 h-4" />
-          تصدير ملف CSV معتمد (UTF-8)
-        </button>
+        {canExport && (
+          <button
+            onClick={handleExportCsv}
+            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+          >
+            <Download className="w-4 h-4" />
+            تصدير ملف CSV معتمد (UTF-8)
+          </button>
+        )}
       </div>
 
       {/* Filter Bar */}
@@ -195,7 +214,7 @@ export default function TimeLedgerPage() {
           <table className="w-full text-xs text-right divide-y divide-slate-100">
             <thead className="bg-slate-50 text-slate-600 font-bold">
               <tr>
-                <th className="px-4 py-3">العضو / المصمم</th>
+                <th className="px-4 py-3">العضو / المسؤول</th>
                 <th className="px-4 py-3">العميل</th>
                 <th className="px-4 py-3">الكامبين والمهمة</th>
                 <th className="px-4 py-3">البداية (القاهرة)</th>
@@ -204,13 +223,13 @@ export default function TimeLedgerPage() {
                 <th className="px-4 py-3">التصنيف</th>
                 <th className="px-4 py-3">المصدر</th>
                 <th className="px-4 py-3">ملاحظات</th>
-                <th className="px-4 py-3 text-center">إجراءات</th>
+                {isOwner && <th className="px-4 py-3 text-center">إجراءات</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={10} className="py-16 text-center text-slate-400">
+                  <td colSpan={isOwner ? 10 : 9} className="py-16 text-center text-slate-400">
                     <div className="flex items-center justify-center gap-2">
                       <Clock className="w-4 h-4 animate-spin text-sky-600" />
                       <span>جاري تحميل سجل الجلسات المعتمدة...</span>
@@ -219,7 +238,7 @@ export default function TimeLedgerPage() {
                 </tr>
               ) : filteredEntries.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-16 text-center">
+                  <td colSpan={isOwner ? 10 : 9} className="py-16 text-center">
                     <div className="space-y-3 max-w-sm mx-auto">
                       <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
                         <Clock className="w-6 h-6" />
@@ -281,17 +300,19 @@ export default function TimeLedgerPage() {
                       <td className="px-4 py-3 text-slate-600 max-w-xs truncate">
                         {entry.note || "—"}
                       </td>
-                      <td className="px-4 py-3 text-center">
-                        {!entry.is_voided && (
-                          <button
-                            onClick={() => setVoidingEntry(entry)}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                            title="إبطال الجلسة (Void with reason)"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </td>
+                      {isOwner && (
+                        <td className="px-4 py-3 text-center">
+                          {!entry.is_voided && (
+                            <button
+                              onClick={() => setVoidingEntry(entry)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                              title="إبطال الجلسة (Void with reason)"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })

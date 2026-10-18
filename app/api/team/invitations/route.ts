@@ -24,14 +24,15 @@ function getBaseOrigin(req: NextRequest): string {
 export async function GET(req: NextRequest) {
   try {
     const authRes = await requireWorkspaceMembership(req, {
-      allowedRoles: ["owner", "business_owner_viewer"],
+      allowedRoles: ["owner", "company_owner", "business_owner_viewer"],
     });
     if (!authRes.success) {
       return authRes.errorResponse;
     }
 
     const { membership, admin } = authRes.data;
-    const isViewer = membership.role === "business_owner_viewer";
+    const isOwner = ["owner", "company_owner"].includes(membership.role);
+    const isViewer = !isOwner;
     const baseOrigin = getBaseOrigin(req);
 
     const { data: ws } = await admin
@@ -66,28 +67,31 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Decrypt tokens for owner so copy-link can include ?token=...
+    // Decrypt tokens only for owners so copy-link can include ?token=...
     const augmentedInvitations = (invitations || []).map((inv: any) => {
-      const rawToken = decryptToken(inv.encrypted_token);
+      const rawToken = isOwner ? decryptToken(inv.encrypted_token) : null;
       const isExpired = inv.status === "pending" && new Date(inv.expires_at).getTime() < Date.now();
       const effectiveStatus = isExpired ? "expired" : inv.status;
-      const inviteUrl = rawToken ? `${baseOrigin}/accept-invite?token=${rawToken}` : undefined;
+      const inviteUrl = isOwner && rawToken ? `${baseOrigin}/accept-invite?token=${rawToken}` : undefined;
+      const { encrypted_token: _omitted, ...safeInv } = inv;
       return {
-        ...inv,
+        ...safeInv,
         rawToken: rawToken || undefined,
         inviteUrl,
         isExpired,
         effectiveStatus,
-        canCopyLink: inv.status !== "revoked" && inv.status !== "accepted",
-        canResend: inv.status === "pending" || inv.status === "draft" || isExpired,
-        canRevoke: inv.status !== "revoked" && inv.status !== "accepted",
+        canCopyLink: isOwner && inv.status !== "revoked" && inv.status !== "accepted",
+        canResend: isOwner && (inv.status === "pending" || inv.status === "draft" || isExpired),
+        canRevoke: isOwner && inv.status !== "revoked" && inv.status !== "accepted",
         isDraft: inv.status === "draft",
       };
     });
 
     return NextResponse.json({
       success: true,
+      isOwner,
       isViewer,
+      callerRole: membership.role,
       allowInvitationEmails: ws.allow_invitation_emails ?? false,
       allowInvitationAcceptance: ws.allow_invitation_acceptance ?? true,
       invitationsPaused: ws.invitations_paused,

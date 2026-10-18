@@ -48,8 +48,17 @@ export default function TasksPage() {
   // Filters
   const [selectedClient, setSelectedClient] = useState<string>("");
   const [selectedAssignee, setSelectedAssignee] = useState<string>("");
+  const [selectedStage, setSelectedStage] = useState<string>("");
   const [selectedStatus, setSelectedStatus] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState<string>("");
+
+  // Role & Permissions
+  const [callerRole, setCallerRole] = useState<string>("viewer");
+  const [isOwner, setIsOwner] = useState<boolean>(false);
+  const isReadOnly =
+    callerRole === "marketing_director" ||
+    callerRole === "business_owner_viewer" ||
+    callerRole === "viewer";
 
   // Create Task Modal State
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -64,6 +73,7 @@ export default function TasksPage() {
   const [createAssigneeId, setCreateAssigneeId] = useState("");
   const [createReviewerId, setCreateReviewerId] = useState("");
   const [allTeamMembers, setAllTeamMembers] = useState<any[]>([]);
+  const [reviewers, setReviewers] = useState<any[]>([]);
 
   // Task Details Drawer
   const [selectedTask, setSelectedTask] = useState<any>(null);
@@ -75,8 +85,8 @@ export default function TasksPage() {
   const [transitionReason, setTransitionReason] = useState("");
   const [deliverableUrl, setDeliverableUrl] = useState("");
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [tasksRes, clientsRes] = await Promise.all([
         fetch("/api/tasks"),
@@ -85,22 +95,36 @@ export default function TasksPage() {
 
       if (tasksRes.ok) {
         const data = await tasksRes.json();
-        setTasks(data.tasks || []);
+        const fetchedTasks = data.tasks || [];
+        setTasks(fetchedTasks);
+        setSelectedTask((prev: any) =>
+          prev ? fetchedTasks.find((t: any) => t.id === prev.id) || prev : null
+        );
       }
       if (clientsRes.ok) {
         const cData = await clientsRes.json();
         setClients(cData.clients || []);
         if (cData.allTeamMembers) setAllTeamMembers(cData.allTeamMembers);
+        if (cData.reviewers) setReviewers(cData.reviewers);
+        if (typeof cData.isOwner === "boolean") setIsOwner(cData.isOwner);
+        if (cData.callerRole) setCallerRole(cData.callerRole);
       }
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => {
     fetchData();
+    const handleSync = () => fetchData(true);
+    window.addEventListener("tasks_data_changed", handleSync);
+    window.addEventListener("window_reconnected_sync", handleSync);
+    return () => {
+      window.removeEventListener("tasks_data_changed", handleSync);
+      window.removeEventListener("window_reconnected_sync", handleSync);
+    };
   }, []);
 
   // Auto-suggest specialty assignee and reviewer when client or stage changes
@@ -130,6 +154,7 @@ export default function TasksPage() {
   const filteredTasks = tasks.filter((t) => {
     if (selectedClient && t.client_id !== selectedClient) return false;
     if (selectedAssignee && t.primary_assignee_id !== selectedAssignee) return false;
+    if (selectedStage && (t.work_stage || "design") !== selectedStage) return false;
     if (selectedStatus && t.status !== selectedStatus) return false;
     if (searchQuery && !t.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     return true;
@@ -204,7 +229,6 @@ export default function TasksPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           toStatus: newStatus,
-          actorId: "owner-id",
           reason: reason || null,
           deliverableUrl: url || null,
         }),
@@ -214,7 +238,7 @@ export default function TasksPage() {
         setShowTransitionModal(false);
         setTransitionReason("");
         setDeliverableUrl("");
-        fetchData();
+        fetchData(true);
       } else {
         const err = await res.json();
         alert(`فشل تغيير الحالة: ${err.error}`);
@@ -260,13 +284,15 @@ export default function TasksPage() {
             </button>
           </div>
 
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-          >
-            <Plus className="w-4 h-4" />
-            مهمة جديدة
-          </button>
+          {!isReadOnly && (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" />
+              مهمة جديدة
+            </button>
+          )}
         </div>
       </div>
 
@@ -303,6 +329,33 @@ export default function TasksPage() {
           ))}
         </select>
 
+        {/* Assignee Filter */}
+        <select
+          value={selectedAssignee}
+          onChange={(e) => setSelectedAssignee(e.target.value)}
+          className="border border-slate-200 rounded-xl px-3 py-1.5 text-xs bg-white text-slate-700"
+        >
+          <option value="">جميع المسؤولين</option>
+          {allTeamMembers.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.displayName}
+            </option>
+          ))}
+        </select>
+
+        {/* Stage Filter */}
+        <select
+          value={selectedStage}
+          onChange={(e) => setSelectedStage(e.target.value)}
+          className="border border-slate-200 rounded-xl px-3 py-1.5 text-xs bg-white text-slate-700"
+        >
+          <option value="">جميع التخصصات</option>
+          <option value="design">تصميم جرافيكي</option>
+          <option value="copywriting">كتابة محتوى</option>
+          <option value="strategy">استراتيجية</option>
+          <option value="video_editing">مونتاج فيديو</option>
+        </select>
+
         {/* Status Filter */}
         <select
           value={selectedStatus}
@@ -317,10 +370,12 @@ export default function TasksPage() {
           ))}
         </select>
 
-        {(selectedClient || selectedStatus || searchQuery) && (
+        {(selectedClient || selectedAssignee || selectedStage || selectedStatus || searchQuery) && (
           <button
             onClick={() => {
               setSelectedClient("");
+              setSelectedAssignee("");
+              setSelectedStage("");
               setSelectedStatus("");
               setSearchQuery("");
             }}
@@ -383,27 +438,29 @@ export default function TasksPage() {
                       </div>
 
                       <div className="flex items-center justify-between text-[11px] text-slate-400">
-                        <span>المصمم: {task.assignee?.display_name || "غير محدد"}</span>
+                        <span>المسؤول: {task.assignee?.display_name || "غير محدد"}</span>
                         {task.reviewer && <span>المراجع: {task.reviewer.display_name}</span>}
                       </div>
 
                       {/* Quick Status Shift */}
-                      <div
-                        className="pt-2 border-t border-slate-100 flex items-center justify-between"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <select
-                          value={task.status}
-                          onChange={(e) => handleStatusChangeRequest(task, e.target.value as TaskStatus)}
-                          className="bg-slate-50 border border-slate-200 rounded-lg text-[10px] px-2 py-1 text-slate-700 font-semibold"
+                      {!isReadOnly && (
+                        <div
+                          className="pt-2 border-t border-slate-100 flex items-center justify-between"
+                          onClick={(e) => e.stopPropagation()}
                         >
-                          {STATUS_COLUMNS.map((st) => (
-                            <option key={st} value={st}>
-                              نقل إلى: {TASK_STATUS_LABELS[st]}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                          <select
+                            value={task.status}
+                            onChange={(e) => handleStatusChangeRequest(task, e.target.value as TaskStatus)}
+                            className="bg-slate-50 border border-slate-200 rounded-lg text-[10px] px-2 py-1 text-slate-700 font-semibold"
+                          >
+                            {STATUS_COLUMNS.map((st) => (
+                              <option key={st} value={st}>
+                                نقل إلى: {TASK_STATUS_LABELS[st]}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -421,7 +478,7 @@ export default function TasksPage() {
                   <th className="px-4 py-3">المهمة</th>
                   <th className="px-4 py-3">العميل</th>
                   <th className="px-4 py-3">نوع ورقم التسليم</th>
-                  <th className="px-4 py-3">المصمم</th>
+                  <th className="px-4 py-3">المسؤول</th>
                   <th className="px-4 py-3">المراجع</th>
                   <th className="px-4 py-3">الأولوية</th>
                   <th className="px-4 py-3">الحالة</th>
@@ -631,7 +688,7 @@ export default function TasksPage() {
                       <option value="">-- توجيه تلقائي --</option>
                       {allTeamMembers.map((m) => (
                         <option key={m.id} value={m.id}>
-                          {m.displayName} ({m.jobTitle})
+                          {m.displayName} {m.hasJoined === false ? "(لم ينضم بعد)" : `(${m.jobTitle})`}
                         </option>
                       ))}
                     </select>
@@ -644,13 +701,16 @@ export default function TasksPage() {
                       className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-xs bg-white font-medium"
                     >
                       <option value="">-- توجيه تلقائي وفق القواعد --</option>
-                      {allTeamMembers
-                        .filter((m) => !m.displayName.includes("عطا") && m.jobTitle !== "Marketing Director")
-                        .map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.displayName} ({m.jobTitle})
-                          </option>
-                        ))}
+                      {(reviewers.length > 0
+                        ? reviewers
+                        : allTeamMembers.filter(
+                            (m) => !m.displayName.includes("عطا") && m.jobTitle !== "Marketing Director"
+                          )
+                      ).map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.displayName} {m.hasJoined === false ? "(لم ينضم بعد)" : `(${m.jobTitle})`}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -776,11 +836,8 @@ export default function TasksPage() {
         task={selectedTask}
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
-        onTaskUpdated={fetchData}
-        onStatusTransition={(taskId, newStatus) => {
-          setIsDrawerOpen(false);
-          handleStatusChangeRequest(selectedTask, newStatus);
-        }}
+        onTaskUpdated={() => fetchData(true)}
+        onStatusTransition={() => fetchData(true)}
       />
     </div>
   );

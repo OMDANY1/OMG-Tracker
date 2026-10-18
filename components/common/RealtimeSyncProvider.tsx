@@ -75,15 +75,18 @@ export function RealtimeSyncProvider({ children }: { children: React.ReactNode }
       }
     };
 
-    window.addEventListener("focus", handleRevalidation);
-    document.addEventListener("visibilitychange", () => {
+    const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         handleRevalidation();
       }
-    });
+    };
+
+    window.addEventListener("focus", handleRevalidation);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.removeEventListener("focus", handleRevalidation);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       supabase.removeChannel(channel);
     };
   }, []);

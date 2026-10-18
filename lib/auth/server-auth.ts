@@ -180,7 +180,7 @@ export async function requireWorkspaceMembership(
       access_scope,
       custom_permissions,
       is_active,
-      roster_person:roster_people!fk_membership_roster(id, display_name, job_title)
+      roster_person:roster_people!fk_membership_roster(id, display_name, job_title, is_active)
     `)
     .eq("user_id", user.id)
     .eq("is_active", true)
@@ -197,6 +197,21 @@ export async function requireWorkspaceMembership(
     };
   }
 
+  const rosterObj: any = Array.isArray(membership.roster_person)
+    ? membership.roster_person[0]
+    : membership.roster_person;
+
+  // Enforce that the linked roster_people record is also active
+  if (!rosterObj || rosterObj.is_active === false) {
+    return {
+      success: false,
+      errorResponse: NextResponse.json(
+        { error: "غير مصرح: تم تعطيل حساب العضو في مساحة العمل." },
+        { status: 403 }
+      ),
+    };
+  }
+
   const role = membership.role as ActiveMembershipContext["role"];
 
   if (options?.allowedRoles && !options.allowedRoles.includes(role)) {
@@ -208,10 +223,6 @@ export async function requireWorkspaceMembership(
       ),
     };
   }
-
-  const rosterObj: any = Array.isArray(membership.roster_person)
-    ? membership.roster_person[0]
-    : membership.roster_person;
 
   return {
     success: true,
@@ -235,9 +246,10 @@ export async function requireWorkspaceMembership(
 
 /**
  * Checks whether an active membership has a specific granular permission.
- * Owner has all permissions unconditionally.
+ * Owner and Company Owner have all permissions unconditionally.
  * Business Owner Viewer has no modification or export permissions.
- * Explicit custom_permissions overrides default role permissions.
+ * Marketing Director has only view_reports_and_export permission.
+ * Explicit custom_permissions overrides default role permissions for other roles.
  */
 export function hasGranularPermission(
   membership: ActiveMembershipContext,
@@ -245,6 +257,9 @@ export function hasGranularPermission(
 ): boolean {
   if (membership.role === "owner" || membership.role === "company_owner") return true;
   if (membership.role === "business_owner_viewer") return false;
+  if (membership.role === "marketing_director") {
+    return permission === "view_time_logs" || permission === "export_reports";
+  }
 
   // Check custom override if explicitly defined
   if (
@@ -290,7 +305,7 @@ export async function requireGranularPermission(
 }
 
 /**
- * Ensures caller is an active workspace member with mutation permissions (not a viewer).
+ * Ensures caller is an active workspace member with mutation permissions (not a viewer or read-only marketing director).
  */
 export async function requireWritableMembership(
   req: NextRequest
@@ -304,11 +319,14 @@ export async function requireWritableMembership(
 > {
   const result = await requireWorkspaceMembership(req);
   if (!result.success) return result;
-  if (result.data.membership.role === "business_owner_viewer") {
+  if (
+    result.data.membership.role === "business_owner_viewer" ||
+    result.data.membership.role === "marketing_director"
+  ) {
     return {
       success: false,
       errorResponse: NextResponse.json(
-        { error: "غير مصرح: حساب مالك الشركة للمشاهدة فقط ولا يملك صلاحية التعديل أو الإنشاء." },
+        { error: "غير مصرح: دورك الحالي للقراءة والتقارير فقط ولا يملك صلاحية التعديل أو الإنشاء." },
         { status: 403 }
       ),
     };
@@ -415,8 +433,9 @@ export async function requireStrategyLead(
 
 /**
  * Ensures caller is an active workspace member with legitimate access to a specific task.
- * Owner and Company Owner have full access.
- * Designers have access ONLY if they are primary assignee, reviewer, collaborator, or part of a review round.
+ * Owner, Company Owner, and Manager have full access.
+ * Marketing Director and Business Owner Viewer have read-only access.
+ * Team members have access if they are primary assignee, reviewer, collaborator, or part of a review round.
  */
 export async function requireTaskAccess(
   req: NextRequest,
@@ -440,7 +459,7 @@ export async function requireTaskAccess(
   // Retrieve task strictly scoped by caller's workspace_id
   const { data: task, error: taskErr } = await admin
     .from("tasks")
-    .select("id, workspace_id, client_id, primary_assignee_id, reviewer_id, status")
+    .select("id, workspace_id, client_id, primary_assignee_id, reviewer_id, status, work_stage")
     .eq("id", taskId)
     .eq("workspace_id", membership.workspaceId)
     .maybeSingle();
@@ -455,25 +474,43 @@ export async function requireTaskAccess(
     };
   }
 
-  // Owner and Company Owner have universal access within the workspace
-  if (membership.role === "owner" || membership.role === "company_owner") {
+  // Owner, Company Owner, and Manager have universal access within the workspace
+  if (
+    membership.role === "owner" ||
+    membership.role === "company_owner" ||
+    membership.role === "manager"
+  ) {
     return {
       success: true,
       data: { user, membership, task, admin, serverClient },
     };
   }
 
-  // Business Owner Viewer has read-only access to all workspace tasks
-  if (membership.role === "business_owner_viewer") {
+  // Business Owner Viewer and Marketing Director (Ata) have read-only access to all workspace tasks
+  if (
+    membership.role === "business_owner_viewer" ||
+    membership.role === "marketing_director"
+  ) {
     if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
       return {
         success: false,
         errorResponse: NextResponse.json(
-          { error: "غير مصرح: حساب مالك الشركة للمشاهدة فقط ولا يملك صلاحية التعديل." },
+          { error: "غير مصرح: دورك الحالي للقراءة والتقارير فقط ولا يملك صلاحية التعديل أو المراجعة أو تتبع الوقت." },
           { status: 403 }
         ),
       };
     }
+    return {
+      success: true,
+      data: { user, membership, task, admin, serverClient },
+    };
+  }
+
+  // Strategy Lead and Senior Reviewer can read workspace tasks, and mutate if involved or reviewing
+  if (
+    (membership.role === "strategy_lead" || membership.role === "senior_reviewer") &&
+    ["GET", "HEAD", "OPTIONS"].includes(req.method)
+  ) {
     return {
       success: true,
       data: { user, membership, task, admin, serverClient },

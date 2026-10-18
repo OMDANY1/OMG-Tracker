@@ -57,6 +57,7 @@ export default function ClientsPage() {
   const [reviewers, setReviewers] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState(false);
   const [isViewer, setIsViewer] = useState(false);
+  const [callerRole, setCallerRole] = useState<string>("");
   const [isAddClientModalOpen, setIsAddClientModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -95,7 +96,14 @@ export default function ClientsPage() {
         }
         return;
       }
-      setClients(data.clients || []);
+      const fetchedClients = data.clients || [];
+      setClients(fetchedClients);
+      setTeamModalClient((prev: any) =>
+        prev ? fetchedClients.find((c: any) => c.id === prev.id) || prev : null
+      );
+      setBriefModalClient((prev: any) =>
+        prev ? fetchedClients.find((c: any) => c.id === prev.id) || prev : null
+      );
       if (data.designers) setDesigners(data.designers);
       if (data.allTeamMembers) setAllTeamMembers(data.allTeamMembers);
       if (data.strategists) setStrategists(data.strategists);
@@ -105,6 +113,7 @@ export default function ClientsPage() {
       if (data.reviewers) setReviewers(data.reviewers);
       if (typeof data.isOwner === "boolean") setIsOwner(data.isOwner);
       if (typeof data.isViewer === "boolean") setIsViewer(data.isViewer);
+      if (typeof data.callerRole === "string") setCallerRole(data.callerRole);
     } catch (e: any) {
       console.error("Failed to load clients:", e);
       if (!isBackground) {
@@ -357,7 +366,7 @@ export default function ClientsPage() {
               <span>صلاحية إدارة وتوزيع فرق العملاء نشطة (Owner)</span>
             </div>
           )}
-          {!isViewer && (
+          {isOwner && (
             <button
               onClick={() => setIsAddClientModalOpen(true)}
               className="px-3.5 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs"
@@ -675,7 +684,7 @@ export default function ClientsPage() {
           ) : (
             <div className="p-4 bg-amber-50/50 border border-amber-200 rounded-xl text-center space-y-2">
               <p className="text-xs text-amber-800 font-semibold">لم يتم إضافة أعضاء لفريق الفيديو والمونتاج بعد.</p>
-              {(isOwner || !isViewer) && (
+              {isOwner && (
                 <a href="/team" className="inline-flex items-center gap-1 text-xs font-bold text-sky-700 hover:underline">
                   <Plus className="w-3.5 h-3.5" />
                   إضافة محرر فيديو من صفحة الفريق
@@ -1014,7 +1023,7 @@ export default function ClientsPage() {
               لم تتم إضافة أي عملاء بعد. يمكنك البدء الآن بتهيئة مساحة العمل عبر إضافة أول عميل، وتحديد الصعوبة وتوزيع أعضاء الفريق على التخصصات.
             </p>
           </div>
-          {!isViewer && (
+          {isOwner && (
             <div className="pt-2">
               <button
                 onClick={() => setIsAddClientModalOpen(true)}
@@ -1162,15 +1171,15 @@ export default function ClientsPage() {
                 <div className="pt-2 border-t border-slate-100 space-y-1.5">
                     <div className="grid grid-cols-2 gap-1.5">
                       <button
-                        onClick={() => setTeamModalClient(client)}
-                        disabled={isViewer}
+                        onClick={() => isOwner && setTeamModalClient(client)}
+                        disabled={!isOwner}
                         className={cn(
                           "px-2 py-1.5 rounded-xl font-bold flex items-center justify-center gap-1 transition-colors text-[10px]",
-                          isViewer
+                          !isOwner
                             ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
                             : "bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200"
                         )}
-                        title={isViewer ? "حساب مشاهد فقط" : isOwner ? "توزيع فريق العمل متعدد التخصصات" : "صلاحية حصرية لإدارة وملاك المنظومة"}
+                        title={isOwner ? "توزيع فريق العمل متعدد التخصصات" : "صلاحية حصرية لإدارة وملاك المنظومة"}
                       >
                         <Users className="w-3 h-3 text-sky-600" />
                         <span>توزيع فريق العميل</span>
@@ -1184,11 +1193,11 @@ export default function ClientsPage() {
                       </button>
                     </div>
 
-                    {!isViewer && (
+                    {isOwner && (
                       <button
                         onClick={() => handleOpenReassignModal(client)}
                         className="w-full px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-xl font-medium flex items-center justify-center gap-1.5 transition-colors text-[10px]"
-                        title={isOwner ? "نقل المصمم المسؤول" : "صلاحية حصرية لإدارة وملاك المنظومة"}
+                        title="نقل المصمم المسؤول"
                       >
                         <ArrowRightLeft className="w-3 h-3 text-slate-500" />
                         <span>إعادة إسناد المصمم</span>
@@ -1442,6 +1451,8 @@ export default function ClientsPage() {
         onClose={() => setBriefModalClient(null)}
         onSaved={() => fetchClients(false)}
         isOwner={isOwner}
+        isViewer={isViewer}
+        callerRole={callerRole}
       />
 
       {/* Add Client Onboarding Modal */}

@@ -564,11 +564,16 @@ export default function TaskDetailsDrawer({
   };
 
   const isOwner = currentUser?.role === "owner" || currentUser?.role === "company_owner";
+  const isReadOnly =
+    !currentUser ||
+    currentUser.role === "marketing_director" ||
+    currentUser.role === "business_owner_viewer" ||
+    currentUser.role === "viewer";
   const isAssignee = currentUser?.rosterPersonId === task.primary_assignee_id;
   const isReviewer = currentUser?.rosterPersonId === task.reviewer_id;
   const isPendingReview = task.status === "internal_review";
   const isTaskAssignedToOwner = isOwner && isAssignee;
-  const canDecideReview = isPendingReview && (isReviewer || isOwner) && !isAssignee;
+  const canDecideReview = !isReadOnly && isPendingReview && (isReviewer || isOwner) && !isAssignee;
   const reviewRounds = Array.isArray(task.review_rounds)
     ? [...task.review_rounds].sort((a: any, b: any) => (a.round_number || 0) - (b.round_number || 0))
     : [];
@@ -647,14 +652,16 @@ export default function TaskDetailsDrawer({
                   </span>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => handleToggleWaiting(false)}
-                disabled={updatingWaiting}
-                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
-              >
-                استئناف العمل
-              </button>
+              {!isReadOnly && (
+                <button
+                  type="button"
+                  onClick={() => handleToggleWaiting(false)}
+                  disabled={updatingWaiting}
+                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+                >
+                  استئناف العمل
+                </button>
+              )}
             </div>
           )}
 
@@ -780,34 +787,38 @@ export default function TaskDetailsDrawer({
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setShowDeliverableModal(true)}
-                  className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-[11px] font-bold transition-colors shadow-2xs flex items-center gap-1"
-                >
-                  <span>تسليم إصدار جديد</span>
-                </button>
+                {!isReadOnly && (
+                  <button
+                    type="button"
+                    onClick={() => setShowDeliverableModal(true)}
+                    className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-[11px] font-bold transition-colors shadow-2xs flex items-center gap-1"
+                  >
+                    <span>تسليم إصدار جديد</span>
+                  </button>
+                )}
               </div>
             </div>
 
-            <div className="flex gap-2">
-              <input
-                type="url"
-                value={deliverableUrl}
-                onChange={(e) => setDeliverableUrl(e.target.value)}
-                placeholder="https://figma.com/file/... أو رابط Google Drive"
-                className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white focus:outline-sky-500 font-mono text-left"
-                dir="ltr"
-              />
-              <button
-                type="button"
-                onClick={handleSaveDeliverable}
-                disabled={savingDeliverable}
-                className="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold transition-colors shrink-0"
-              >
-                {savingDeliverable ? "جاري الحفظ..." : "حفظ الرابط"}
-              </button>
-            </div>
+            {!isReadOnly && (
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={deliverableUrl}
+                  onChange={(e) => setDeliverableUrl(e.target.value)}
+                  placeholder="https://figma.com/file/... أو رابط Google Drive"
+                  className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white focus:outline-sky-500 font-mono text-left"
+                  dir="ltr"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveDeliverable}
+                  disabled={savingDeliverable}
+                  className="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold transition-colors shrink-0"
+                >
+                  {savingDeliverable ? "جاري الحفظ..." : "حفظ الرابط"}
+                </button>
+              </div>
+            )}
 
             {/* Versioned Deliverables History */}
             {deliverables.length > 0 && (
@@ -940,7 +951,7 @@ export default function TaskDetailsDrawer({
               </div>
 
               <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
-                <span className="text-slate-400 block text-[10px]">المصمم المسند:</span>
+                <span className="text-slate-400 block text-[10px]">المسؤول المسند:</span>
                 <strong className="text-slate-800 mt-0.5 block">
                   {task.assignee?.display_name || "غير مسند"}
                 </strong>
@@ -1138,18 +1149,20 @@ export default function TaskDetailsDrawer({
                         >
                           {comment.is_resolved ? "✓ تم استيفاء الملاحظة" : "⏳ قيد التنفيذ"}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleResolve(comment.id, comment.is_resolved)}
-                          className={cn(
-                            "px-2 py-0.5 rounded text-[10px] font-bold border transition-colors",
-                            comment.is_resolved
-                              ? "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                              : "bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700"
-                          )}
-                        >
-                          {comment.is_resolved ? "إعادة الفتح" : "تحديد كمستوفى ✓"}
-                        </button>
+                        {!isReadOnly && (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleResolve(comment.id, comment.is_resolved)}
+                            className={cn(
+                              "px-2 py-0.5 rounded text-[10px] font-bold border transition-colors",
+                              comment.is_resolved
+                                ? "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                                : "bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700"
+                            )}
+                          >
+                            {comment.is_resolved ? "إعادة الفتح" : "تحديد كمستوفى ✓"}
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1158,154 +1171,164 @@ export default function TaskDetailsDrawer({
             )}
 
             {/* Add Comment Form */}
-            <form onSubmit={handleAddComment} className="pt-2 space-y-2">
-              <div className="flex items-center gap-2">
-                <select
-                  value={newCommentType}
-                  onChange={(e) => setNewCommentType(e.target.value as any)}
-                  className="px-2.5 py-1.5 border border-slate-200 rounded-xl text-xs bg-white text-slate-700"
-                >
-                  <option value="general">تعليق عام</option>
-                  <option value="internal_review">ملاحظة مراجعة وتعديل</option>
-                  <option value="client_note">ملاحظة من العميل</option>
-                </select>
-                <span className="text-[11px] text-slate-400">
-                  {newCommentType === "internal_review"
-                    ? "تظهر كمهمة تعديل قابلة للاستيفاء"
-                    : "نقاش وتنسيق داخلي"}
-                </span>
-              </div>
+            {!isReadOnly && (
+              <form onSubmit={handleAddComment} className="pt-2 space-y-2">
+                <div className="flex items-center gap-2">
+                  <select
+                    value={newCommentType}
+                    onChange={(e) => setNewCommentType(e.target.value as any)}
+                    className="px-2.5 py-1.5 border border-slate-200 rounded-xl text-xs bg-white text-slate-700"
+                  >
+                    <option value="general">تعليق عام</option>
+                    <option value="internal_review">ملاحظة مراجعة وتعديل</option>
+                    <option value="client_note">ملاحظة من العميل</option>
+                  </select>
+                  <span className="text-[11px] text-slate-400">
+                    {newCommentType === "internal_review"
+                      ? "تظهر كمهمة تعديل قابلة للاستيفاء"
+                      : "نقاش وتنسيق داخلي"}
+                  </span>
+                </div>
 
-              <div className="flex gap-2">
-                <textarea
-                  value={newCommentText}
-                  onChange={(e) => setNewCommentText(e.target.value)}
-                  placeholder="اكتب ملاحظة أو توجيه للمصمم..."
-                  rows={2}
-                  className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-xs resize-none focus:outline-sky-500 bg-white"
-                />
-                <button
-                  type="submit"
-                  disabled={!newCommentText.trim() || submittingComment}
-                  className="px-4 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 text-white rounded-xl font-bold flex items-center justify-center shrink-0 transition-colors"
-                >
-                  <Send className="w-4 h-4" />
-                </button>
-              </div>
-            </form>
+                <div className="flex gap-2">
+                  <textarea
+                    value={newCommentText}
+                    onChange={(e) => setNewCommentText(e.target.value)}
+                    placeholder="اكتب ملاحظة أو توجيه للمسؤول..."
+                    rows={2}
+                    className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-xs resize-none focus:outline-sky-500 bg-white"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newCommentText.trim() || submittingComment}
+                    className="px-4 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 text-white rounded-xl font-bold flex items-center justify-center shrink-0 transition-colors"
+                  >
+                    <Send className="w-4 h-4" />
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
 
         {/* Footer Lifecycle Actions */}
         <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-2">
-            {/* Start Work (from backlog, ready, or changes_requested) */}
-            {(task.status === "backlog" || task.status === "ready") && (
-              <button
-                type="button"
-                onClick={handleStartWork}
-                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
-              >
-                <Clock className="w-4 h-4" />
-                <span>بدء العمل والمؤقت</span>
-              </button>
-            )}
-
-            {task.status === "changes_requested" && (
-              <button
-                type="button"
-                onClick={handleStartWork}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
-              >
-                <RotateCcw className="w-4 h-4" />
-                <span>بدء العمل على التعديلات</span>
-              </button>
-            )}
-
-            {/* Submit for Review (from in_progress or changes_requested) */}
-            {(task.status === "in_progress" || task.status === "changes_requested") && (
-              <button
-                type="button"
-                onClick={() => setShowSubmitModal(true)}
-                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
-              >
-                <Send className="w-4 h-4" />
-                <span>تسليم للمراجعة الداخلية</span>
-              </button>
-            )}
-
-            {/* Pause / Waiting toggle button */}
-            {task.status === "in_progress" && !isWaiting && (
-              <button
-                type="button"
-                onClick={() => setShowWaitingModal(true)}
-                className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-colors"
-                title="تعليق العمل على التاسك وإيقاف المؤقت"
-              >
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                <span>تعليق (انتظار مدخلات)</span>
-              </button>
-            )}
-
-            {/* Copywriting Stage Direct Approval & Downstream Unlock */}
-            {task.work_stage === "copywriting" && (task.status === "internal_review" || task.status === "in_progress") && (canDecideReview || isOwner || currentUser?.role === "manager") && (
-              <button
-                type="button"
-                onClick={handleApproveCopywriting}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
-                title="اعتماد الاسكربت وفتح مهام الإنتاج تلقائياً"
-              >
-                <Check className="w-4 h-4" />
-                <span>اعتماد الاسكربت وفتح مهام الإنتاج ✓</span>
-              </button>
-            )}
-
-            {/* Owner Review Bypass (from in_progress ONLY if task is assigned to Workspace Owner) */}
-            {task.status === "in_progress" && isTaskAssignedToOwner && (
-              <button
-                type="button"
-                onClick={handleOwnerDirectApprove}
-                className="px-3 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 border border-emerald-300 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-colors"
-              >
-                <ShieldCheck className="w-4 h-4" />
-                <span>اعتماد مباشر (تجاوز المراجعة للمالك)</span>
-              </button>
-            )}
-
-            {/* Review Decision Buttons (when internal_review) - strictly guards against self-approval */}
-            {canDecideReview && (
-              <div className="flex items-center gap-2">
+          {!isReadOnly ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Start Work (from backlog, ready, or changes_requested) */}
+              {(task.status === "backlog" || task.status === "ready") && (
                 <button
                   type="button"
-                  onClick={() => setShowDecisionModal("approve")}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+                  onClick={handleStartWork}
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
                 >
-                  <Check className="w-4 h-4" />
-                  <span>اعتماد التصميم ✓</span>
+                  <Clock className="w-4 h-4" />
+                  <span>بدء العمل والمؤقت</span>
                 </button>
+              )}
+
+              {task.status === "changes_requested" && (
                 <button
                   type="button"
-                  onClick={() => setShowDecisionModal("changes")}
+                  onClick={handleStartWork}
                   className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
                 >
-                  <AlertTriangle className="w-4 h-4" />
-                  <span>طلب تعديلات ⚠️</span>
+                  <RotateCcw className="w-4 h-4" />
+                  <span>بدء العمل على التعديلات</span>
                 </button>
-              </div>
-            )}
+              )}
 
-            {/* Mark as Delivered (when approved) */}
-            {task.status === "approved" && (isOwner || currentUser?.role === "manager") && (
-              <button
-                type="button"
-                onClick={handleMarkDelivered}
-                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>تسليم نهائي للعميل</span>
-              </button>
-            )}
-          </div>
+              {/* Submit for Review (from in_progress or changes_requested) */}
+              {(task.status === "in_progress" || task.status === "changes_requested") && (
+                <button
+                  type="button"
+                  onClick={() => setShowSubmitModal(true)}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+                >
+                  <Send className="w-4 h-4" />
+                  <span>تسليم للمراجعة الداخلية</span>
+                </button>
+              )}
+
+              {/* Pause / Waiting toggle button */}
+              {task.status === "in_progress" && !isWaiting && (
+                <button
+                  type="button"
+                  onClick={() => setShowWaitingModal(true)}
+                  className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-colors"
+                  title="تعليق العمل على التاسك وإيقاف المؤقت"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                  <span>تعليق (انتظار مدخلات)</span>
+                </button>
+              )}
+
+              {/* Copywriting Stage Direct Approval & Downstream Unlock */}
+              {task.work_stage === "copywriting" &&
+                (task.status === "internal_review" || task.status === "in_progress") &&
+                (canDecideReview || ((isOwner || currentUser?.role === "manager" || currentUser?.role === "strategy_lead") && !isAssignee)) && (
+                  <button
+                    type="button"
+                    onClick={handleApproveCopywriting}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+                    title="اعتماد الاسكربت وفتح مهام الإنتاج تلقائياً"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>اعتماد الاسكربت وفتح مهام الإنتاج ✓</span>
+                  </button>
+                )}
+
+              {/* Owner Review Bypass (from in_progress ONLY if task is assigned to Workspace Owner) */}
+              {task.status === "in_progress" && isTaskAssignedToOwner && (
+                <button
+                  type="button"
+                  onClick={handleOwnerDirectApprove}
+                  className="px-3 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 border border-emerald-300 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-colors"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>اعتماد مباشر (تجاوز المراجعة للمالك)</span>
+                </button>
+              )}
+
+              {/* Review Decision Buttons (when internal_review) - strictly guards against self-approval */}
+              {canDecideReview && (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowDecisionModal("approve")}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>اعتماد التصميم ✓</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowDecisionModal("changes")}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+                  >
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>طلب تعديلات ⚠️</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Mark as Delivered (when approved) */}
+              {task.status === "approved" && (isOwner || currentUser?.role === "manager") && (
+                <button
+                  type="button"
+                  onClick={handleMarkDelivered}
+                  className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>تسليم نهائي للعميل</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="text-[11px] text-slate-500 font-semibold">
+              وضع العرض والمتابعة فقط (لا تتوفر إجراءات تعديل أو اعتماد لهذا الدور)
+            </div>
+          )}
 
           <button
             type="button"

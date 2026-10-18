@@ -135,7 +135,7 @@ export async function processCalendarCampaign(params: {
   // 1. Fetch campaign
   const { data: campaign, error: campErr } = await admin
     .from("campaigns")
-    .select("*, client:clients(id, name, owner_roster_id)")
+    .select("*, client:clients(id, name, owner_roster_id, team_assignment:client_team_assignments(*))")
     .eq("workspace_id", params.workspaceId)
     .eq("id", params.campaignId)
     .single();
@@ -202,13 +202,20 @@ export async function processCalendarCampaign(params: {
       forceRefresh: params.forceRefresh,
     });
 
-    // 6. Default assignee is client's assigned designer
-    const defaultAssignee = campaign.client?.owner_roster_id || null;
-    const itemsToSave = reconciled.items.map((it) => ({
-      ...it,
-      suggested_assignee_id: it.suggested_assignee_id || defaultAssignee,
-      approved_assignee_id: it.approved_assignee_id || defaultAssignee,
-    }));
+    // 6. Default assignee from client_team_assignments (video editor for video/reel, designer for design)
+    const rawTeam = (campaign.client as any)?.team_assignment;
+    const team = Array.isArray(rawTeam) ? rawTeam[0] : rawTeam;
+    const defaultDesigner = team?.primary_designer_id || campaign.client?.owner_roster_id || null;
+    const defaultVideoEditor = team?.primary_video_editor_id || defaultDesigner;
+    const itemsToSave = reconciled.items.map((it) => {
+      const isVideo = /reel|video|motion/i.test(String(it.content_format || ""));
+      const fallbackAssignee = isVideo ? defaultVideoEditor : defaultDesigner;
+      return {
+        ...it,
+        suggested_assignee_id: it.suggested_assignee_id || fallbackAssignee,
+        approved_assignee_id: it.approved_assignee_id || fallbackAssignee,
+      };
+    });
 
     // 7. Save extraction atomically via RPC
     const aiMetadata = {
@@ -328,6 +335,26 @@ export async function uploadContentCalendar(params: {
   };
 }
 
+function isMemberAssignedToClient(client: any, userRosterId?: string): boolean {
+  if (!userRosterId || !client) return false;
+  if (client.owner_roster_id === userRosterId) return true;
+  const rawTeam = client.team_assignment;
+  const team = Array.isArray(rawTeam) ? rawTeam[0] : rawTeam;
+  if (!team) return false;
+  return (
+    team.primary_designer_id === userRosterId ||
+    team.primary_video_editor_id === userRosterId ||
+    team.primary_copywriter_id === userRosterId ||
+    team.primary_strategist_id === userRosterId ||
+    team.design_reviewer_id === userRosterId ||
+    team.video_reviewer_id === userRosterId ||
+    team.copywriting_reviewer_id === userRosterId ||
+    team.strategy_reviewer_id === userRosterId ||
+    team.marketing_director_id === userRosterId ||
+    team.strategy_lead_id === userRosterId
+  );
+}
+
 export async function getContentCalendarDetails(params: {
   workspaceId: string;
   clientId: string;
@@ -335,19 +362,23 @@ export async function getContentCalendarDetails(params: {
   campaignId?: string;
   userRosterId?: string;
   isOwner?: boolean;
+  canViewAll?: boolean;
 }) {
   const admin = createAdminClient();
   if (!admin) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
-  // If not owner, verify client is assigned to this designer
-  if (!params.isOwner && params.userRosterId) {
+  const hasGlobalRead = Boolean(params.isOwner || params.canViewAll);
+
+  // If not global reader, verify client is assigned to this team member (across all tracks)
+  if (!hasGlobalRead && params.userRosterId) {
     const { data: client } = await admin
       .from("clients")
-      .select("owner_roster_id")
+      .select("id, owner_roster_id, team_assignment:client_team_assignments(*)")
       .eq("id", params.clientId)
-      .single();
+      .eq("workspace_id", params.workspaceId)
+      .maybeSingle();
 
-    if (client?.owner_roster_id !== params.userRosterId) {
+    if (!isMemberAssignedToClient(client, params.userRosterId)) {
       throw new Error("غير مصرح لك باستعراض تقويم هذا العميل.");
     }
   }
@@ -390,7 +421,7 @@ export async function getContentCalendarDetails(params: {
 
   // Generate signed preview URL if storage_path exists
   let previewUrl: string | null = null;
-  if (campaign.storage_path) {
+  if (campaign.storage_path && campaign.storage_path !== "manual") {
     const { data: signed } = await admin.storage
       .from("content-calendars")
       .createSignedUrl(campaign.storage_path, 900);
@@ -466,12 +497,15 @@ export async function listClientCalendars(params: {
   monthKey: string;
   userRosterId?: string;
   isOwner?: boolean;
+  canViewAll?: boolean;
 }) {
   const admin = createAdminClient();
   if (!admin) return [];
 
-  // Query clients
-  let clientsQuery = admin
+  const hasGlobalRead = Boolean(params.isOwner || params.canViewAll);
+
+  // Query clients with team_assignment so multi-track members see their assigned clients
+  const { data: rawClients, error } = await admin
     .from("clients")
     .select(`
       id,
@@ -479,18 +513,17 @@ export async function listClientCalendars(params: {
       difficulty,
       owner_roster_id,
       state,
-      owner:roster_people!fk_client_owner(id, display_name)
+      owner:roster_people!fk_client_owner(id, display_name),
+      team_assignment:client_team_assignments(*)
     `)
     .eq("workspace_id", params.workspaceId)
     .order("name", { ascending: true });
 
-  // If not owner, filter to clients assigned to caller
-  if (!params.isOwner && params.userRosterId) {
-    clientsQuery = clientsQuery.eq("owner_roster_id", params.userRosterId);
-  }
+  if (error || !rawClients) return [];
 
-  const { data: clients, error } = await clientsQuery;
-  if (error || !clients) return [];
+  const clients = hasGlobalRead
+    ? rawClients
+    : rawClients.filter((c) => isMemberAssignedToClient(c, params.userRosterId));
 
   // Fetch current campaigns for this month
   const { data: campaigns } = await admin

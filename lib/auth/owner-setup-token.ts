@@ -75,13 +75,14 @@ export async function hasExistingOwner(adminClient: SupabaseClient): Promise<boo
   const { data, error } = await adminClient
     .from("workspace_memberships")
     .select("id")
-    .eq("role", "owner")
+    .in("role", ["owner", "company_owner"])
     .eq("is_active", true)
     .limit(1);
 
   if (error) {
     console.error("Error checking existing owner membership:", error);
-    return false;
+    // Fail closed so owner setup is never exposed on a transient query error
+    return true;
   }
 
   return Array.isArray(data) && data.length > 0;

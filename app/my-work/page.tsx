@@ -49,6 +49,12 @@ export default function MyWorkPage() {
     email: string;
   } | null>(null);
 
+  const isReadOnly =
+    !currentUser ||
+    currentUser.role === "marketing_director" ||
+    currentUser.role === "business_owner_viewer" ||
+    currentUser.role === "viewer";
+
   // Filters state
   const [stageFilter, setStageFilter] = useState<string>("all");
   const [viewPerspective, setViewPerspective] = useState<"standard" | "strategy_lead" | "marketing_director">("standard");
@@ -65,8 +71,8 @@ export default function MyWorkPage() {
   const [manualCategory, setManualCategory] = useState<TimeCategory>("initial_design");
   const [manualNote, setManualNote] = useState("");
 
-  const fetchUserAndTasks = async () => {
-    setLoading(true);
+  const fetchUserAndTasks = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       // 1. Fetch current user
       const meRes = await fetch("/api/auth/me");
@@ -84,20 +90,30 @@ export default function MyWorkPage() {
       const res = await fetch("/api/tasks?myWork=true");
       if (res.ok) {
         const data = await res.json();
-        setTasks(data.tasks || []);
+        const fetchedTasks = data.tasks || [];
+        setTasks(fetchedTasks);
+        setSelectedTask((prev: any) =>
+          prev ? fetchedTasks.find((t: any) => t.id === prev.id) || prev : null
+        );
       }
     } catch (e) {
       console.error("Failed to load My Work data:", e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => {
     fetchUserAndTasks();
-    const handleTimerChange = () => fetchUserAndTasks();
-    window.addEventListener("timer_state_changed", handleTimerChange);
-    return () => window.removeEventListener("timer_state_changed", handleTimerChange);
+    const handleSync = () => fetchUserAndTasks(true);
+    window.addEventListener("timer_state_changed", handleSync);
+    window.addEventListener("tasks_data_changed", handleSync);
+    window.addEventListener("window_reconnected_sync", handleSync);
+    return () => {
+      window.removeEventListener("timer_state_changed", handleSync);
+      window.removeEventListener("tasks_data_changed", handleSync);
+      window.removeEventListener("window_reconnected_sync", handleSync);
+    };
   }, []);
 
   // Sort helper: design_due_date (or due_date) ASC -> Difficulty (Hard > Medium > Easy) -> created_at ASC
@@ -228,7 +244,7 @@ export default function MyWorkPage() {
           }),
         });
         window.dispatchEvent(new CustomEvent("timer_state_changed"));
-        fetchUserAndTasks();
+        fetchUserAndTasks(true);
       } else {
         const err = await res.json();
         alert(`تعذر بدء العمل: ${err.error || "خطأ غير متوقع"}`);
@@ -247,7 +263,7 @@ export default function MyWorkPage() {
         body: JSON.stringify({ isWaiting: false }),
       });
       if (res.ok) {
-        fetchUserAndTasks();
+        fetchUserAndTasks(true);
       } else {
         const err = await res.json();
         alert(err.error || "فشل استئناف العمل");
@@ -285,7 +301,7 @@ export default function MyWorkPage() {
         alert("تم تسجيل جلسة العمل اليدوية بنجاح!");
         setShowManualModal(false);
         setManualNote("");
-        fetchUserAndTasks();
+        fetchUserAndTasks(true);
       } else {
         const err = await res.json();
         alert(`فشل تسجيل الجلسة: ${err.error}`);
@@ -381,13 +397,15 @@ export default function MyWorkPage() {
               <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
               <span>معلقة: {task.waiting_reason || "انتظار مدخلات"}</span>
             </span>
-            <button
-              type="button"
-              onClick={(e) => handleResumeTask(task, e)}
-              className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-bold shrink-0 transition-colors shadow-2xs"
-            >
-              استئناف العمل
-            </button>
+            {!isReadOnly && (
+              <button
+                type="button"
+                onClick={(e) => handleResumeTask(task, e)}
+                className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-bold shrink-0 transition-colors shadow-2xs"
+              >
+                استئناف العمل
+              </button>
+            )}
           </div>
         )}
 
@@ -408,7 +426,7 @@ export default function MyWorkPage() {
 
         {/* Quick actions per card */}
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
-          {(task.status === "backlog" || task.status === "ready") && (
+          {!isReadOnly && (task.status === "backlog" || task.status === "ready") && (
             <button
               type="button"
               onClick={(e) => handleStartWork(task, e)}
@@ -419,7 +437,7 @@ export default function MyWorkPage() {
             </button>
           )}
 
-          {task.status === "changes_requested" && (
+          {!isReadOnly && task.status === "changes_requested" && (
             <button
               type="button"
               onClick={(e) => handleStartWork(task, e)}
@@ -430,7 +448,7 @@ export default function MyWorkPage() {
             </button>
           )}
 
-          {task.status === "in_progress" && !task.is_waiting && (
+          {!isReadOnly && task.status === "in_progress" && !task.is_waiting && (
             <button
               type="button"
               onClick={(e) => {
@@ -463,7 +481,7 @@ export default function MyWorkPage() {
   return (
     <div className="space-y-6">
       {/* Active Timer Bar */}
-      <ActiveTimerBar />
+      {!isReadOnly && <ActiveTimerBar />}
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -477,20 +495,22 @@ export default function MyWorkPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              if (tasks.length > 0) {
-                setManualTask(tasks[0]);
-                setShowManualModal(true);
-              } else {
-                alert("لا توجد مهام مسندة لتسجيل جلسة عليها.");
-              }
-            }}
-            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-          >
-            <Plus className="w-4 h-4" />
-            <span>إضافة جلسة عمل يدوية</span>
-          </button>
+          {!isReadOnly && (
+            <button
+              onClick={() => {
+                if (tasks.length > 0) {
+                  setManualTask(tasks[0]);
+                  setShowManualModal(true);
+                } else {
+                  alert("لا توجد مهام مسندة لتسجيل جلسة عليها.");
+                }
+              }}
+              className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" />
+              <span>إضافة جلسة عمل يدوية</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -706,8 +726,8 @@ export default function MyWorkPage() {
         task={selectedTask}
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
-        onStatusTransition={() => fetchUserAndTasks()}
-        onTaskUpdated={() => fetchUserAndTasks()}
+        onStatusTransition={() => fetchUserAndTasks(true)}
+        onTaskUpdated={() => fetchUserAndTasks(true)}
       />
 
       {/* Manual Time Session Modal */}

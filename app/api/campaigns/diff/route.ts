@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { computeCalendarDiff } from "@/lib/services/calendar-diff";
+import { requireWorkspaceMembership } from "@/lib/auth/server-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
+    const authRes = await requireWorkspaceMembership(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
+    }
+
+    const { membership, admin } = authRes.data;
     const { searchParams } = new URL(req.url);
     const campaignId = searchParams.get("campaignId");
     let previousCampaignId = searchParams.get("previousCampaignId");
@@ -15,16 +20,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "معرف الحملة (campaignId) مطلوب." }, { status: 400 });
     }
 
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
-    }
-
-    // 1. Fetch current campaign
+    // 1. Fetch current campaign scoped to workspace
     const { data: campaign, error: campErr } = await admin
       .from("campaigns")
       .select("id, workspace_id, client_id, month_key, revision_number, parent_campaign_id, title")
       .eq("id", campaignId)
+      .eq("workspace_id", membership.workspaceId)
       .single();
 
     if (campErr || !campaign) {
@@ -78,6 +79,7 @@ export async function GET(req: NextRequest) {
         .from("campaigns")
         .select("id, revision_number, title, calendar_status")
         .eq("id", previousCampaignId)
+        .eq("workspace_id", membership.workspaceId)
         .maybeSingle();
 
       previousCampaign = prevCamp;
@@ -102,9 +104,11 @@ export async function GET(req: NextRequest) {
           title,
           status,
           content_calendar_item_id,
-          assignee:roster_people!tasks_assignee_id_fkey(id, display_name)
+          deliverable_number,
+          assignee:roster_people!fk_task_assignee(id, display_name)
         `)
-        .eq("campaign_id", previousCampaignId);
+        .eq("campaign_id", previousCampaignId)
+        .eq("workspace_id", membership.workspaceId);
 
       existingTasks = tasks || [];
     }

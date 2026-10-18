@@ -64,9 +64,14 @@ export function computeCalendarDiff(params: {
 
   // Match tasks by content_calendar_item_id or post number / title
   const taskMap = new Map<string, any>();
+  const taskByPostKey = new Map<string, any>();
   for (const task of existingTasks) {
     if (task.content_calendar_item_id) {
       taskMap.set(task.content_calendar_item_id, task);
+    }
+    const postKey = normalizePostNumber(task.deliverable_number);
+    if (postKey && !taskByPostKey.has(postKey)) {
+      taskByPostKey.set(postKey, task);
     }
   }
 
@@ -170,14 +175,16 @@ export function computeCalendarDiff(params: {
       hasDesignerChange = true;
       changes.push({
         field: "assignee",
-        labelAr: "المصمم المسند",
+        labelAr: "العضو المسند",
         oldValue: matchedOld.approved_assignee?.display_name || matchedOld.suggested_assignee?.display_name || oldAssignee,
         newValue: newItem.approved_assignee?.display_name || newItem.suggested_assignee?.display_name || newAssignee,
       });
     }
 
     // Check existing task for old item
-    const existingTask = matchedOld.id ? taskMap.get(matchedOld.id) : null;
+    const existingTask =
+      (matchedOld.id ? taskMap.get(matchedOld.id) : null) ||
+      (matchedOldKey ? taskByPostKey.get(matchedOldKey) : null);
 
     diffItems.push({
       postNumber: newItem.post_number || matchedOld.post_number,
@@ -203,7 +210,9 @@ export function computeCalendarDiff(params: {
   for (const oldItem of oldItems) {
     const key = normalizePostNumber(oldItem.post_number);
     if (!processedOldKeys.has(key)) {
-      const existingTask = oldItem.id ? taskMap.get(oldItem.id) : null;
+      const existingTask =
+        (oldItem.id ? taskMap.get(oldItem.id) : null) ||
+        (key ? taskByPostKey.get(key) : null);
       diffItems.push({
         postNumber: oldItem.post_number || `Post ${oldItem.post_order}`,
         title: oldItem.title || "بدون عنوان",

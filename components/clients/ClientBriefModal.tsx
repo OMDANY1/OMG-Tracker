@@ -10,6 +10,8 @@ interface ClientBriefModalProps {
   onClose: () => void;
   onSaved: () => void;
   isOwner?: boolean;
+  isViewer?: boolean;
+  callerRole?: string;
 }
 
 export function ClientBriefModal({
@@ -18,12 +20,19 @@ export function ClientBriefModal({
   onClose,
   onSaved,
   isOwner = false,
+  isViewer = false,
+  callerRole = "",
 }: ClientBriefModalProps) {
   const [loading, setLoading] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  const canEditBrief = !isViewer && callerRole !== "marketing_director" && callerRole !== "business_owner_viewer";
+  const canReviewOperational =
+    isOwner || ["strategy_lead", "manager", "senior_reviewer"].includes(callerRole);
+  const canApproveFinal = isOwner || ["owner", "company_owner"].includes(callerRole);
 
   const brief = client?.brief_data;
 
@@ -399,38 +408,42 @@ export function ClientBriefModal({
           <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               {/* Step 1: Operational Review by Strategy Lead (Arwa) */}
-              <button
-                type="button"
-                onClick={handleOperationalReview}
-                disabled={reviewing || approving || loading}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 ${
-                  isReviewed
-                    ? "bg-sky-100 text-sky-800 border border-sky-300"
-                    : "bg-sky-600 hover:bg-sky-700 text-white"
-                }`}
-                title="مراجعة مسودة الاستراتيجية تشغيلياً (أروى / مراجع الاستراتيجية المعتمد)"
-              >
-                <Compass className="w-4 h-4" />
-                <span>
-                  {reviewing
-                    ? "جارٍ تسجيل المراجعة..."
-                    : isReviewed
-                    ? "✓ اجتازت المراجعة التشغيلية (أروى)"
-                    : "المراجعة التشغيلية (أروى - قيادة الاستراتيجية)"}
-                </span>
-              </button>
+              {canReviewOperational && (
+                <button
+                  type="button"
+                  onClick={handleOperationalReview}
+                  disabled={reviewing || approving || loading}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 ${
+                    isReviewed
+                      ? "bg-sky-100 text-sky-800 border border-sky-300"
+                      : "bg-sky-600 hover:bg-sky-700 text-white"
+                  }`}
+                  title="مراجعة مسودة الاستراتيجية تشغيلياً (أروى / مراجع الاستراتيجية المعتمد)"
+                >
+                  <Compass className="w-4 h-4" />
+                  <span>
+                    {reviewing
+                      ? "جارٍ تسجيل المراجعة..."
+                      : isReviewed
+                      ? "✓ اجتازت المراجعة التشغيلية (أروى)"
+                      : "المراجعة التشغيلية (أروى - قيادة الاستراتيجية)"}
+                  </span>
+                </button>
+              )}
 
-              {/* Step 2: Final Workspace Strategy Approval (Owner Emad) */}
-              <button
-                type="button"
-                onClick={handleApproveStrategy}
-                disabled={approving || reviewing || loading}
-                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-                title="الاعتماد النهائي للاستراتيجية لمساحة العمل (خاص بالمالك عماد)"
-              >
-                <ShieldCheck className="w-4 h-4" />
-                <span>{approving ? "جارٍ الاعتماد..." : "اعتماد مساحة العمل (عماد - Owner)"}</span>
-              </button>
+              {/* Step 2: Final Workspace Strategy Approval (Owner Emad / Ahmed Al-Nahhas) */}
+              {canApproveFinal && (
+                <button
+                  type="button"
+                  onClick={handleApproveStrategy}
+                  disabled={approving || reviewing || loading}
+                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                  title="الاعتماد النهائي للاستراتيجية لمساحة العمل (خاص بالمالك)"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>{approving ? "جارٍ الاعتماد..." : "اعتماد مساحة العمل (Owner)"}</span>
+                </button>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -441,14 +454,16 @@ export function ClientBriefModal({
               >
                 إغلاق
               </button>
-              <button
-                type="submit"
-                disabled={loading || approving}
-                className="px-5 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-              >
-                <Check className="w-4 h-4" />
-                <span>{loading ? "جارٍ الحفظ..." : "حفظ مسودة الـBrief"}</span>
-              </button>
+              {canEditBrief && (
+                <button
+                  type="submit"
+                  disabled={loading || approving}
+                  className="px-5 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>{loading ? "جارٍ الحفظ..." : "حفظ مسودة الـBrief"}</span>
+                </button>
+              )}
             </div>
           </div>
         </form>

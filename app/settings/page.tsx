@@ -37,6 +37,7 @@ export default function SettingsPage() {
   const [allowAcceptance, setAllowAcceptance] = useState<boolean>(true);
   const [invitationsPaused, setInvitationsPaused] = useState<boolean>(false);
   const [workspaceId, setWorkspaceId] = useState<string>("");
+  const [isOwner, setIsOwner] = useState<boolean>(false);
   const [updatingSettings, setUpdatingSettings] = useState<boolean>(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsSuccess, setSettingsSuccess] = useState<string | null>(null);
@@ -71,6 +72,7 @@ export default function SettingsPage() {
         setAllowAcceptance(data.allowInvitationAcceptance ?? true);
         setInvitationsPaused(data.invitationsPaused ?? false);
         setWorkspaceId(data.workspaceId || "");
+        if (typeof data.isOwner === "boolean") setIsOwner(data.isOwner);
       }
     } catch (e) {
       console.error(e);
@@ -78,7 +80,7 @@ export default function SettingsPage() {
   };
 
   const updateInvitationSettings = async (newEmails: boolean, newAcceptance: boolean) => {
-    if (!workspaceId) return;
+    if (!workspaceId || !isOwner) return;
     setUpdatingSettings(true);
     setSettingsError(null);
     setSettingsSuccess(null);
@@ -188,8 +190,9 @@ export default function SettingsPage() {
             <input
               type="number"
               value={threshold}
+              disabled={!isOwner}
               onChange={(e) => setThreshold(e.target.value)}
-              className="w-48 px-3 py-2 border border-slate-200 rounded-xl text-xs"
+              className="w-48 px-3 py-2 border border-slate-200 rounded-xl text-xs disabled:bg-slate-50"
             />
             <p className="text-[11px] text-slate-400 mt-1">
               يظهر تنبيهاً مرئياً عند استمرار العداد لأكثر من 240 دقيقة (4 ساعات) دون خصم آلي تعسفي.
@@ -479,23 +482,27 @@ export default function SettingsPage() {
 
             <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
               <span className="text-[11px] text-slate-400 font-mono">allow_invitation_emails</span>
-              <button
-                type="button"
-                disabled={updatingSettings}
-                onClick={() => {
-                  const target = !allowEmails;
-                  if (target && !confirm("تنبيه: هل أنت متأكد من تفعيل الإرسال التلقائي للإيميلات الآن؟")) return;
-                  updateInvitationSettings(target, allowAcceptance);
-                }}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-2xs",
-                  allowEmails
-                    ? "bg-rose-600 hover:bg-rose-700 text-white"
-                    : "bg-slate-800 hover:bg-slate-900 text-white"
-                )}
-              >
-                {updatingSettings ? "جاري الحفظ..." : allowEmails ? "تعطيل الإرسال" : "تفعيل الإرسال"}
-              </button>
+              {isOwner ? (
+                <button
+                  type="button"
+                  disabled={updatingSettings}
+                  onClick={() => {
+                    const target = !allowEmails;
+                    if (target && !confirm("تنبيه: هل أنت متأكد من تفعيل الإرسال التلقائي للإيميلات الآن؟")) return;
+                    updateInvitationSettings(target, allowAcceptance);
+                  }}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-2xs",
+                    allowEmails
+                      ? "bg-rose-600 hover:bg-rose-700 text-white"
+                      : "bg-slate-800 hover:bg-slate-900 text-white"
+                  )}
+                >
+                  {updatingSettings ? "جاري الحفظ..." : allowEmails ? "تعطيل الإرسال" : "تفعيل الإرسال"}
+                </button>
+              ) : (
+                <span className="text-[11px] text-slate-400 font-semibold">للمالك فقط</span>
+              )}
             </div>
           </div>
 
@@ -525,23 +532,27 @@ export default function SettingsPage() {
 
             <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
               <span className="text-[11px] text-slate-400 font-mono">allow_invitation_acceptance</span>
-              <button
-                type="button"
-                disabled={updatingSettings}
-                onClick={() => {
-                  const target = !allowAcceptance;
-                  if (!target && !confirm("هل أنت متأكد من رغبتك في إيقاف قبول الدعوات لجميع الأعضاء مؤقتاً؟")) return;
-                  updateInvitationSettings(allowEmails, target);
-                }}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-bold text-white transition-all shadow-2xs",
-                  allowAcceptance
-                    ? "bg-rose-600 hover:bg-rose-700"
-                    : "bg-emerald-600 hover:bg-emerald-700"
-                )}
-              >
-                {updatingSettings ? "جاري الحفظ..." : allowAcceptance ? "إيقاف مؤقت للقبول" : "فتح وقبول الدعوات"}
-              </button>
+              {isOwner ? (
+                <button
+                  type="button"
+                  disabled={updatingSettings}
+                  onClick={() => {
+                    const target = !allowAcceptance;
+                    if (!target && !confirm("هل أنت متأكد من رغبتك في إيقاف قبول الدعوات لجميع الأعضاء مؤقتاً؟")) return;
+                    updateInvitationSettings(allowEmails, target);
+                  }}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-xs font-bold text-white transition-all shadow-2xs",
+                    allowAcceptance
+                      ? "bg-rose-600 hover:bg-rose-700"
+                      : "bg-emerald-600 hover:bg-emerald-700"
+                  )}
+                >
+                  {updatingSettings ? "جاري الحفظ..." : allowAcceptance ? "إيقاف مؤقت للقبول" : "فتح وقبول الدعوات"}
+                </button>
+              ) : (
+                <span className="text-[11px] text-slate-400 font-semibold">للمالك فقط</span>
+              )}
             </div>
           </div>
         </div>

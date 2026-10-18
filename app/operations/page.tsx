@@ -245,6 +245,13 @@ export default function OperationsHubPage() {
         </div>
       </div>
 
+      {error && (
+        <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 flex items-center gap-2.5 text-xs font-semibold">
+          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
       {/* Security & Invitations Paused Banner */}
       <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 flex items-start justify-between gap-4 text-xs">
         <div className="flex items-start gap-3">

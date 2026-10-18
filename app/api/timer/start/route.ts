@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireTaskAccess, validateSameOrigin } from "@/lib/auth/server-auth";
+import { requireTaskAccess, validateSameOrigin, isFullAdminRole } from "@/lib/auth/server-auth";
 import { startOrSwitchTimer } from "@/lib/services/time-tracking";
 
 export const dynamic = "force-dynamic";
@@ -27,12 +27,12 @@ export async function POST(req: NextRequest) {
 
     const { membership, serverClient } = accessRes.data;
 
-    // Only owner can start timer on behalf of another user
+    // Only owner or company_owner can start timer on behalf of another user
     let effectiveTargetRosterId = targetRosterId;
     if (targetRosterId && targetRosterId !== membership.rosterPersonId) {
-      if (membership.role !== "owner") {
+      if (!isFullAdminRole(membership.role) && membership.role !== "manager") {
         return NextResponse.json(
-          { error: "غير مصرح: بدء المؤقت نيابة عن عضو آخر مقتصر على المالك فقط." },
+          { error: "غير مصرح: بدء المؤقت نيابة عن عضو آخر مقتصر على المالك أو الشريك فقط." },
           { status: 403 }
         );
       }

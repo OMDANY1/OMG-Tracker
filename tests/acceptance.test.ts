@@ -633,7 +633,7 @@ async function runTestSuite() {
   assert(fs.existsSync(inviteStatusRoute), "app/api/workspace/invitations-status/route.ts exists");
   if (fs.existsSync(inviteStatusRoute)) {
     const routeContent = fs.readFileSync(inviteStatusRoute, "utf-8");
-    assert(routeContent.includes("set_workspace_invitations_paused"), "Route calls set_workspace_invitations_paused RPC");
+    assert(routeContent.includes("set_workspace_invitation_settings") || routeContent.includes("set_workspace_invitations_paused"), "Route calls set_workspace_invitation_settings RPC");
     assert(routeContent.includes("export async function GET"), "Route exports GET handler");
     assert(routeContent.includes("export async function PATCH"), "Route exports PATCH handler");
   }
@@ -1108,8 +1108,8 @@ async function runTestSuite() {
 
   // 2. API Security and Role Isolation
   const tasksRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/tasks/route.ts"), "utf-8");
-  assert(tasksRouteContent.includes("requireWorkspaceMembership") && tasksRouteContent.includes("requireOwner"), "2a. /api/tasks enforces requireWorkspaceMembership on GET and requireOwner on POST");
-  assert(tasksRouteContent.includes("membership.role === \"designer\"") && tasksRouteContent.includes("membership.role === \"senior_reviewer\""), "2b. /api/tasks implements role-scoped task isolation");
+  assert(tasksRouteContent.includes("requireWorkspaceMembership") && tasksRouteContent.includes("isFullAdminRole"), "2a. /api/tasks enforces requireWorkspaceMembership on GET and Owner/CompanyOwner/StrategyLead on POST");
+  assert(tasksRouteContent.includes("hasGlobalTaskRead") && tasksRouteContent.includes("membership.role === \"senior_reviewer\""), "2b. /api/tasks implements role-scoped task isolation");
 
   const taskStatusRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/tasks/[id]/status/route.ts"), "utf-8");
   assert(taskStatusRouteContent.includes("validateSameOrigin") && taskStatusRouteContent.includes("requireTaskAccess"), "2c. /api/tasks/[id]/status enforces validateSameOrigin and requireTaskAccess");
@@ -1121,7 +1121,7 @@ async function runTestSuite() {
   assert(reviewDecideRouteContent.includes("validateSameOrigin") && reviewDecideRouteContent.includes("requireWorkspaceMembership"), "2e. /api/reviews/decide enforces validateSameOrigin and requireWorkspaceMembership");
 
   const timerStartRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/timer/start/route.ts"), "utf-8");
-  assert(timerStartRouteContent.includes("validateSameOrigin") && timerStartRouteContent.includes("requireTaskAccess") && timerStartRouteContent.includes("membership.role !== \"owner\""), "2f. /api/timer/start enforces validateSameOrigin, requireTaskAccess, and Owner-only delegation");
+  assert(timerStartRouteContent.includes("validateSameOrigin") && timerStartRouteContent.includes("requireTaskAccess") && timerStartRouteContent.includes("isFullAdminRole(membership.role)"), "2f. /api/timer/start enforces validateSameOrigin, requireTaskAccess, and Owner-only delegation");
 
   const exportCsvContent = fs.readFileSync(path.join(__dirname, "../app/api/reports/export-csv/route.ts"), "utf-8");
   assert(exportCsvContent.includes("/^[=+\\-@\\t\\r]/"), "2g. /api/reports/export-csv sanitizes spreadsheet formula injection");
@@ -1158,18 +1158,18 @@ async function runTestSuite() {
 
   // 3. Calendar Item API Assignee Validation
   const itemPatchContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/items/[itemId]/route.ts"), "utf-8");
-  assert(itemPatchContent.includes("roster_people") && itemPatchContent.includes("is_active") && itemPatchContent.includes("المصمم المختار غير صالح"), "3. PATCH /api/campaigns/items/[itemId] validates approved_assignee_id against active roster");
+  assert(itemPatchContent.includes("roster_people") && itemPatchContent.includes(".neq(\"role\", \"viewer\")") && itemPatchContent.includes("العضو المختار غير صالح"), "3. PATCH /api/campaigns/items/[itemId] validates approved_assignee_id against non-viewer roster");
 
   // 4. Import API Assignee Strict Enforcement
   const importTasksRouteContent = fs.readFileSync(path.join(__dirname, "../app/api/campaigns/import-tasks/route.ts"), "utf-8");
-  assert(importTasksRouteContent.includes("activeRosterIds.has(targetAssigneeId)") && importTasksRouteContent.includes("يجب تحديد مصمم صالح للبوست"), "4. POST /api/campaigns/import-tasks strictly enforces designer selection and rejects invalid assignees");
+  assert(importTasksRouteContent.includes("activeRosterIds.has(targetAssigneeId)") && importTasksRouteContent.includes("يجب تحديد عضو فريق صالح للبوست"), "4. POST /api/campaigns/import-tasks strictly enforces assignee selection and rejects invalid assignees");
 
   // 5. Frontend Assignee Contract & Pre-Import Preview Table
   const campaignsPageAssigneeContent = fs.readFileSync(path.join(__dirname, "../app/campaigns/page.tsx"), "utf-8");
   assert(campaignsPageAssigneeContent.includes("resolveReviewerForPost"), "5a. CampaignsPage implements resolveReviewerForPost helper");
   assert(campaignsPageAssigneeContent.includes("updateItemFieldById") && campaignsPageAssigneeContent.includes("PATCH"), "5b. CampaignsPage implements immutable updateItemFieldById with auto-save");
   assert(campaignsPageAssigneeContent.includes("المصمم الافتراضي:") && campaignsPageAssigneeContent.includes("defId"), "5c. Modal header resolves and displays default designer name accurately");
-  assert(campaignsPageAssigneeContent.includes("d.displayName || d.display_name") && campaignsPageAssigneeContent.includes("-- اختر المصمم --"), "5d. Assignee dropdown renders visible Arabic names and job titles");
+  assert(campaignsPageAssigneeContent.includes("d.displayName || d.display_name") && campaignsPageAssigneeContent.includes("-- اختر المسؤول --"), "5d. Assignee dropdown renders visible Arabic names and job titles");
   assert(campaignsPageAssigneeContent.includes("معاينة وتأكيد اعتماد الخطة وتوليد التاسكات") && campaignsPageAssigneeContent.includes("المراجع الداخلي"), "5e. CampaignsPage renders Pre-Import Confirmation Table with Post, Designer, Reviewer, and Status");
 
   // =========================================================================

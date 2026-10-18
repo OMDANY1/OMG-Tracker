@@ -79,6 +79,17 @@ export function AddClientModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const idempotencyKeyRef = React.useRef<string>("");
+
+  React.useEffect(() => {
+    if (isOpen) {
+      idempotencyKeyRef.current = typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setErrorMsg(null);
+      setSuccessMsg(null);
+    }
+  }, [isOpen, name]);
 
   if (!isOpen) return null;
 
@@ -108,6 +119,7 @@ export function AddClientModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          idempotencyKey: idempotencyKeyRef.current || undefined,
           name: name.trim(),
           difficulty,
           extraWorkload,
@@ -306,7 +318,7 @@ export function AddClientModal({
                       <option value="">-- اختر مراجع التصميم --</option>
                       {reviewerCandidates.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {r.displayName} ({r.jobTitle})
+                          {r.displayName} {r.hasJoined === false ? "(لم ينضم بعد)" : `(${r.jobTitle})`}
                         </option>
                       ))}
                     </select>
@@ -355,7 +367,7 @@ export function AddClientModal({
                       <option value="">-- اختر مراجع المحتوى --</option>
                       {reviewerCandidates.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {r.displayName} ({r.jobTitle})
+                          {r.displayName} {r.hasJoined === false ? "(لم ينضم بعد)" : `(${r.jobTitle})`}
                         </option>
                       ))}
                     </select>
@@ -404,7 +416,7 @@ export function AddClientModal({
                       <option value="">-- اختر مراجع الاستراتيجية --</option>
                       {reviewerCandidates.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {r.displayName} ({r.jobTitle})
+                          {r.displayName} {r.hasJoined === false ? "(لم ينضم بعد)" : `(${r.jobTitle})`}
                         </option>
                       ))}
                     </select>
@@ -454,7 +466,7 @@ export function AddClientModal({
                         <option value="">-- اختر مراجع الفيديو --</option>
                         {reviewerCandidates.map((r) => (
                           <option key={r.id} value={r.id}>
-                            {r.displayName} ({r.jobTitle})
+                            {r.displayName} {r.hasJoined === false ? "(لم ينضم بعد)" : `(${r.jobTitle})`}
                           </option>
                         ))}
                       </select>

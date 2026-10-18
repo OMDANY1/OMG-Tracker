@@ -1,33 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  requireWorkspaceMembership,
+  validateSameOrigin,
+  isFullAdminRole,
+  hasGranularPermission,
+} from "@/lib/auth/server-auth";
 
 export async function POST(req: NextRequest) {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (!serverClient) {
-      return NextResponse.json({ error: "جلسة المستخدم غير متوفرة." }, { status: 401 });
+    if (!validateSameOrigin(req)) {
+      return NextResponse.json(
+        { error: "طلب غير مصرح به (Same-Origin check failed)." },
+        { status: 403 }
+      );
     }
 
-    const { data: authData, error: authErr } = await serverClient.auth.getUser();
-    if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "يجب تسجيل الدخول أولاً." }, { status: 401 });
+    const authRes = await requireWorkspaceMembership(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
     }
 
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
-    }
+    const { membership, admin } = authRes.data;
 
-    const { data: membership } = await admin
-      .from("workspace_memberships")
-      .select("workspace_id, role")
-      .eq("user_id", authData.user.id)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (!membership || membership.role !== "owner") {
-      return NextResponse.json({ error: "إضافة البوستات مسموحة فقط للمدير العام." }, { status: 403 });
+    if (
+      !isFullAdminRole(membership.role) &&
+      membership.role !== "manager" &&
+      !hasGranularPermission(membership, "create_campaigns")
+    ) {
+      return NextResponse.json({ error: "إضافة البوستات مسموحة فقط للمدير العام أو الشريك." }, { status: 403 });
     }
 
     const body = await req.json();
@@ -55,11 +55,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "البيانات الأساسية للبوست مطلوبة." }, { status: 400 });
     }
 
+    if (suggestedAssigneeId) {
+      const { data: assignee } = await admin
+        .from("roster_people")
+        .select("id, is_active")
+        .eq("id", suggestedAssigneeId)
+        .eq("workspace_id", membership.workspaceId)
+        .maybeSingle();
+
+      if (!assignee || !assignee.is_active) {
+        return NextResponse.json(
+          { error: "العضو المختار غير صالح أو غير نشط في مساحة العمل." },
+          { status: 400 }
+        );
+      }
+    }
+
     // Get current max post_order for this campaign
     const { data: existingItems } = await admin
       .from("content_calendar_items")
       .select("post_order")
       .eq("campaign_id", campaignId)
+      .eq("workspace_id", membership.workspaceId)
       .order("post_order", { ascending: false })
       .limit(1);
 
@@ -69,7 +86,7 @@ export async function POST(req: NextRequest) {
     const { data: newItem, error: insertErr } = await admin
       .from("content_calendar_items")
       .insert({
-        workspace_id: membership.workspace_id,
+        workspace_id: membership.workspaceId,
         campaign_id: campaignId,
         client_id: clientId,
         post_order: nextOrder,

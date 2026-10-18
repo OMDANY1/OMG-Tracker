@@ -1,36 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  requireWorkspaceMembership,
+  validateSameOrigin,
+  isFullAdminRole,
+  hasGranularPermission,
+} from "@/lib/auth/server-auth";
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { itemId: string } }
 ) {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (!serverClient) {
-      return NextResponse.json({ error: "جلسة المستخدم غير متوفرة." }, { status: 401 });
+    if (!validateSameOrigin(req)) {
+      return NextResponse.json(
+        { error: "طلب غير مصرح به (Same-Origin check failed)." },
+        { status: 403 }
+      );
     }
 
-    const { data: authData, error: authErr } = await serverClient.auth.getUser();
-    if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "يجب تسجيل الدخول أولاً." }, { status: 401 });
+    const authRes = await requireWorkspaceMembership(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
     }
 
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
-    }
+    const { membership, admin } = authRes.data;
 
-    const { data: membership } = await admin
-      .from("workspace_memberships")
-      .select("workspace_id, role")
-      .eq("user_id", authData.user.id)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (!membership || membership.role !== "owner") {
-      return NextResponse.json({ error: "تعديل البوستات مسموح فقط للمدير العام." }, { status: 403 });
+    if (
+      !isFullAdminRole(membership.role) &&
+      membership.role !== "manager" &&
+      !hasGranularPermission(membership, "create_campaigns")
+    ) {
+      return NextResponse.json({ error: "تعديل البوستات مسموح فقط للمدير العام أو الشريك." }, { status: 403 });
     }
 
     const body = await req.json();
@@ -50,14 +50,15 @@ export async function PATCH(
       if (body.approved_assignee_id) {
         const { data: assignee } = await admin
           .from("roster_people")
-          .select("id, is_active")
+          .select("id, role")
           .eq("id", body.approved_assignee_id)
-          .eq("workspace_id", membership.workspace_id)
+          .eq("workspace_id", membership.workspaceId)
+          .neq("role", "viewer")
           .maybeSingle();
 
-        if (!assignee || !assignee.is_active) {
+        if (!assignee) {
           return NextResponse.json(
-            { error: "المصمم المختار غير صالح أو غير نشط في مساحة العمل." },
+            { error: "العضو المختار غير صالح في مساحة العمل." },
             { status: 400 }
           );
         }
@@ -80,7 +81,7 @@ export async function PATCH(
       .from("content_calendar_items")
       .update(updateData)
       .eq("id", params.itemId)
-      .eq("workspace_id", membership.workspace_id)
+      .eq("workspace_id", membership.workspaceId)
       .select()
       .single();
 
@@ -99,30 +100,26 @@ export async function DELETE(
   { params }: { params: { itemId: string } }
 ) {
   try {
-    const serverClient = await createServerSupabaseClient().catch(() => null);
-    if (!serverClient) {
-      return NextResponse.json({ error: "جلسة المستخدم غير متوفرة." }, { status: 401 });
+    if (!validateSameOrigin(req)) {
+      return NextResponse.json(
+        { error: "طلب غير مصرح به (Same-Origin check failed)." },
+        { status: 403 }
+      );
     }
 
-    const { data: authData, error: authErr } = await serverClient.auth.getUser();
-    if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "يجب تسجيل الدخول أولاً." }, { status: 401 });
+    const authRes = await requireWorkspaceMembership(req);
+    if (!authRes.success) {
+      return authRes.errorResponse;
     }
 
-    const admin = createAdminClient();
-    if (!admin) {
-      return NextResponse.json({ error: "تعذر الاتصال بقاعدة البيانات." }, { status: 500 });
-    }
+    const { membership, admin } = authRes.data;
 
-    const { data: membership } = await admin
-      .from("workspace_memberships")
-      .select("workspace_id, role")
-      .eq("user_id", authData.user.id)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (!membership || membership.role !== "owner") {
-      return NextResponse.json({ error: "حذف البوستات مسموح فقط للمدير العام." }, { status: 403 });
+    if (
+      !isFullAdminRole(membership.role) &&
+      membership.role !== "manager" &&
+      !hasGranularPermission(membership, "create_campaigns")
+    ) {
+      return NextResponse.json({ error: "حذف البوستات مسموح فقط للمدير العام أو الشريك." }, { status: 403 });
     }
 
     // Ensure item has not been imported as a task
@@ -130,7 +127,7 @@ export async function DELETE(
       .from("content_calendar_items")
       .select("id, task_id")
       .eq("id", params.itemId)
-      .eq("workspace_id", membership.workspace_id)
+      .eq("workspace_id", membership.workspaceId)
       .single();
 
     if (!item) {
@@ -144,7 +141,8 @@ export async function DELETE(
     const { error: delErr } = await admin
       .from("content_calendar_items")
       .delete()
-      .eq("id", params.itemId);
+      .eq("id", params.itemId)
+      .eq("workspace_id", membership.workspaceId);
 
     if (delErr) {
       return NextResponse.json({ error: delErr.message }, { status: 400 });

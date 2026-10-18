@@ -78,8 +78,9 @@ export async function addManualSession(params: {
   category: TimeCategory;
   note?: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const startedAtUtc = cairoLocalToUtcIso(params.startedAtLocal);
@@ -102,8 +103,9 @@ export async function voidTimeEntry(params: {
   timeEntryId: string;
   reason: string;
   idempotencyKey?: string;
+  client?: any;
 }) {
-  const supabase = await getClient();
+  const supabase = params.client || (await getClient());
   if (!supabase) throw new Error("Supabase is not configured.");
 
   if (!params.reason || !params.reason.trim()) {

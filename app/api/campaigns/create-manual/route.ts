@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireWorkspaceMembership, validateSameOrigin } from "@/lib/auth/server-auth";
+import {
+  requireWorkspaceMembership,
+  validateSameOrigin,
+  isFullAdminRole,
+  hasGranularPermission,
+} from "@/lib/auth/server-auth";
 import { createManualContentCalendar } from "@/lib/services/content-calendars";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +21,17 @@ export async function POST(req: NextRequest) {
   if (!authRes.success) return authRes.errorResponse;
 
   const { membership } = authRes.data;
+  if (
+    !isFullAdminRole(membership.role) &&
+    membership.role !== "manager" &&
+    !hasGranularPermission(membership, "create_campaigns")
+  ) {
+    return NextResponse.json(
+      { error: "غير مصرح: إنشاء خطط المحتوى والحملات مقتصر على الإدارة." },
+      { status: 403 }
+    );
+  }
+
   try {
     const body = await req.json();
     const { clientId, monthKey } = body;

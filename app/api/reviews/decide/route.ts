@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireWorkspaceMembership, validateSameOrigin } from "@/lib/auth/server-auth";
+import { requireWorkspaceMembership, validateSameOrigin, isFullAdminRole, hasGranularPermission } from "@/lib/auth/server-auth";
 import { decideReviewRound } from "@/lib/services/reviews";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +15,14 @@ export async function POST(req: NextRequest) {
   const authRes = await requireWorkspaceMembership(req);
   if (!authRes.success) {
     return authRes.errorResponse;
+  }
+
+  const callerRole = authRes.data.membership.role;
+  if (callerRole === "marketing_director" || callerRole === "business_owner_viewer") {
+    return NextResponse.json(
+      { error: "غير مصرح: دورك الحالي للقراءة والتقارير فقط ولا يملك صلاحية المراجعة أو الاعتماد." },
+      { status: 403 }
+    );
   }
 
   try {
@@ -51,7 +59,6 @@ export async function POST(req: NextRequest) {
 
     const taskData: any = roundData.task;
     const callerRosterId = authRes.data.membership.rosterPersonId;
-    const callerRole = authRes.data.membership.role;
 
     // Zero self-approval
     if (callerRosterId === roundData.submitter_id || (taskData && callerRosterId === taskData.primary_assignee_id)) {
@@ -61,9 +68,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Reviewer authorization: must be designated reviewer or workspace owner/manager
+    // Reviewer authorization: must be designated reviewer, workspace owner/company_owner/manager, or have approve_reviews permission
     const designatedReviewerId = roundData.reviewer_id || (taskData && taskData.reviewer_id);
-    if (callerRole !== "owner" && callerRole !== "manager" && callerRosterId !== designatedReviewerId) {
+    if (
+      !isFullAdminRole(callerRole) &&
+      callerRole !== "manager" &&
+      callerRosterId !== designatedReviewerId &&
+      !hasGranularPermission(authRes.data.membership, "approve_reviews")
+    ) {
       return NextResponse.json(
         { error: "غير مصرح: لست المراجع المعتمد لهذه المهمة." },
         { status: 403 }

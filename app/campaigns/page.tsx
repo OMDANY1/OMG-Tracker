@@ -124,6 +124,8 @@ export default function CampaignsPage() {
   const [calendars, setCalendars] = useState<ClientCalendarRow[]>([]);
   const [allClients, setAllClients] = useState<any[]>([]);
   const [designers, setDesigners] = useState<any[]>([]);
+  const [videoEditors, setVideoEditors] = useState<any[]>([]);
+  const [allTeamMembers, setAllTeamMembers] = useState<any[]>([]);
   const [reviewRules, setReviewRules] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState<boolean>(false);
   const [workspaceId, setWorkspaceId] = useState<string>("");
@@ -131,6 +133,25 @@ export default function CampaignsPage() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
+
+  const assignableMembers = React.useMemo(() => {
+    if (allTeamMembers.length > 0) {
+      return allTeamMembers.filter(
+        (m: any) =>
+          !m.displayName?.includes("عطا") &&
+          m.role !== "marketing_director" &&
+          m.role !== "business_owner_viewer"
+      );
+    }
+    const merged = [...designers, ...videoEditors];
+    const seen = new Set<string>();
+    return merged.filter((m: any) => {
+      const id = m.id || m.rosterId;
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  }, [allTeamMembers, designers, videoEditors]);
 
   // AI Consent State
   const [hasGeminiConsent, setHasGeminiConsent] = useState<boolean>(false);
@@ -224,7 +245,7 @@ export default function CampaignsPage() {
     setLoading(true);
     setApiError(null);
     try {
-      // Parallel fetch: /api/clients (canonical 28 clients) & /api/campaigns/calendar (monthly states)
+      // Parallel fetch: /api/clients & /api/campaigns/calendar (monthly states)
       const [clientsRes, calRes] = await Promise.all([
         fetch("/api/clients"),
         fetch(`/api/campaigns/calendar?monthKey=${selectedMonth}`),
@@ -236,12 +257,12 @@ export default function CampaignsPage() {
       // 1. Process /api/clients
       if (clientsRes.ok) {
         const clData = await clientsRes.json();
-        if (Array.isArray(clData.clients) && clData.clients.length > 0) {
+        if (Array.isArray(clData.clients)) {
           rawClientsList = clData.clients;
           setAllClients(clData.clients);
         }
-        if (clData.designers) {
-          const normalized = clData.designers.map((d: any) => ({
+        const normalizeRoster = (arr: any[]) =>
+          arr.map((d: any) => ({
             ...d,
             id: d.id || d.rosterId,
             rosterId: d.rosterId || d.id,
@@ -250,8 +271,9 @@ export default function CampaignsPage() {
             jobTitle: d.jobTitle || d.job_title,
             job_title: d.job_title || d.jobTitle,
           }));
-          setDesigners(normalized);
-        }
+        if (Array.isArray(clData.designers)) setDesigners(normalizeRoster(clData.designers));
+        if (Array.isArray(clData.videoEditors)) setVideoEditors(normalizeRoster(clData.videoEditors));
+        if (Array.isArray(clData.allTeamMembers)) setAllTeamMembers(normalizeRoster(clData.allTeamMembers));
         if (Array.isArray(clData.reviewRules)) setReviewRules(clData.reviewRules);
         if (typeof clData.isOwner === "boolean") setIsOwner(clData.isOwner);
         if (clData.workspaceId) setWorkspaceId(clData.workspaceId);
@@ -293,6 +315,7 @@ export default function CampaignsPage() {
                 difficulty: client.difficulty || "Medium",
                 owner_roster_id: client.owner_roster_id,
                 owner: client.owner || calRow.client?.owner || null,
+                team_assignment: client.team_assignment || calRow.client?.team_assignment || null,
                 state: client.state,
               },
               aiConfidence: calRow.campaign?.ai_overall_confidence || null,
@@ -308,6 +331,7 @@ export default function CampaignsPage() {
               difficulty: client.difficulty || "Medium",
               owner_roster_id: client.owner_roster_id,
               owner: client.owner || null,
+              team_assignment: client.team_assignment || null,
               state: client.state,
             },
             campaign: null,
@@ -326,7 +350,8 @@ export default function CampaignsPage() {
         setCalendars(rows);
         setAllClients(rows.map((r) => r.client));
       } else {
-        throw new Error("لم يتم العثور على أي عملاء مسجلين في مساحة العمل.");
+        setCalendars([]);
+        setAllClients([]);
       }
     } catch (err: any) {
       console.error("fetchData error:", err);
@@ -565,27 +590,43 @@ export default function CampaignsPage() {
     );
   };
 
-  // Helper to resolve reviewer deterministically based on review routing rules
+  // Helper to resolve reviewer deterministically based on client team assignment + review routing rules
   const resolveReviewerForPost = (
     designerId: string | null | undefined,
     clientDifficulty: string | null | undefined,
     ownerRosterId: string | null | undefined,
     rules: any[],
-    rosterList: any[]
+    rosterList: any[],
+    contentFormat?: string | null,
+    teamAssignment?: any
   ): { id: string | null; name: string; isBypass: boolean } => {
     if (!designerId) {
       return { id: null, name: "غير محدد", isBypass: false };
     }
 
-    // Review Bypass for Owner
-    if (designerId === ownerRosterId) {
+    const assigneePerson = rosterList.find((r) => (r.id || r.rosterId) === designerId);
+    const isAssigneeOwner =
+      designerId === ownerRosterId ||
+      assigneePerson?.role === "owner" ||
+      assigneePerson?.role === "company_owner";
+
+    // Review Bypass for Owner / Company Owner
+    if (isAssigneeOwner) {
       return { id: null, name: "لا يوجد (اعتماد مباشر / Review Bypass)", isBypass: true };
     }
 
     let reviewerId: string | null = null;
+    const isVideoFormat = ["reel", "video", "motion"].includes((contentFormat || "").toLowerCase());
+
+    // 0. Check client_team_assignments first (matching import_content_calendar_tasks RPC)
+    if (isVideoFormat && teamAssignment?.video_reviewer_id) {
+      reviewerId = teamAssignment.video_reviewer_id;
+    } else if (!isVideoFormat && teamAssignment?.design_reviewer_id) {
+      reviewerId = teamAssignment.design_reviewer_id;
+    }
 
     // 1. Check rule with matching designer and matching client_difficulty
-    if (clientDifficulty) {
+    if (!reviewerId && clientDifficulty) {
       const ruleSpecific = rules.find(
         (r) => r.designer_roster_id === designerId && r.client_difficulty === clientDifficulty
       );
@@ -619,7 +660,7 @@ export default function CampaignsPage() {
 
     // Anti-self-approval
     if (reviewerId === designerId) {
-      reviewerId = null;
+      reviewerId = ownerRosterId && ownerRosterId !== designerId ? ownerRosterId : null;
     }
 
     if (!reviewerId) {
@@ -1201,7 +1242,7 @@ export default function CampaignsPage() {
                         </button>
                       )}
                     </>
-                  ) : (
+                  ) : isOwner ? (
                     <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                       <button
                         onClick={() => handleOpenUpload(row.client)}
@@ -1217,6 +1258,10 @@ export default function CampaignsPage() {
                         <Plus className="w-3.5 h-3.5 text-sky-600" />
                         <span>بدء خطة يدويًا</span>
                       </button>
+                    </div>
+                  ) : (
+                    <div className="w-full py-1.5 text-center text-[11px] text-slate-400 font-medium">
+                      لم يتم رفع تقويم لهذا الشهر بعد
                     </div>
                   )}
                 </div>
@@ -1640,7 +1685,7 @@ export default function CampaignsPage() {
                         <th className="p-2.5 w-28">المنصة</th>
                         <th className="p-2.5 w-28">النوع والمحتوى</th>
                         <th className="p-2.5 w-32">تاريخ التسليم</th>
-                        <th className="p-2.5 w-36">المصمم المسؤول</th>
+                        <th className="p-2.5 w-36">المسؤول</th>
                         <th className="p-2.5 w-24 text-center">الحالة</th>
                         {isOwner && <th className="p-2.5 w-20 text-center">إجراءات</th>}
                       </tr>
@@ -1657,10 +1702,17 @@ export default function CampaignsPage() {
                           const hasTask = !!item.task_id;
                           const isExcluded = !!item.is_excluded_from_tasks;
                           const isDuplicate = !!item.possible_duplicate;
+                          const isVideoFormat = ["reel", "video", "motion"].includes((item.content_format || "").toLowerCase());
+                          const defaultClientAssignee = isVideoFormat
+                            ? reviewCampaign?.client?.team_assignment?.primary_video_editor_id ||
+                              reviewCampaign?.client?.team_assignment?.primary_designer_id ||
+                              reviewCampaign?.client?.owner_roster_id
+                            : reviewCampaign?.client?.team_assignment?.primary_designer_id ||
+                              reviewCampaign?.client?.owner_roster_id;
                           const currentAssignee =
                             item.approved_assignee_id ||
                             item.suggested_assignee_id ||
-                            reviewCampaign?.client?.owner_roster_id ||
+                            defaultClientAssignee ||
                             "";
                           const isExpanded = expandedRowIndex === idx;
 
@@ -1807,14 +1859,14 @@ export default function CampaignsPage() {
                                     onChange={(e) => updateItemFieldById(item.id, idx, "approved_assignee_id", e.target.value)}
                                     className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white font-semibold text-slate-800 focus:ring-1 focus:ring-sky-500 disabled:bg-slate-50 disabled:text-slate-500"
                                   >
-                                    <option value="" disabled>-- اختر المصمم --</option>
-                                    {designers.map((d) => {
+                                    <option value="" disabled>-- اختر المسؤول --</option>
+                                    {assignableMembers.map((d: any) => {
                                       const val = d.id || d.rosterId;
                                       const name = d.displayName || d.display_name;
                                       const job = d.jobTitle || d.job_title;
                                       return (
                                         <option key={val} value={val} className="text-slate-800">
-                                          {name} {job ? `(${job})` : ""}
+                                          {name} {d.hasJoined === false ? "(لم ينضم بعد)" : job ? `(${job})` : ""}
                                         </option>
                                       );
                                     })}
@@ -1919,26 +1971,28 @@ export default function CampaignsPage() {
                                         </div>
                                       )}
                                       <div className="md:col-span-3 flex items-center justify-between pt-1 text-[11px]">
-                                        <div className="flex items-center gap-2">
-                                          <button
-                                            type="button"
-                                            onClick={() => handleSplitItem(idx)}
-                                            className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg font-bold flex items-center gap-1"
-                                          >
-                                            <Scissors className="w-3 h-3 text-sky-600" />
-                                            <span>تقسيم البوست إلى بوستين</span>
-                                          </button>
-                                          {idx > 0 && (
+                                        {isOwner ? (
+                                          <div className="flex items-center gap-2">
                                             <button
                                               type="button"
-                                              onClick={() => handleMergeItem(idx, idx - 1)}
+                                              onClick={() => handleSplitItem(idx)}
                                               className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg font-bold flex items-center gap-1"
                                             >
-                                              <GitMerge className="w-3 h-3 text-purple-600" />
-                                              <span>دمج مع البوست السابق ({reviewItems[idx - 1]?.post_number})</span>
+                                              <Scissors className="w-3 h-3 text-sky-600" />
+                                              <span>تقسيم البوست إلى بوستين</span>
                                             </button>
-                                          )}
-                                        </div>
+                                            {idx > 0 && (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleMergeItem(idx, idx - 1)}
+                                                className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg font-bold flex items-center gap-1"
+                                              >
+                                                <GitMerge className="w-3 h-3 text-purple-600" />
+                                                <span>دمج مع البوست السابق ({reviewItems[idx - 1]?.post_number})</span>
+                                              </button>
+                                            )}
+                                          </div>
+                                        ) : <div />}
                                         <span className="text-slate-400">
                                           الصفحات المصدرية: {item.source_pages?.join(", ") || "غير محدد"}
                                         </span>
@@ -1996,7 +2050,7 @@ export default function CampaignsPage() {
                         <strong>حالة التاسك الأولية:</strong> {TASK_STATUS_LABELS.backlog}
                       </div>
                       <div>
-                        <strong>الإشعارات المرسلة:</strong> {importSummary.notifications_created} إشعار للمصممين
+                        <strong>الإشعارات المرسلة:</strong> {importSummary.notifications_created} إشعار للمسؤولين
                       </div>
                     </div>
                   </div>
@@ -2016,7 +2070,7 @@ export default function CampaignsPage() {
                     </div>
 
                     <p className="text-xs leading-relaxed text-amber-900/90">
-                      راجع جدول الإسناد أدناه للتأكد من تعيين المصمم والمراجع المناسب لكل تاسك قبل الاعتماد.
+                      راجع جدول الإسناد أدناه للتأكد من تعيين المسؤول والمراجع المناسب لكل تاسك قبل الاعتماد.
                       تبدأ جميع المهام بحالة أولية <strong>«{TASK_STATUS_LABELS.backlog}»</strong>.
                     </p>
 
@@ -2027,39 +2081,43 @@ export default function CampaignsPage() {
                           <tr className="bg-amber-100/60 border-b border-amber-200/80 text-[11px] font-bold text-amber-950">
                             <th className="p-2 w-20">البوست</th>
                             <th className="p-2">العنوان والنوع</th>
-                            <th className="p-2 w-48">المصمم المسؤول ومسار المهام</th>
+                            <th className="p-2 w-48">المسؤول ومسار المهام</th>
                             <th className="p-2 w-36">المراجع الداخلي</th>
                             <th className="p-2 w-24 text-center">الحالة الأولية</th>
-                            <th className="p-2 w-28 text-center">موعد التصميم</th>
+                            <th className="p-2 w-28 text-center">موعد التسليم</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-amber-100 text-xs">
                           {reviewItems
                             .filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id)
                             .map((item, idx) => {
+                              const team = reviewCampaign?.client?.team_assignment;
+                              const isReel = ["reel", "video", "motion"].includes((item.content_format || "").toLowerCase());
+                              const defaultAssignee = isReel
+                                ? team?.primary_video_editor_id || team?.primary_designer_id || reviewCampaign?.client?.owner_roster_id
+                                : team?.primary_designer_id || reviewCampaign?.client?.owner_roster_id;
                               const targetAssigneeId =
                                 item.approved_assignee_id ||
                                 item.suggested_assignee_id ||
-                                reviewCampaign?.client?.owner_roster_id;
+                                defaultAssignee;
 
-                              const designerPerson = designers.find(
-                                (d) => (d.id || d.rosterId) === targetAssigneeId
+                              const assigneePerson = assignableMembers.find(
+                                (d: any) => (d.id || d.rosterId) === targetAssigneeId
                               );
                               const designerName =
-                                designerPerson?.displayName ||
-                                designerPerson?.display_name ||
-                                (targetAssigneeId ? "مصمم محدد" : "غير مسند");
+                                assigneePerson?.displayName ||
+                                assigneePerson?.display_name ||
+                                (targetAssigneeId ? "مسؤول محدد" : "غير مسند");
 
                               const reviewerRes = resolveReviewerForPost(
                                 targetAssigneeId,
                                 reviewCampaign?.client?.difficulty,
-                                designers.find((d) => d.displayName === "عماد" || d.display_name === "عماد")?.id,
+                                assignableMembers.find((d: any) => d.displayName === "عماد" || d.display_name === "عماد")?.id,
                                 reviewRules,
-                                designers
+                                assignableMembers,
+                                item.content_format,
+                                team
                               );
-
-                              const team = reviewCampaign?.client?.team_assignment;
-                              const isReel = item.content_format === "Reel";
 
                               return (
                                 <tr key={item.id || idx} className="hover:bg-amber-50/40">
@@ -2214,7 +2272,7 @@ export default function CampaignsPage() {
             </div>
 
             <p className="text-slate-500 text-[11px]">
-              تظل جميع شرائح الكاروسيل تابعة لنفس البوست والتاسك الفردي الواحد، ويتم حفظ نصوص كل شريحة للمصمم.
+              تظل جميع شرائح الكاروسيل تابعة لنفس البوست والتاسك الفردي الواحد، ويتم حفظ نصوص كل شريحة للمسؤول.
             </p>
 
             <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
@@ -2222,57 +2280,63 @@ export default function CampaignsPage() {
                 <div key={sIdx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
                   <div className="flex items-center justify-between font-bold text-slate-800">
                     <span>الشريحة #{slide.slide_number}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const updatedSlides = (reviewItems[slidesModalIndex!].slides || []).filter((_, idx) => idx !== sIdx);
-                        updateItemField(slidesModalIndex!, "slides", updatedSlides);
-                      }}
-                      className="text-rose-500 hover:text-rose-700 p-1"
-                      title="حذف الشريحة"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {isOwner && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updatedSlides = (reviewItems[slidesModalIndex!].slides || []).filter((_, idx) => idx !== sIdx);
+                          updateItemField(slidesModalIndex!, "slides", updatedSlides);
+                        }}
+                        className="text-rose-500 hover:text-rose-700 p-1"
+                        title="حذف الشريحة"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                   <input
                     type="text"
                     value={slide.text}
+                    disabled={!isOwner}
                     onChange={(e) => {
                       const updatedSlides = [...(reviewItems[slidesModalIndex!].slides || [])];
                       updatedSlides[sIdx] = { ...updatedSlides[sIdx], text: e.target.value };
                       updateItemField(slidesModalIndex!, "slides", updatedSlides);
                     }}
                     placeholder="نص الشريحة..."
-                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white text-xs"
+                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white text-xs disabled:bg-slate-50"
                   />
                   <input
                     type="text"
                     value={slide.visual_notes || ""}
+                    disabled={!isOwner}
                     onChange={(e) => {
                       const updatedSlides = [...(reviewItems[slidesModalIndex!].slides || [])];
                       updatedSlides[sIdx] = { ...updatedSlides[sIdx], visual_notes: e.target.value };
                       updateItemField(slidesModalIndex!, "slides", updatedSlides);
                     }}
                     placeholder="ملاحظات الصورة أو التوجيه البصري..."
-                    className="w-full px-2.5 py-1 border border-slate-200 rounded-lg bg-white text-[11px] text-slate-500"
+                    className="w-full px-2.5 py-1 border border-slate-200 rounded-lg bg-white text-[11px] text-slate-500 disabled:bg-slate-50"
                   />
                 </div>
               ))}
             </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                const currentSlides = reviewItems[slidesModalIndex!].slides || [];
-                const nextSlideNum = currentSlides.length + 1;
-                const updatedSlides = [...currentSlides, { slide_number: nextSlideNum, text: "", visual_notes: "" }];
-                updateItemField(slidesModalIndex!, "slides", updatedSlides);
-              }}
-              className="w-full py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-xl font-bold border border-purple-200 flex items-center justify-center gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>إضافة شريحة جديدة للكاروسيل</span>
-            </button>
+            {isOwner && (
+              <button
+                type="button"
+                onClick={() => {
+                  const currentSlides = reviewItems[slidesModalIndex!].slides || [];
+                  const nextSlideNum = currentSlides.length + 1;
+                  const updatedSlides = [...currentSlides, { slide_number: nextSlideNum, text: "", visual_notes: "" }];
+                  updateItemField(slidesModalIndex!, "slides", updatedSlides);
+                }}
+                className="w-full py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-xl font-bold border border-purple-200 flex items-center justify-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>إضافة شريحة جديدة للكاروسيل</span>
+              </button>
+            )}
 
             <div className="pt-2 border-t border-slate-100 flex justify-end">
               <button
@@ -2280,7 +2344,7 @@ export default function CampaignsPage() {
                 onClick={() => setSlidesModalIndex(null)}
                 className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold"
               >
-                حفظ وإغلاق
+                {isOwner ? "حفظ وإغلاق" : "إغلاق"}
               </button>
             </div>
           </div>
@@ -2321,20 +2385,20 @@ export default function CampaignsPage() {
                   />
                 </div>
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">المصمم المسؤول:</label>
+                  <label className="font-bold text-slate-700 block mb-1">المسؤول:</label>
                   <select
                     value={newPostAssignee}
                     onChange={(e) => setNewPostAssignee(e.target.value)}
                     className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white font-semibold text-slate-800"
                   >
-                    <option value="">-- اختر المصمم --</option>
-                    {designers.map((d) => {
+                    <option value="">-- اختر المسؤول --</option>
+                    {assignableMembers.map((d: any) => {
                       const val = d.id || d.rosterId;
                       const name = d.displayName || d.display_name;
                       const job = d.jobTitle || d.job_title;
                       return (
                         <option key={val} value={val} className="text-slate-800">
-                          {name} {job ? `(${job})` : ""}
+                          {name} {d.hasJoined === false ? "(لم ينضم بعد)" : job ? `(${job})` : ""}
                         </option>
                       );
                     })}
