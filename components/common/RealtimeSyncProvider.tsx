@@ -34,6 +34,14 @@ export function RealtimeSyncProvider({ children }: { children: React.ReactNode }
       )
       .on(
         "postgres_changes",
+        { event: "*", schema: "public", table: "client_team_assignments" },
+        (payload) => {
+          window.dispatchEvent(new CustomEvent("clients_data_changed", { detail: payload }));
+          window.dispatchEvent(new CustomEvent("team_data_changed", { detail: payload }));
+        }
+      )
+      .on(
+        "postgres_changes",
         { event: "*", schema: "public", table: "roster_people" },
         (payload) => {
           window.dispatchEvent(new CustomEvent("team_data_changed", { detail: payload }));

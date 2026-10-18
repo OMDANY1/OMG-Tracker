@@ -324,10 +324,12 @@ export default function TeamPage() {
       fetchTeamData();
     };
     window.addEventListener("team_data_changed", handleSync);
+    window.addEventListener("clients_data_changed", handleSync);
     window.addEventListener("membership_data_changed", handleSync);
     window.addEventListener("window_reconnected_sync", handleSync);
     return () => {
       window.removeEventListener("team_data_changed", handleSync);
+      window.removeEventListener("clients_data_changed", handleSync);
       window.removeEventListener("membership_data_changed", handleSync);
       window.removeEventListener("window_reconnected_sync", handleSync);
     };

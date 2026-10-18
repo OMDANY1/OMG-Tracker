@@ -78,22 +78,49 @@ export async function GET() {
     brief_data: Array.isArray(c.brief_data) ? c.brief_data[0] || null : c.brief_data,
   }));
 
-  // Fetch active roster people (excluding generic owner)
-  const { data: roster } = await admin
-    .from("roster_people")
-    .select("id, display_name, job_title, specialties, is_active")
-    .eq("is_active", true)
-    .order("display_name", { ascending: true });
+  // Fetch active roster people with memberships and invitations
+  const [rosterRes, membershipsRes, invitesRes, reviewRulesRes] = await Promise.all([
+    admin
+      .from("roster_people")
+      .select("id, display_name, job_title, specialties, is_active, role, custom_permissions")
+      .eq("is_active", true)
+      .order("display_name", { ascending: true }),
+    admin
+      .from("workspace_memberships")
+      .select("roster_person_id, user_id, is_active")
+      .eq("is_active", true),
+    admin
+      .from("workspace_invitations")
+      .select("roster_person_id, status"),
+    admin
+      .from("review_routing_rules")
+      .select("*")
+      .order("priority", { ascending: false }),
+  ]);
 
-  // Fetch review routing rules
-  const { data: reviewRules } = await admin
-    .from("review_routing_rules")
-    .select("*")
-    .order("priority", { ascending: false });
+  const roster = rosterRes.data || [];
+  const reviewRules = reviewRulesRes.data || [];
+
+  const joinedSet = new Set<string>();
+  membershipsRes.data?.filter(m => m.user_id && m.roster_person_id).forEach(m => joinedSet.add(m.roster_person_id!));
+  invitesRes.data?.filter(i => i.status === "accepted" && i.roster_person_id).forEach(i => joinedSet.add(i.roster_person_id!));
 
   // Calculate stats for each team member
   const allTeamMembers = (roster || []).map((designer) => {
-    const clientCount = (clients || []).filter((c) => c.owner_roster_id === designer.id).length;
+    const memberClients = (clients || []).filter((c) => {
+      const team = c.team_assignment;
+      if (team) {
+        return (
+          team.primary_designer_id === designer.id ||
+          team.primary_copywriter_id === designer.id ||
+          team.primary_strategist_id === designer.id ||
+          team.primary_video_editor_id === designer.id ||
+          c.owner_roster_id === designer.id
+        );
+      }
+      return c.owner_roster_id === designer.id;
+    });
+    const clientCount = memberClients.length;
     let openTasksCount = 0;
     (clients || []).forEach((c) => {
       (c.tasks || []).forEach((t: any) => {
@@ -102,6 +129,13 @@ export async function GET() {
         }
       });
     });
+
+    const hasJoined = joinedSet.has(designer.id) || designer.role === "owner" || designer.role === "company_owner";
+    const canApproveReviews = Boolean(
+      ["owner", "company_owner", "senior_reviewer", "strategy_lead"].includes(designer.role) ||
+      designer.custom_permissions?.approve_reviews === true
+    );
+
     return {
       id: designer.id,
       rosterId: designer.id,
@@ -109,21 +143,34 @@ export async function GET() {
       display_name: designer.display_name,
       jobTitle: designer.job_title,
       job_title: designer.job_title,
+      role: designer.role || "designer",
       specialties: designer.specialties || [],
+      custom_permissions: designer.custom_permissions || {},
       isActive: designer.is_active,
       is_active: designer.is_active,
+      hasJoined,
+      canApproveReviews,
       clientCount,
       openTasksCount,
     };
   });
 
   const designers = allTeamMembers.filter(
-    (m) => !m.specialties.length || m.specialties.includes("design")
+    (m) => m.role === "designer" || !m.specialties.length || m.specialties.includes("design")
   );
-  const strategists = allTeamMembers.filter((m) => m.specialties.includes("strategy"));
-  const writers = allTeamMembers.filter((m) => m.specialties.includes("copywriting"));
-  const videoEditors = allTeamMembers.filter((m) => m.specialties.includes("video_editing"));
-  const managers = allTeamMembers.filter((m) => m.specialties.includes("management"));
+  const strategists = allTeamMembers.filter(
+    (m) => m.role === "strategist" || m.role === "strategy_lead" || m.specialties.includes("strategy")
+  );
+  const writers = allTeamMembers.filter(
+    (m) => m.role === "content_writer" || m.specialties.includes("copywriting")
+  );
+  const videoEditors = allTeamMembers.filter(
+    (m) => m.role === "video_editor" || m.specialties.includes("video_editing") || m.specialties.includes("video")
+  );
+  const managers = allTeamMembers.filter(
+    (m) => m.role === "owner" || m.role === "company_owner" || m.role === "marketing_director" || m.specialties.includes("management")
+  );
+  const reviewers = allTeamMembers.filter((m) => m.canApproveReviews);
 
   return NextResponse.json({
     clients: clients || [],
@@ -133,6 +180,7 @@ export async function GET() {
     writers,
     videoEditors,
     managers,
+    reviewers,
     reviewRules: reviewRules || [],
     isOwner,
     isViewer,

@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
       .single();
 
     // 2. Fetch all required data in parallel
-    const [rosterRes, membershipsRes, capacitiesRes, clientsRes, tasksRes, invitesRes] = await Promise.all([
+    const [rosterRes, membershipsRes, capacitiesRes, clientsRes, assignmentsRes, tasksRes, invitesRes] = await Promise.all([
       admin
         .from("roster_people")
         .select("id, display_name, job_title, is_active, specialties, role, access_scope, custom_permissions")
@@ -61,9 +61,13 @@ export async function GET(req: NextRequest) {
         .eq("workspace_id", workspaceId),
       admin
         .from("clients")
-        .select("id, name, difficulty, owner_roster_id, status")
+        .select("id, name, difficulty, owner_roster_id, state")
         .eq("workspace_id", workspaceId)
-        .eq("status", "Active"),
+        .eq("state", "Active"),
+      admin
+        .from("client_team_assignments")
+        .select("*")
+        .eq("workspace_id", workspaceId),
       admin
         .from("tasks")
         .select(`
@@ -97,8 +101,14 @@ export async function GET(req: NextRequest) {
     const memberships = membershipsRes.data || [];
     const capacities = capacitiesRes.data || [];
     const clients = clientsRes.data || [];
+    const assignments = assignmentsRes.data || [];
     const tasks = tasksRes.data || [];
     const invitations = invitesRes.data || [];
+
+    const assignmentsByClientId = new Map<string, any>();
+    for (const a of assignments) {
+      assignmentsByClientId.set(a.client_id, a);
+    }
 
     const membershipRoleMap = new Map<string, string>();
     const membershipUserMap = new Map<string, string | null>();
@@ -150,7 +160,19 @@ export async function GET(req: NextRequest) {
           role = "designer";
         }
       }
-      const assignedClients = (clients || []).filter((c) => c.owner_roster_id === person.id);
+      const assignedClients = (clients || []).filter((c) => {
+        const team = assignmentsByClientId.get(c.id);
+        if (team) {
+          return (
+            team.primary_designer_id === person.id ||
+            team.primary_copywriter_id === person.id ||
+            team.primary_strategist_id === person.id ||
+            team.primary_video_editor_id === person.id ||
+            c.owner_roster_id === person.id
+          );
+        }
+        return c.owner_roster_id === person.id;
+      });
       const personTasks = (tasks || []).filter((t) => t.primary_assignee_id === person.id);
 
       let totalWeightedLoad = 0;

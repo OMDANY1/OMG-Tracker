@@ -31,6 +31,7 @@ interface AddClientModalProps {
   strategists: any[];
   videoEditors: any[];
   allTeamMembers: any[];
+  reviewers?: any[];
 }
 
 export function AddClientModal({
@@ -42,6 +43,7 @@ export function AddClientModal({
   strategists,
   videoEditors,
   allTeamMembers,
+  reviewers = [],
 }: AddClientModalProps) {
   const [name, setName] = useState("");
   const [difficulty, setDifficulty] = useState<ClientDifficulty>("Medium");
@@ -80,15 +82,16 @@ export function AddClientModal({
 
   if (!isOpen) return null;
 
-  const reviewerCandidates = allTeamMembers.filter(
-    (m) =>
-      m.role === "owner" ||
-      m.role === "company_owner" ||
-      m.role === "manager" ||
-      m.role === "senior_reviewer" ||
-      m.role === "strategy_lead" ||
-      m.role === "marketing_director"
-  );
+  const reviewerCandidates = (reviewers && reviewers.length > 0)
+    ? reviewers
+    : allTeamMembers.filter(
+        (m) =>
+          !m.displayName?.includes("عطا") &&
+          m.jobTitle !== "Marketing Director" &&
+          (m.canApproveReviews === true ||
+            ["owner", "company_owner", "manager", "senior_reviewer", "strategy_lead"].includes(m.role) ||
+            m.custom_permissions?.approve_reviews === true)
+      );
 
   const handleSubmit = async (targetState: ClientState) => {
     if (!name.trim()) {
@@ -144,6 +147,8 @@ export function AddClientModal({
       }
 
       setSuccessMsg(data.message || "تم إنشاء العميل بنجاح!");
+      window.dispatchEvent(new CustomEvent("clients_data_changed"));
+      window.dispatchEvent(new CustomEvent("team_data_changed"));
       setTimeout(() => {
         onSuccess();
         onClose();
@@ -286,7 +291,7 @@ export function AddClientModal({
                       <option value="">-- اختر المصمم الأساسي --</option>
                       {designers.map((d) => (
                         <option key={d.id} value={d.id}>
-                          {d.displayName} ({d.jobTitle})
+                          {d.displayName} {d.hasJoined === false ? "(لم ينضم بعد)" : `(${d.jobTitle || "مصمم"})`}
                         </option>
                       ))}
                     </select>
@@ -335,7 +340,7 @@ export function AddClientModal({
                       <option value="">-- اختر كاتب المحتوى --</option>
                       {writers.map((w) => (
                         <option key={w.id} value={w.id}>
-                          {w.displayName} ({w.jobTitle})
+                          {w.displayName} {w.hasJoined === false ? "(لم ينضم بعد)" : `(${w.jobTitle || "كاتب محتوى"})`}
                         </option>
                       ))}
                     </select>
@@ -384,7 +389,7 @@ export function AddClientModal({
                       <option value="">-- اختر الاستراتيجيست --</option>
                       {strategists.map((s) => (
                         <option key={s.id} value={s.id}>
-                          {s.displayName} ({s.jobTitle})
+                          {s.displayName} {s.hasJoined === false ? "(لم ينضم بعد)" : `(${s.jobTitle || "استراتيجي"})`}
                         </option>
                       ))}
                     </select>
@@ -434,7 +439,7 @@ export function AddClientModal({
                         <option value="">-- بانتظار إسناد إيديتور --</option>
                         {videoEditors.map((v) => (
                           <option key={v.id} value={v.id}>
-                            {v.displayName} ({v.jobTitle})
+                            {v.displayName} {v.hasJoined === false ? "(لم ينضم بعد)" : `(${v.jobTitle || "مونتير"})`}
                           </option>
                         ))}
                       </select>

@@ -21,6 +21,7 @@ import {
   FileText,
   RefreshCw,
   PlusCircle,
+  Plus,
   Clock,
   Sparkles,
   Info,
@@ -53,6 +54,7 @@ export default function ClientsPage() {
   const [writers, setWriters] = useState<any[]>([]);
   const [videoEditors, setVideoEditors] = useState<any[]>([]);
   const [managers, setManagers] = useState<any[]>([]);
+  const [reviewers, setReviewers] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState(false);
   const [isViewer, setIsViewer] = useState(false);
   const [isAddClientModalOpen, setIsAddClientModalOpen] = useState(false);
@@ -100,6 +102,7 @@ export default function ClientsPage() {
       if (data.writers) setWriters(data.writers);
       if (data.videoEditors) setVideoEditors(data.videoEditors);
       if (data.managers) setManagers(data.managers);
+      if (data.reviewers) setReviewers(data.reviewers);
       if (typeof data.isOwner === "boolean") setIsOwner(data.isOwner);
       if (typeof data.isViewer === "boolean") setIsViewer(data.isViewer);
     } catch (e: any) {
@@ -124,9 +127,11 @@ export default function ClientsPage() {
       fetchClients(true);
     };
     window.addEventListener("clients_data_changed", handleSync);
+    window.addEventListener("team_data_changed", handleSync);
     window.addEventListener("window_reconnected_sync", handleSync);
     return () => {
       window.removeEventListener("clients_data_changed", handleSync);
+      window.removeEventListener("team_data_changed", handleSync);
       window.removeEventListener("window_reconnected_sync", handleSync);
     };
   }, []);
@@ -444,9 +449,14 @@ export default function ClientsPage() {
         >
           <Video className="w-4 h-4 text-amber-600" />
           <span>فريق الفيديو والمونتاج</span>
-          <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full font-mono">
-            {videoStats.assigned} مسند
-          </span>
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full font-mono">
+              {videoEditors.length} محررين
+            </span>
+            <span className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded-full font-mono">
+              {videoStats.assigned} مسند
+            </span>
+          </div>
         </button>
 
         <button
@@ -593,7 +603,7 @@ export default function ClientsPage() {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs">
             <div className="font-bold text-amber-900 flex items-center gap-2">
               <Video className="w-4 h-4 text-amber-600" />
-              <span>متابعة وتوزيع مسار إنتاج ومونتاج الفيديو:</span>
+              <span>توزيع العملاء الفعلي بين محرري الفيديو (انقر على المحرر للتصفية):</span>
             </div>
             {(videoFilter !== "all" || selectedMemberId) && (
               <button
@@ -603,12 +613,78 @@ export default function ClientsPage() {
                 }}
                 className="px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-lg font-semibold text-[11px] transition-colors"
               >
-                عرض كل حالات الفيديو
+                عرض كل حالات ومحرري الفيديو
               </button>
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+          {videoEditors.length > 0 ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-2 text-xs">
+              {videoEditors.map((v) => {
+                const actual = videoStats.counts[v.id] || 0;
+                const isSelected = selectedMemberId === v.id;
+                return (
+                  <div
+                    key={v.id}
+                    onClick={() => {
+                      setSelectedMemberId(isSelected ? "" : v.id);
+                      setVideoFilter("all");
+                    }}
+                    className={cn(
+                      "p-2.5 rounded-xl border flex flex-col items-center justify-center text-center cursor-pointer transition-all",
+                      isSelected
+                        ? "bg-amber-600 text-white border-amber-700 shadow-sm"
+                        : "bg-slate-50 border-slate-200 hover:border-amber-300 hover:bg-amber-50/40 text-slate-800"
+                    )}
+                  >
+                    <div className="flex items-center gap-1 justify-center">
+                      <span className="font-bold">{v.displayName}</span>
+                      {v.hasJoined === false && (
+                        <span className={cn("text-[9px] px-1 py-0.2 rounded font-normal", isSelected ? "bg-amber-700 text-amber-100" : "bg-amber-100 text-amber-800")}>
+                          لم ينضم بعد
+                        </span>
+                      )}
+                    </div>
+                    <span className={cn("text-sm font-extrabold mt-0.5", isSelected ? "text-amber-100" : "text-amber-700")}>
+                      {actual} <span className={cn("text-[10px] font-normal", isSelected ? "text-amber-200" : "text-slate-400")}>عملاء</span>
+                    </span>
+                  </div>
+                );
+              })}
+              {/* Unassigned Video badge */}
+              <div
+                onClick={() => {
+                  setSelectedMemberId(selectedMemberId === "unassigned" ? "" : "unassigned");
+                  setVideoFilter("all");
+                }}
+                className={cn(
+                  "p-2.5 rounded-xl border flex flex-col items-center justify-center text-center cursor-pointer transition-all",
+                  selectedMemberId === "unassigned"
+                    ? "bg-amber-600 text-white border-amber-700 shadow-sm"
+                    : videoStats.needsVideoUnassigned > 0
+                    ? "bg-amber-50/70 border-amber-300 text-amber-900 hover:bg-amber-100"
+                    : "bg-slate-50 border-slate-200 text-slate-500"
+                )}
+              >
+                <span className="font-bold">بانتظار إسناد</span>
+                <span className="text-sm font-extrabold mt-0.5">
+                  {videoStats.needsVideoUnassigned} <span className="text-[10px] font-normal">عميل</span>
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="p-4 bg-amber-50/50 border border-amber-200 rounded-xl text-center space-y-2">
+              <p className="text-xs text-amber-800 font-semibold">لم يتم إضافة أعضاء لفريق الفيديو والمونتاج بعد.</p>
+              {(isOwner || !isViewer) && (
+                <a href="/team" className="inline-flex items-center gap-1 text-xs font-bold text-sky-700 hover:underline">
+                  <Plus className="w-3.5 h-3.5" />
+                  إضافة محرر فيديو من صفحة الفريق
+                </a>
+              )}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs pt-1">
             <div
               onClick={() => {
                 setVideoFilter(videoFilter === "not_needed" ? "all" : "not_needed");
@@ -664,14 +740,6 @@ export default function ClientsPage() {
                 <div className="text-[10px] text-sky-700">عملاء لديهم مسؤول مونتاج محدد</div>
               </div>
               <span className="text-lg font-black">{videoStats.assigned}</span>
-            </div>
-          </div>
-
-          {/* Onboarding Notice for Video Members */}
-          <div className="p-3 bg-amber-50/60 border border-amber-200 rounded-xl text-[11px] text-amber-900 flex items-start gap-2">
-            <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-            <div>
-              <strong>جاهزية إضافة أعضاء الفيديو الحقيقيين:</strong> أسماء فريق المونتاج الحقيقيين سيتم إدخالها بواسطة عماد من صفحة الفريق فور توافرها. لن يتم إنشاء حسابات وهمية أو إرسال إيميلات عشوائية. فور إضافة الإيديتور، سيظهر فورياً في قوائم الإسناد أدناه.
             </div>
           </div>
         </div>
@@ -1364,6 +1432,7 @@ export default function ClientsPage() {
         designers={designers}
         videoEditors={videoEditors}
         managers={managers}
+        reviewers={reviewers}
       />
 
       {/* Client Brief & Strategy Modal */}
@@ -1385,6 +1454,7 @@ export default function ClientsPage() {
         strategists={strategists}
         videoEditors={videoEditors}
         allTeamMembers={allTeamMembers}
+        reviewers={reviewers}
       />
     </div>
   );

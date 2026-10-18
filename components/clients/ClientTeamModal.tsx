@@ -15,6 +15,7 @@ interface ClientTeamModalProps {
   designers: any[];
   videoEditors: any[];
   managers: any[];
+  reviewers?: any[];
 }
 
 export function ClientTeamModal({
@@ -28,6 +29,7 @@ export function ClientTeamModal({
   designers,
   videoEditors,
   managers,
+  reviewers = [],
 }: ClientTeamModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,10 +65,17 @@ export function ClientTeamModal({
     }
   }, [client, team]);
 
-  // Reviewers must exclude Marketing Director (Ata)
-  const reviewerCandidates = allTeamMembers.filter(
-    (p) => !p.displayName.includes("عطا") && p.jobTitle !== "Marketing Director"
-  );
+  // Reviewers must exclude Marketing Director (Ata) and only include authorized reviewers
+  const reviewerCandidates = (reviewers && reviewers.length > 0)
+    ? reviewers
+    : allTeamMembers.filter(
+        (p) =>
+          !p.displayName?.includes("عطا") &&
+          p.jobTitle !== "Marketing Director" &&
+          (p.canApproveReviews === true ||
+            ["owner", "company_owner", "senior_reviewer", "strategy_lead"].includes(p.role) ||
+            p.custom_permissions?.approve_reviews === true)
+      );
 
   if (!isOpen || !client) return null;
 
@@ -100,6 +109,9 @@ export function ClientTeamModal({
         const data = await res.json();
         throw new Error(data.error || "فشل حفظ فريق العميل");
       }
+
+      window.dispatchEvent(new CustomEvent("clients_data_changed"));
+      window.dispatchEvent(new CustomEvent("team_data_changed"));
 
       onSaved();
       onClose();
@@ -158,7 +170,7 @@ export function ClientTeamModal({
                   <option value="">-- يحتاج تعيين استراتيجيست --</option>
                   {(strategists.length ? strategists : allTeamMembers).map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
+                      {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle || "استراتيجي"})`}
                     </option>
                   ))}
                 </select>
@@ -202,7 +214,7 @@ export function ClientTeamModal({
                   <option value="">-- يحتاج تعيين كاتب --</option>
                   {(writers.length ? writers : allTeamMembers).map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
+                      {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle || "كاتب محتوى"})`}
                     </option>
                   ))}
                 </select>
@@ -246,7 +258,7 @@ export function ClientTeamModal({
                   <option value="">-- يحتاج تعيين مصمم --</option>
                   {designers.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.displayName} ({p.jobTitle})
+                      {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle || "مصمم"})`}
                     </option>
                   ))}
                 </select>
@@ -342,7 +354,7 @@ export function ClientTeamModal({
                       <option value="">-- يحتاج فيديو (لم يُعيّن إيديتور بعد) --</option>
                       {(videoEditors.length ? videoEditors : allTeamMembers).map((p) => (
                         <option key={p.id} value={p.id}>
-                          {p.displayName} ({p.jobTitle})
+                          {p.displayName} {p.hasJoined === false ? "(لم ينضم بعد)" : `(${p.jobTitle || "مونتير"})`}
                         </option>
                       ))}
                     </select>
