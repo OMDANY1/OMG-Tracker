@@ -79,19 +79,86 @@ export function AddClientModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [lastAttemptedState, setLastAttemptedState] = useState<ClientState>("Active");
   const idempotencyKeyRef = React.useRef<string>("");
+  const submittingRef = React.useRef<boolean>(false);
 
-  React.useEffect(() => {
-    if (isOpen) {
-      idempotencyKeyRef.current = typeof crypto !== "undefined" && crypto.randomUUID
+  const generateNewIdempotencyKey = React.useCallback(() => {
+    idempotencyKeyRef.current =
+      typeof crypto !== "undefined" && crypto.randomUUID
         ? crypto.randomUUID()
         : `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }, []);
+
+  React.useEffect(() => {
+    if (isOpen && !idempotencyKeyRef.current) {
+      generateNewIdempotencyKey();
+    }
+    if (isOpen) {
       setErrorMsg(null);
       setSuccessMsg(null);
     }
-  }, [isOpen, name]);
+  }, [isOpen, generateNewIdempotencyKey]);
+
+  const resetFormAfterSuccess = () => {
+    setName("");
+    setDifficulty("Medium");
+    setExtraWorkload("None");
+    setNotes("");
+    setBrandGuideUrl("");
+    setBriefUrl("");
+    setAssetsDriveUrl("");
+    setEnableDesign(true);
+    setEnableCopywriting(false);
+    setEnableStrategy(false);
+    setEnableVideo(false);
+    setPrimaryDesignerId("");
+    setDesignReviewerId("");
+    setPrimaryCopywriterId("");
+    setCopywritingReviewerId("");
+    setPrimaryStrategistId("");
+    setStrategyReviewerId("");
+    setPrimaryVideoEditorId("");
+    setVideoReviewerId("");
+    setObjectives("");
+    setTargetAudience("");
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    idempotencyKeyRef.current = "";
+  };
 
   if (!isOpen) return null;
+
+  const validateOptionalUrlField = (raw: string, fieldLabel: string): string | null => {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("Invalid protocol");
+      }
+      if (!parsed.hostname || !parsed.hostname.includes(".")) {
+        throw new Error("Invalid hostname");
+      }
+      return trimmed;
+    } catch {
+      throw new Error(
+        `${fieldLabel} غير صالح. يرجى إدخال رابط كامل يبدأ بـ https:// أو http:// أو ترك الحقل فارغاً.`
+      );
+    }
+  };
+
+  const sanitizeUiError = (raw: string): string => {
+    if (!raw) return "تعذر حفظ بيانات العميل حالياً. يرجى المحاولة مرة أخرى.";
+    if (
+      /schema cache|Could not find the function|public\.[a-z0-9_]+|private\.[a-z0-9_]+|\bp_[a-z0-9_]+\b|PGRST/i.test(
+        raw
+      )
+    ) {
+      return "تعذر حفظ بيانات العميل حالياً بسبب خطأ تقني في الخادم. لم يتم فقدان البيانات المدخلة؛ يرجى إعادة المحاولة.";
+    }
+    return raw;
+  };
 
   const reviewerCandidates = (reviewers && reviewers.length > 0)
     ? reviewers
@@ -107,11 +174,34 @@ export function AddClientModal({
       );
 
   const handleSubmit = async (targetState: ClientState) => {
+    if (submittingRef.current || isSubmitting) {
+      return;
+    }
+    setLastAttemptedState(targetState);
+
     if (!name.trim()) {
       setErrorMsg("يرجى إدخال اسم العميل.");
       return;
     }
 
+    let cleanBrandUrl: string | null = null;
+    let cleanAssetsUrl: string | null = null;
+    let cleanBriefUrl: string | null = null;
+
+    try {
+      cleanBrandUrl = validateOptionalUrlField(brandGuideUrl, "رابط دليل الهوية");
+      cleanAssetsUrl = validateOptionalUrlField(assetsDriveUrl, "رابط مجلد الأصول");
+      cleanBriefUrl = validateOptionalUrlField(briefUrl, "رابط الـ Brief الخارجي");
+    } catch (validationErr: any) {
+      setErrorMsg(validationErr.message);
+      return;
+    }
+
+    if (!idempotencyKeyRef.current) {
+      generateNewIdempotencyKey();
+    }
+
+    submittingRef.current = true;
     setIsSubmitting(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -127,8 +217,14 @@ export function AddClientModal({
           extraWorkload,
           state: targetState,
           notes: notes.trim() || null,
-          brandGuideUrl: brandGuideUrl.trim() || null,
-          briefUrl: briefUrl.trim() || null,
+          brandGuideUrl: cleanBrandUrl,
+          briefUrl: cleanBriefUrl,
+
+          // Track toggles
+          enableDesign,
+          enableCopywriting,
+          enableStrategy,
+          requiresVideo: enableVideo,
 
           // Design
           primaryDesignerId: enableDesign ? primaryDesignerId || null : null,
@@ -143,33 +239,36 @@ export function AddClientModal({
           strategyReviewerId: enableStrategy ? strategyReviewerId || null : null,
 
           // Video
-          requiresVideo: enableVideo,
           primaryVideoEditorId: enableVideo ? primaryVideoEditorId || null : null,
           videoReviewerId: enableVideo ? videoReviewerId || null : null,
 
           // Brief
           objectives: objectives.trim() || null,
           targetAudience: targetAudience.trim() || null,
-          assetsDriveUrl: assetsDriveUrl.trim() || null,
-          brandGuidelinesUrl: brandGuideUrl.trim() || null,
+          assetsDriveUrl: cleanAssetsUrl,
+          brandGuidelinesUrl: cleanBrandUrl,
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "فشل إنشاء حساب العميل.");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error || !data.success) {
+        // Generate a fresh key for the next retry in case the user adjusts fields after a validation failure
+        generateNewIdempotencyKey();
+        throw new Error(sanitizeUiError(data.error || "فشل إنشاء حساب العميل."));
       }
 
       setSuccessMsg(data.message || "تم إنشاء العميل بنجاح!");
       window.dispatchEvent(new CustomEvent("clients_data_changed"));
       window.dispatchEvent(new CustomEvent("team_data_changed"));
       setTimeout(() => {
+        resetFormAfterSuccess();
         onSuccess();
         onClose();
-      }, 1000);
+      }, 900);
     } catch (err: any) {
-      setErrorMsg(err.message || "حدث خطأ غير متوقع.");
+      setErrorMsg(sanitizeUiError(err.message || "حدث خطأ غير متوقع أثناء الحفظ."));
     } finally {
+      submittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -199,9 +298,24 @@ export function AddClientModal({
 
         {/* Alerts */}
         {errorMsg && (
-          <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{errorMsg}</span>
+          <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <span className="font-bold block">{errorMsg}</span>
+                <span className="text-[11px] text-rose-600 block">
+                  تم الاحتفاظ بجميع البيانات المدخلة في النموذج؛ يمكنك التعديل أو إعادة المحاولة مباشرة.
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={() => handleSubmit(lastAttemptedState)}
+              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-bold text-[11px] shrink-0 transition-colors"
+            >
+              إعادة المحاولة
+            </button>
           </div>
         )}
         {successMsg && (
@@ -484,33 +598,67 @@ export function AddClientModal({
 
           {/* Section 3: Identity & Brand Links */}
           <div className="bg-slate-50/70 p-3.5 rounded-xl border border-slate-200 space-y-3">
-            <div className="font-bold text-slate-900 flex items-center gap-1.5">
-              <Link2 className="w-4 h-4 text-slate-600" />
-              روابط الهوية والأصول (اختياري)
+            <div className="flex items-center justify-between flex-wrap gap-1.5">
+              <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                <Link2 className="w-4 h-4 text-slate-600" />
+                روابط الهوية والأصول والـ Brief
+              </div>
+              <span className="text-[10px] font-semibold text-slate-500 bg-slate-200/70 px-2 py-0.5 rounded-full">
+                اختياري — يمكن إضافته لاحقاً
+              </span>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">رابط دليل الهوية (Brand Guide URL):</label>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <label className="font-semibold text-slate-700 block">رابط دليل الهوية (Brand Guide):</label>
+                  <span className="text-[10px] text-slate-400">اختياري — يمكن إضافته لاحقاً</span>
+                </div>
                 <input
-                  type="url"
+                  type="text"
+                  inputMode="url"
+                  dir="ltr"
                   value={brandGuideUrl}
                   onChange={(e) => setBrandGuideUrl(e.target.value)}
                   placeholder="https://drive.google.com/..."
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs outline-none"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs outline-none text-left font-mono"
                 />
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">رابط مجلد الأصول (Drive Assets URL):</label>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <label className="font-semibold text-slate-700 block">رابط مجلد الأصول (Drive Assets):</label>
+                  <span className="text-[10px] text-slate-400">اختياري — يمكن إضافته لاحقاً</span>
+                </div>
                 <input
-                  type="url"
+                  type="text"
+                  inputMode="url"
+                  dir="ltr"
                   value={assetsDriveUrl}
                   onChange={(e) => setAssetsDriveUrl(e.target.value)}
                   placeholder="https://drive.google.com/..."
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs outline-none"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs outline-none text-left font-mono"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <label className="font-semibold text-slate-700 block">رابط Brief خارجي (Brief URL):</label>
+                  <span className="text-[10px] text-slate-400">اختياري — يمكن إضافته لاحقاً</span>
+                </div>
+                <input
+                  type="text"
+                  inputMode="url"
+                  dir="ltr"
+                  value={briefUrl}
+                  onChange={(e) => setBriefUrl(e.target.value)}
+                  placeholder="https://docs.google.com/..."
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs outline-none text-left font-mono"
                 />
               </div>
             </div>
+            <p className="text-[11px] text-slate-500">
+              عدم توفر دليل الهوية أو مجلد الأصول أو رابط البريف الآن لا يمنع إنشاء حساب العميل أو تفعيله؛ يمكنك إضافتها أو تحديثها في أي وقت من ملف الـ Brief الخاص بالعميل.
+            </p>
           </div>
         </div>
 

@@ -693,7 +693,7 @@ export default function TaskDetailsDrawer({
                 </div>
               </div>
 
-              {task.client?.brief_data?.assets_drive_url && (
+              {task.client?.brief_data?.assets_drive_url ? (
                 <div className="p-2.5 bg-white rounded-xl border border-rose-100 text-xs flex items-center justify-between">
                   <span className="text-slate-600 text-[11px]">مجلد أصول الفيديو والمراجع (Google Drive):</span>
                   <a
@@ -706,7 +706,53 @@ export default function TaskDetailsDrawer({
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 </div>
+              ) : (
+                <div className="p-2.5 bg-amber-50/80 rounded-xl border border-amber-200 text-[11px] text-amber-900 flex items-center justify-between gap-2">
+                  <span>لم يُرفق رابط مجلد الأصول الخام لهذه المهمة بعد — في حال الحاجة لملفات تصوير خام لتنفيذ هذه المهمة تحديداً، يمكن إضافتها من ملف العميل أو تعليق المهمة مؤقتاً بانتظار الملفات دون تعطيل العميل أو مساراته الأخرى.</span>
+                </div>
               )}
+            </div>
+          )}
+
+          {/* Task-Level Reference Inputs Status (Decoupled from Client Activation) */}
+          {(task.work_stage === "design" || !task.work_stage) && (
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-800 text-xs">مدخلات الهوية والأصول المرجعية للمهمة:</span>
+                <span className="text-[10px] text-slate-500">على مستوى المهمة فقط</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                {task.client?.brief_data?.brand_guidelines_url || task.client?.brand_guide_url ? (
+                  <a
+                    href={task.client?.brief_data?.brand_guidelines_url || task.client?.brand_guide_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-2.5 py-1 bg-sky-50 text-sky-800 border border-sky-200 rounded-lg font-bold inline-flex items-center gap-1"
+                  >
+                    <span>دليل الهوية متوفر</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                ) : (
+                  <span className="px-2.5 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg">
+                    دليل الهوية غير مرفق بعد (اختياري)
+                  </span>
+                )}
+                {task.client?.brief_data?.assets_drive_url ? (
+                  <a
+                    href={task.client.brief_data.assets_drive_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-2.5 py-1 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-bold inline-flex items-center gap-1"
+                  >
+                    <span>مجلد الأصول متوفر</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                ) : (
+                  <span className="px-2.5 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg">
+                    مجلد الأصول غير مرفق بعد (اختياري)
+                  </span>
+                )}
+              </div>
             </div>
           )}
 

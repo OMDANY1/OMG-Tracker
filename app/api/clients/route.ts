@@ -7,6 +7,8 @@ import {
   upsertClientBrief,
   reviewClientBriefOperational,
   approveClientBriefStrategy,
+  normalizeAndValidateOptionalUrl,
+  sanitizeClientDbError,
 } from "@/lib/services/clients";
 import {
   requireWorkspaceMembership,
@@ -296,7 +298,7 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: true, result });
     }
 
-    // 2. Update Client Brief
+    // 2. Update Client Brief (including optional Brand Guidelines, Assets Drive, and External Brief links)
     if (action === "update_brief") {
       const result = await upsertClientBrief({
         workspaceId: membership.workspaceId,
@@ -309,6 +311,7 @@ export async function PUT(req: NextRequest) {
         dosAndDonts,
         brandGuidelinesUrl,
         assetsDriveUrl,
+        briefUrl,
         strategySummary,
         idempotencyKey: idempotencyKey || `cb-${clientId}-${Date.now()}`,
         supabaseClient: serverClient,
@@ -395,7 +398,8 @@ export async function PUT(req: NextRequest) {
 
     return NextResponse.json({ client: updated });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 400 });
+    const safeMsg = sanitizeClientDbError(err, "فشل تحديث بيانات العميل. يرجى المحاولة مرة أخرى.");
+    return NextResponse.json({ error: safeMsg }, { status: 400 });
   }
 }
 
@@ -424,6 +428,11 @@ export async function POST(req: NextRequest) {
       brandGuideUrl,
       briefUrl,
       idempotencyKey,
+      // Service track toggles
+      enableDesign,
+      enableCopywriting,
+      enableStrategy,
+      requiresVideo,
       // Team assignment fields
       primaryStrategistId,
       primaryCopywriterId,
@@ -435,7 +444,6 @@ export async function POST(req: NextRequest) {
       videoReviewerId,
       marketingDirectorId,
       strategyLeadId,
-      requiresVideo,
       // Brief fields
       objectives,
       targetAudience,
@@ -452,6 +460,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "اسم العميل مطلوب ولا يمكن أن يكون فارغاً." }, { status: 400 });
     }
 
+    // Validate optional URLs explicitly (empty/whitespace -> null; invalid non-empty -> 400 with Arabic message)
+    const rawBrandUrl =
+      brandGuideUrl !== undefined && brandGuideUrl !== null && String(brandGuideUrl).trim() !== ""
+        ? brandGuideUrl
+        : brandGuidelinesUrl;
+    const cleanBrandUrl = normalizeAndValidateOptionalUrl(rawBrandUrl, "رابط دليل الهوية");
+    const cleanAssetsUrl = normalizeAndValidateOptionalUrl(assetsDriveUrl, "رابط مجلد الأصول");
+    const cleanBriefUrl = normalizeAndValidateOptionalUrl(briefUrl, "رابط الـ Brief الخارجي");
+
     const cleanName = name.trim();
     const stableKey =
       typeof idempotencyKey === "string" && idempotencyKey.trim()
@@ -466,8 +483,12 @@ export async function POST(req: NextRequest) {
       extraWorkload: extraWorkload || "None",
       state: state || "Active",
       notes: notes || null,
-      brandGuideUrl: brandGuideUrl || null,
-      briefUrl: briefUrl || null,
+      brandGuideUrl: cleanBrandUrl,
+      briefUrl: cleanBriefUrl,
+      enableDesign: enableDesign !== undefined ? Boolean(enableDesign) : undefined,
+      enableCopywriting: enableCopywriting !== undefined ? Boolean(enableCopywriting) : undefined,
+      enableStrategy: enableStrategy !== undefined ? Boolean(enableStrategy) : undefined,
+      requiresVideo: Boolean(requiresVideo),
       primaryStrategistId: primaryStrategistId || null,
       primaryCopywriterId: primaryCopywriterId || null,
       primaryDesignerId: primaryDesignerId || null,
@@ -478,15 +499,14 @@ export async function POST(req: NextRequest) {
       videoReviewerId: videoReviewerId || null,
       marketingDirectorId: marketingDirectorId || null,
       strategyLeadId: strategyLeadId || null,
-      requiresVideo: Boolean(requiresVideo),
       objectives: objectives || null,
       targetAudience: targetAudience || null,
       productsServices: productsServices || null,
       toneOfVoice: toneOfVoice || null,
       contentPillars: Array.isArray(contentPillars) ? contentPillars : [],
       dosAndDonts: dosAndDonts || null,
-      brandGuidelinesUrl: brandGuidelinesUrl || null,
-      assetsDriveUrl: assetsDriveUrl || null,
+      brandGuidelinesUrl: cleanBrandUrl,
+      assetsDriveUrl: cleanAssetsUrl,
       strategySummary: strategySummary || null,
       idempotencyKey: stableKey,
       supabaseClient: serverClient,
@@ -497,24 +517,41 @@ export async function POST(req: NextRequest) {
       throw new Error("فشل الحصول على معرف العميل الجديد.");
     }
 
-    const { data: createdClient } = await admin
+    const { data: rawCreatedClient } = await admin
       .from("clients")
       .select(`
         *,
+        owner:roster_people!fk_client_owner(id, display_name, job_title),
         team_assignment:client_team_assignments(*),
         brief_data:client_briefs(*)
       `)
       .eq("id", clientId)
       .maybeSingle();
 
+    const createdClient = rawCreatedClient
+      ? {
+          ...rawCreatedClient,
+          team_assignment: Array.isArray(rawCreatedClient.team_assignment)
+            ? rawCreatedClient.team_assignment[0] || null
+            : rawCreatedClient.team_assignment,
+          brief_data: Array.isArray(rawCreatedClient.brief_data)
+            ? rawCreatedClient.brief_data[0] || null
+            : rawCreatedClient.brief_data,
+        }
+      : { id: clientId, name: cleanName };
+
     return NextResponse.json({
       success: true,
       message: `تم إنشاء العميل (${cleanName}) بنجاح.`,
-      client: createdClient || { id: clientId, name: cleanName },
+      client: createdClient,
       clientId,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || "فشل إنشاء العميل." }, { status: 400 });
+    const safeMsg = sanitizeClientDbError(
+      err,
+      "تعذر إنشاء حساب العميل حالياً. لم يتم فقدان البيانات المدخلة؛ يرجى إعادة المحاولة."
+    );
+    return NextResponse.json({ error: safeMsg }, { status: 400 });
   }
 }
 

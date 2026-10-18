@@ -34,6 +34,91 @@ export async function getClients(workspaceId: string): Promise<Client[]> {
   return (clients as any[]) || [];
 }
 
+export function normalizeAndValidateOptionalUrl(
+  rawUrl: unknown,
+  fieldLabel = "الرابط"
+): string | null {
+  if (rawUrl === null || rawUrl === undefined) return null;
+  if (typeof rawUrl !== "string") {
+    throw new Error(`${fieldLabel} غير صالح.`);
+  }
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("Invalid protocol");
+    }
+    if (!parsed.hostname || !parsed.hostname.includes(".")) {
+      throw new Error("Invalid hostname");
+    }
+    return trimmed;
+  } catch {
+    throw new Error(
+      `${fieldLabel} غير صالح. يرجى إدخال رابط كامل يبدأ بـ https:// أو http:// أو ترك الحقل فارغاً.`
+    );
+  }
+}
+
+export function sanitizeClientDbError(
+  err: any,
+  fallbackArabicMsg = "تعذر حفظ بيانات العميل حالياً بسبب خطأ تقني في الخادم. لم يتم فقدان البيانات المدخلة؛ يرجى إعادة المحاولة."
+): string {
+  const rawMessage = typeof err === "string" ? err : err?.message || "";
+  const code = err?.code || "";
+
+  // Log technical details server-side without secrets
+  console.error("[clients-service] Database/RPC error:", {
+    code: code || undefined,
+    message: rawMessage,
+    details: err?.details || undefined,
+    hint: err?.hint || undefined,
+  });
+
+  if (!rawMessage) return fallbackArabicMsg;
+
+  // Never expose function names, schema cache errors, parameter lists, or SQL constraint identifiers
+  const isTechnicalLeak =
+    code === "PGRST202" ||
+    code === "42883" ||
+    /schema cache/i.test(rawMessage) ||
+    /Could not find the function/i.test(rawMessage) ||
+    /public\.[a-z0-9_]+/i.test(rawMessage) ||
+    /private\.[a-z0-9_]+/i.test(rawMessage) ||
+    /\bp_[a-z0-9_]+\b/i.test(rawMessage) ||
+    /foreign key constraint/i.test(rawMessage) ||
+    /violates check constraint/i.test(rawMessage);
+
+  if (isTechnicalLeak) {
+    return fallbackArabicMsg;
+  }
+
+  // If the message is already in Arabic (from our domain validations), preserve it cleanly
+  if (/[\u0600-\u06FF]/.test(rawMessage)) {
+    return rawMessage.replace(/^Error:\s*/i, "").trim();
+  }
+
+  // Map common English domain messages to clear Arabic
+  if (/already exists|duplicate key|uq_client_name_workspace/i.test(rawMessage)) {
+    return "اسم العميل مسجل بالفعل في مساحة العمل.";
+  }
+  if (/Permission denied|Access denied/i.test(rawMessage)) {
+    return "غير مصرح لك بتنفيذ هذا الإجراء.";
+  }
+  if (/Client name cannot be empty/i.test(rawMessage)) {
+    return "اسم العميل مطلوب ولا يمكن أن يكون فارغاً.";
+  }
+  if (/Client not found/i.test(rawMessage)) {
+    return "العميل غير موجود في مساحة العمل الحالية.";
+  }
+  if (/Idempotency key reuse/i.test(rawMessage)) {
+    return "تم إرسال طلب مطابق قيد المعالجة؛ يرجى المحاولة مرة أخرى.";
+  }
+
+  return fallbackArabicMsg;
+}
+
 export async function createClient(params: {
   workspaceId: string;
   name: string;
@@ -41,41 +126,57 @@ export async function createClient(params: {
   difficulty?: ClientDifficulty;
   extraWorkload?: ClientExtraWorkload;
   state?: ClientState;
-  notes?: string;
-  brandGuideUrl?: string;
-  briefUrl?: string;
+  notes?: string | null;
+  brandGuideUrl?: string | null;
+  briefUrl?: string | null;
   idempotencyKey?: string;
   supabaseClient?: SupabaseClient;
 }) {
   const supabase = await getClient(params.supabaseClient);
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) throw new Error("تعذر الاتصال بقاعدة البيانات.");
+
+  const cleanBrandGuideUrl = normalizeAndValidateOptionalUrl(
+    params.brandGuideUrl,
+    "رابط دليل الهوية"
+  );
+  const cleanBriefUrl = normalizeAndValidateOptionalUrl(
+    params.briefUrl,
+    "رابط الـ Brief الخارجي"
+  );
 
   const { data, error } = await supabase.rpc("create_client", {
     p_workspace_id: params.workspaceId,
-    p_name: params.name,
+    p_name: params.name.trim(),
     p_owner_roster_id: params.ownerRosterId || null,
     p_difficulty: params.difficulty || "Medium",
     p_extra_workload: params.extraWorkload || "None",
     p_state: params.state || "Active",
-    p_notes: params.notes || null,
-    p_brand_guide_url: params.brandGuideUrl || null,
-    p_brief_url: params.briefUrl || null,
+    p_notes: params.notes?.trim() || null,
+    p_brand_guide_url: cleanBrandGuideUrl,
+    p_brief_url: cleanBriefUrl,
     p_idempotency_key: params.idempotencyKey || null,
   });
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(sanitizeClientDbError(error, "فشل إنشاء العميل. يرجى إعادة المحاولة."));
+  }
   return data;
 }
 
-export async function createClientAtomic(params: {
+export interface CreateClientAtomicParams {
   workspaceId: string;
   name: string;
+  ownerRosterId?: string | null;
   difficulty?: ClientDifficulty;
   extraWorkload?: ClientExtraWorkload;
   state?: ClientState;
   notes?: string | null;
   brandGuideUrl?: string | null;
   briefUrl?: string | null;
+  enableDesign?: boolean;
+  enableCopywriting?: boolean;
+  enableStrategy?: boolean;
+  requiresVideo?: boolean;
   primaryStrategistId?: string | null;
   primaryCopywriterId?: string | null;
   primaryDesignerId?: string | null;
@@ -86,7 +187,6 @@ export async function createClientAtomic(params: {
   videoReviewerId?: string | null;
   marketingDirectorId?: string | null;
   strategyLeadId?: string | null;
-  requiresVideo?: boolean;
   objectives?: string | null;
   targetAudience?: string | null;
   productsServices?: string | null;
@@ -98,43 +198,82 @@ export async function createClientAtomic(params: {
   strategySummary?: string | null;
   idempotencyKey?: string | null;
   supabaseClient?: SupabaseClient;
-}) {
-  const supabase = await getClient(params.supabaseClient);
-  if (!supabase) throw new Error("Supabase is not configured.");
+}
 
+export async function createClientAtomic(params: CreateClientAtomicParams) {
+  const supabase = await getClient(params.supabaseClient);
+  if (!supabase) throw new Error("تعذر الاتصال بقاعدة البيانات.");
+
+  const cleanName = (params.name || "").trim();
+  if (!cleanName) {
+    throw new Error("اسم العميل مطلوب ولا يمكن أن يكون فارغاً.");
+  }
+
+  // Normalize & validate optional URLs (empty string -> null; invalid non-empty -> Arabic error)
+  const rawBrandUrl =
+    params.brandGuideUrl !== undefined && params.brandGuideUrl !== null && String(params.brandGuideUrl).trim() !== ""
+      ? params.brandGuideUrl
+      : params.brandGuidelinesUrl;
+
+  const cleanBrandUrl = normalizeAndValidateOptionalUrl(rawBrandUrl, "رابط دليل الهوية");
+  const cleanAssetsUrl = normalizeAndValidateOptionalUrl(params.assetsDriveUrl, "رابط مجلد الأصول");
+  const cleanBriefUrl = normalizeAndValidateOptionalUrl(params.briefUrl, "رابط الـ Brief الخارجي");
+
+  const primaryDesignerId = params.primaryDesignerId?.trim() || params.ownerRosterId?.trim() || null;
+  const primaryCopywriterId = params.primaryCopywriterId?.trim() || null;
+  const primaryStrategistId = params.primaryStrategistId?.trim() || null;
+  const primaryVideoEditorId = params.primaryVideoEditorId?.trim() || null;
+
+  const teamAssignmentsPayload = {
+    enableDesign: params.enableDesign !== undefined ? Boolean(params.enableDesign) : Boolean(primaryDesignerId),
+    enableCopywriting:
+      params.enableCopywriting !== undefined ? Boolean(params.enableCopywriting) : Boolean(primaryCopywriterId),
+    enableStrategy:
+      params.enableStrategy !== undefined ? Boolean(params.enableStrategy) : Boolean(primaryStrategistId),
+    requiresVideo: Boolean(params.requiresVideo),
+    primaryStrategistId,
+    primaryCopywriterId,
+    primaryDesignerId,
+    primaryVideoEditorId,
+    strategyReviewerId: params.strategyReviewerId?.trim() || null,
+    copywritingReviewerId: params.copywritingReviewerId?.trim() || null,
+    designReviewerId: params.designReviewerId?.trim() || null,
+    videoReviewerId: params.videoReviewerId?.trim() || null,
+    marketingDirectorId: params.marketingDirectorId?.trim() || null,
+    strategyLeadId: params.strategyLeadId?.trim() || null,
+  };
+
+  const briefPayload = {
+    objectives: params.objectives?.trim() || null,
+    targetAudience: params.targetAudience?.trim() || null,
+    productsServices: params.productsServices?.trim() || null,
+    toneOfVoice: params.toneOfVoice?.trim() || null,
+    contentPillars: Array.isArray(params.contentPillars) ? params.contentPillars : [],
+    dosAndDonts: params.dosAndDonts?.trim() || null,
+    brandGuidelinesUrl: cleanBrandUrl,
+    assetsDriveUrl: cleanAssetsUrl,
+    strategySummary: params.strategySummary?.trim() || null,
+  };
+
+  // Matches the exact 12-parameter signature of public.create_client_atomic in PostgreSQL
   const { data, error } = await supabase.rpc("create_client_atomic", {
     p_workspace_id: params.workspaceId,
-    p_name: params.name,
+    p_name: cleanName,
+    p_owner_roster_id: primaryDesignerId,
     p_difficulty: params.difficulty || "Medium",
     p_extra_workload: params.extraWorkload || "None",
     p_state: params.state || "Active",
-    p_notes: params.notes || null,
-    p_brand_guide_url: params.brandGuideUrl || null,
-    p_brief_url: params.briefUrl || null,
-    p_primary_strategist_id: params.primaryStrategistId || null,
-    p_primary_copywriter_id: params.primaryCopywriterId || null,
-    p_primary_designer_id: params.primaryDesignerId || null,
-    p_primary_video_editor_id: params.primaryVideoEditorId || null,
-    p_strategy_reviewer_id: params.strategyReviewerId || null,
-    p_copywriting_reviewer_id: params.copywritingReviewerId || null,
-    p_design_reviewer_id: params.designReviewerId || null,
-    p_video_reviewer_id: params.videoReviewerId || null,
-    p_marketing_director_id: params.marketingDirectorId || null,
-    p_strategy_lead_id: params.strategyLeadId || null,
-    p_requires_video: Boolean(params.requiresVideo),
-    p_objectives: params.objectives || null,
-    p_target_audience: params.targetAudience || null,
-    p_products_services: params.productsServices || null,
-    p_tone_of_voice: params.toneOfVoice || null,
-    p_content_pillars: params.contentPillars || [],
-    p_dos_and_donts: params.dosAndDonts || null,
-    p_brand_guidelines_url: params.brandGuidelinesUrl || null,
-    p_assets_drive_url: params.assetsDriveUrl || null,
-    p_strategy_summary: params.strategySummary || null,
+    p_notes: params.notes?.trim() || null,
+    p_brand_guide_url: cleanBrandUrl,
+    p_brief_url: cleanBriefUrl,
+    p_team_assignments: teamAssignmentsPayload,
+    p_brief: briefPayload,
     p_idempotency_key: params.idempotencyKey || null,
   });
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(sanitizeClientDbError(error, "تعذر إنشاء حساب العميل حالياً. يرجى التحقق من البيانات وإعادة المحاولة."));
+  }
   return data;
 }
 
@@ -146,16 +285,16 @@ export async function updateClient(params: {
   difficulty?: ClientDifficulty;
   extraWorkload?: ClientExtraWorkload;
   state?: ClientState;
-  notes?: string;
-  brandGuideUrl?: string;
-  briefUrl?: string;
+  notes?: string | null;
+  brandGuideUrl?: string | null;
+  briefUrl?: string | null;
   reassignOpenTasksToNewOwner?: boolean;
   actorId?: string;
   idempotencyKey?: string;
   supabaseClient?: SupabaseClient;
 }) {
   const supabase = await getClient(params.supabaseClient);
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
   let workspaceId = params.workspaceId;
   if (!workspaceId) {
@@ -173,8 +312,18 @@ export async function updateClient(params: {
   }
 
   if (!workspaceId) {
-    throw new Error("Workspace ID could not be determined for updating client.");
+    throw new Error("تعذر تحديد مساحة العمل لتحديث العميل.");
   }
+
+  const normalizedBrandGuideUrl =
+    params.brandGuideUrl !== undefined
+      ? normalizeAndValidateOptionalUrl(params.brandGuideUrl, "رابط دليل الهوية") ?? ""
+      : null;
+
+  const normalizedBriefUrl =
+    params.briefUrl !== undefined
+      ? normalizeAndValidateOptionalUrl(params.briefUrl, "رابط الـ Brief الخارجي") ?? ""
+      : null;
 
   const { data, error } = await supabase.rpc("update_client", {
     p_workspace_id: workspaceId,
@@ -185,13 +334,15 @@ export async function updateClient(params: {
     p_extra_workload: params.extraWorkload !== undefined ? params.extraWorkload : null,
     p_state: params.state !== undefined ? params.state : null,
     p_notes: params.notes !== undefined ? params.notes : null,
-    p_brand_guide_url: params.brandGuideUrl !== undefined ? params.brandGuideUrl : null,
-    p_brief_url: params.briefUrl !== undefined ? params.briefUrl : null,
+    p_brand_guide_url: normalizedBrandGuideUrl,
+    p_brief_url: normalizedBriefUrl,
     p_reassign_open_tasks: !!params.reassignOpenTasksToNewOwner,
     p_idempotency_key: params.idempotencyKey || null,
   });
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(sanitizeClientDbError(error, "فشل تحديث بيانات العميل. يرجى إعادة المحاولة."));
+  }
   return data;
 }
 
@@ -204,7 +355,7 @@ export async function updateClientAssignment(params: {
   supabaseClient?: SupabaseClient;
 }) {
   const supabase = await getClient(params.supabaseClient);
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
   let workspaceId = params.workspaceId;
   if (!workspaceId) {
@@ -222,7 +373,7 @@ export async function updateClientAssignment(params: {
   }
 
   if (!workspaceId) {
-    throw new Error("Workspace ID could not be determined for updating client assignment.");
+    throw new Error("تعذر تحديد مساحة العمل لتحديث إسناد العميل.");
   }
 
   const { data, error } = await supabase.rpc("update_client_assignment", {
@@ -233,7 +384,9 @@ export async function updateClientAssignment(params: {
     p_idempotency_key: params.idempotencyKey || null,
   });
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(sanitizeClientDbError(error, "فشل تحديث مسؤول العميل."));
+  }
   return data;
 }
 
@@ -244,7 +397,7 @@ export async function archiveClient(params: {
   supabaseClient?: SupabaseClient;
 }) {
   const supabase = await getClient(params.supabaseClient);
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
   const { data, error } = await supabase.rpc("archive_client", {
     p_workspace_id: params.workspaceId,
@@ -252,7 +405,9 @@ export async function archiveClient(params: {
     p_idempotency_key: params.idempotencyKey || null,
   });
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(sanitizeClientDbError(error, "فشل أرشفة العميل."));
+  }
   return data;
 }
 
@@ -274,7 +429,7 @@ export async function upsertClientTeamAssignment(params: {
   supabaseClient?: SupabaseClient;
 }) {
   const supabase = await getClient(params.supabaseClient);
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
   let workspaceId = params.workspaceId;
   if (!workspaceId || workspaceId === "00000000-0000-0000-0000-000000000000") {
@@ -292,7 +447,7 @@ export async function upsertClientTeamAssignment(params: {
   }
 
   if (!workspaceId) {
-    throw new Error("Workspace ID could not be determined for updating client team assignment.");
+    throw new Error("تعذر تحديد مساحة العمل لتحديث فريق العميل.");
   }
 
   const { data, error } = await supabase.rpc("upsert_client_team_assignment", {
@@ -312,7 +467,9 @@ export async function upsertClientTeamAssignment(params: {
     p_requires_video: params.requiresVideo !== undefined ? params.requiresVideo : null,
   });
 
-  if (error) throw new Error(`فشل تحديث فريق العمل: ${error.message}`);
+  if (error) {
+    throw new Error(sanitizeClientDbError(error, "فشل تحديث فريق العمل."));
+  }
   return data;
 }
 
@@ -327,12 +484,13 @@ export async function upsertClientBrief(params: {
   dosAndDonts?: string | null;
   brandGuidelinesUrl?: string | null;
   assetsDriveUrl?: string | null;
+  briefUrl?: string | null;
   strategySummary?: string | null;
   idempotencyKey?: string;
   supabaseClient?: SupabaseClient;
 }) {
   const supabase = await getClient(params.supabaseClient);
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
   let workspaceId = params.workspaceId;
   if (!workspaceId || workspaceId === "00000000-0000-0000-0000-000000000000") {
@@ -350,7 +508,39 @@ export async function upsertClientBrief(params: {
   }
 
   if (!workspaceId) {
-    throw new Error("Workspace ID could not be determined for updating client brief.");
+    throw new Error("تعذر تحديد مساحة العمل لتحديث Brief العميل.");
+  }
+
+  const normalizedBrandUrl =
+    params.brandGuidelinesUrl !== undefined
+      ? normalizeAndValidateOptionalUrl(params.brandGuidelinesUrl, "رابط دليل الهوية") ?? ""
+      : null;
+
+  const normalizedAssetsUrl =
+    params.assetsDriveUrl !== undefined
+      ? normalizeAndValidateOptionalUrl(params.assetsDriveUrl, "رابط مجلد الأصول") ?? ""
+      : null;
+
+  if (params.briefUrl !== undefined) {
+    const normalizedBriefUrl =
+      normalizeAndValidateOptionalUrl(params.briefUrl, "رابط الـ Brief الخارجي") ?? "";
+    const { error: updErr } = await supabase.rpc("update_client", {
+      p_workspace_id: workspaceId,
+      p_client_id: params.clientId,
+      p_name: null,
+      p_owner_roster_id: null,
+      p_difficulty: null,
+      p_extra_workload: null,
+      p_state: null,
+      p_notes: null,
+      p_brand_guide_url: normalizedBrandUrl,
+      p_brief_url: normalizedBriefUrl,
+      p_reassign_open_tasks: false,
+      p_idempotency_key: null,
+    });
+    if (updErr) {
+      throw new Error(sanitizeClientDbError(updErr, "فشل تحديث روابط العميل."));
+    }
   }
 
   const { data, error } = await supabase.rpc("upsert_client_brief", {
@@ -362,13 +552,15 @@ export async function upsertClientBrief(params: {
     p_tone_of_voice: params.toneOfVoice || null,
     p_content_pillars: params.contentPillars || [],
     p_dos_and_donts: params.dosAndDonts || null,
-    p_brand_guidelines_url: params.brandGuidelinesUrl || null,
-    p_assets_drive_url: params.assetsDriveUrl || null,
+    p_brand_guidelines_url: normalizedBrandUrl,
+    p_assets_drive_url: normalizedAssetsUrl,
     p_strategy_summary: params.strategySummary || null,
     p_idempotency_key: params.idempotencyKey || null,
   });
 
-  if (error) throw new Error(`فشل تحديث Brief العميل: ${error.message}`);
+  if (error) {
+    throw new Error(sanitizeClientDbError(error, "فشل تحديث Brief العميل."));
+  }
   return data;
 }
 
@@ -381,7 +573,7 @@ export async function reviewClientBriefOperational(params: {
   supabaseClient?: SupabaseClient;
 }) {
   const supabase = await getClient(params.supabaseClient);
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
   let workspaceId = params.workspaceId;
   if (!workspaceId || workspaceId === "00000000-0000-0000-0000-000000000000") {
@@ -399,7 +591,7 @@ export async function reviewClientBriefOperational(params: {
   }
 
   if (!workspaceId) {
-    throw new Error("Workspace ID could not be determined for reviewing client brief.");
+    throw new Error("تعذر تحديد مساحة العمل لمراجعة الاستراتيجية.");
   }
 
   const { data, error } = await supabase.rpc("review_client_brief_operational", {
@@ -410,7 +602,9 @@ export async function reviewClientBriefOperational(params: {
     p_idempotency_key: params.idempotencyKey || null,
   });
 
-  if (error) throw new Error(`فشل المراجعة التشغيلية للاستراتيجية: ${error.message}`);
+  if (error) {
+    throw new Error(sanitizeClientDbError(error, "فشل المراجعة التشغيلية للاستراتيجية."));
+  }
   return data;
 }
 
@@ -422,7 +616,7 @@ export async function approveClientBriefStrategy(params: {
   supabaseClient?: SupabaseClient;
 }) {
   const supabase = await getClient(params.supabaseClient);
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
   let workspaceId = params.workspaceId;
   if (!workspaceId || workspaceId === "00000000-0000-0000-0000-000000000000") {
@@ -440,7 +634,7 @@ export async function approveClientBriefStrategy(params: {
   }
 
   if (!workspaceId) {
-    throw new Error("Workspace ID could not be determined for approving client brief.");
+    throw new Error("تعذر تحديد مساحة العمل لاعتماد الاستراتيجية.");
   }
 
   const { data, error } = await supabase.rpc("approve_client_brief_strategy", {
@@ -450,7 +644,9 @@ export async function approveClientBriefStrategy(params: {
     p_idempotency_key: params.idempotencyKey || null,
   });
 
-  if (error) throw new Error(`فشل اعتماد الاستراتيجية: ${error.message}`);
+  if (error) {
+    throw new Error(sanitizeClientDbError(error, "فشل الاعتماد النهائي للاستراتيجية."));
+  }
   return data;
 }
 

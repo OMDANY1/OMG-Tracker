@@ -44,10 +44,11 @@ export function ClientBriefModal({
   const [dosAndDonts, setDosAndDonts] = useState("");
   const [brandGuidelinesUrl, setBrandGuidelinesUrl] = useState("");
   const [assetsDriveUrl, setAssetsDriveUrl] = useState("");
+  const [briefUrl, setBriefUrl] = useState("");
   const [strategySummary, setStrategySummary] = useState("");
 
   useEffect(() => {
-    if (client) {
+    if (client && isOpen) {
       setObjectives(brief?.objectives || "");
       setTargetAudience(brief?.target_audience || "");
       setProductsServices(brief?.products_services || "");
@@ -55,20 +56,56 @@ export function ClientBriefModal({
       setContentPillarsStr((brief?.content_pillars || []).join("، "));
       setDosAndDonts(brief?.dos_and_donts || "");
       setBrandGuidelinesUrl(brief?.brand_guidelines_url || client.brand_guide_url || "");
-      setAssetsDriveUrl(brief?.assets_drive_url || client.brief_url || "");
+      setAssetsDriveUrl(brief?.assets_drive_url || "");
+      setBriefUrl(client.brief_url || "");
       setStrategySummary(brief?.strategy_summary || brief?.approved_strategy_content || "");
       setError(null);
       setSuccess(null);
     }
-  }, [client, brief]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client?.id, isOpen]);
 
   if (!isOpen || !client) return null;
 
+  const validateOptionalUrlField = (raw: string, label: string): { valid: boolean; normalized: string | null; error?: string } => {
+    const trimmed = (raw || "").trim();
+    if (!trimmed) return { valid: true, normalized: null };
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return { valid: false, normalized: null, error: `${label} غير صالح. يرجى إدخال رابط يبدأ بـ https:// أو http:// أو ترك الحقل فارغاً.` };
+      }
+      if (!parsed.hostname || !parsed.hostname.includes(".")) {
+        return { valid: false, normalized: null, error: `${label} غير صالح. يرجى التأكد من كتابة النطاق بشكل صحيح أو ترك الحقل فارغاً.` };
+      }
+      return { valid: true, normalized: trimmed };
+    } catch {
+      return { valid: false, normalized: null, error: `${label} غير صالح. يرجى إدخال رابط يبدأ بـ https:// أو http:// أو ترك الحقل فارغاً.` };
+    }
+  };
+
   const handleSaveBrief = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setError(null);
     setSuccess(null);
+
+    const brandCheck = validateOptionalUrlField(brandGuidelinesUrl, "رابط دليل الهوية");
+    if (!brandCheck.valid) {
+      setError(brandCheck.error!);
+      return;
+    }
+    const assetsCheck = validateOptionalUrlField(assetsDriveUrl, "رابط مجلد الأصول");
+    if (!assetsCheck.valid) {
+      setError(assetsCheck.error!);
+      return;
+    }
+    const briefUrlCheck = validateOptionalUrlField(briefUrl, "رابط الـ Brief الخارجي");
+    if (!briefUrlCheck.valid) {
+      setError(briefUrlCheck.error!);
+      return;
+    }
+
+    setLoading(true);
 
     const pillars = contentPillarsStr
       .split(/[،,]/)
@@ -88,8 +125,9 @@ export function ClientBriefModal({
           toneOfVoice,
           contentPillars: pillars,
           dosAndDonts,
-          brandGuidelinesUrl,
-          assetsDriveUrl,
+          brandGuidelinesUrl: brandCheck.normalized,
+          assetsDriveUrl: assetsCheck.normalized,
+          briefUrl: briefUrlCheck.normalized,
           strategySummary,
         }),
       });
@@ -99,7 +137,7 @@ export function ClientBriefModal({
         throw new Error(data.error || "فشل حفظ الـBrief");
       }
 
-      setSuccess("تم حفظ بيانات الـBrief بنجاح!");
+      setSuccess("تم حفظ بيانات الـBrief والروابط المرجعية بنجاح!");
       onSaved();
     } catch (err: any) {
       setError(err.message || "حدث خطأ أثناء الحفظ");
@@ -329,59 +367,109 @@ export function ClientBriefModal({
             </div>
           </div>
 
-          {/* Section 4: روابط الهوية والأصول */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3 bg-slate-50 rounded-xl border border-slate-200">
-            <div>
-              <label className="font-bold text-slate-800 flex items-center gap-1.5 mb-1">
+          {/* Section 4: روابط الهوية والأصول والـ Brief */}
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-1.5">
+              <span className="font-bold text-slate-900 flex items-center gap-1.5">
                 <Link2 className="w-3.5 h-3.5 text-sky-600" />
-                رابط دليل الهوية (Brand Guidelines):
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="url"
-                  value={brandGuidelinesUrl}
-                  onChange={(e) => setBrandGuidelinesUrl(e.target.value)}
-                  placeholder="https://drive.google.com/..."
-                  className="flex-1 px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs"
-                />
-                {brandGuidelinesUrl && (
-                  <a
-                    href={brandGuidelinesUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="p-2 text-sky-600 hover:bg-sky-100 rounded-lg transition-colors"
-                    title="فتح الرابط"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
-                )}
-              </div>
+                الروابط المرجعية للعميل (الهوية، الأصول، والـ Brief الخارجي)
+              </span>
+              <span className="text-[10px] font-semibold text-slate-500 bg-slate-200/70 px-2 py-0.5 rounded-full">
+                اختياري — يمكن إضافته لاحقاً
+              </span>
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <label className="font-bold text-slate-800 flex items-center gap-1">
+                    رابط دليل الهوية (Brand Guidelines):
+                  </label>
+                  <span className="text-[10px] text-slate-400">اختياري — يمكن إضافته لاحقاً</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    inputMode="url"
+                    dir="ltr"
+                    value={brandGuidelinesUrl}
+                    onChange={(e) => setBrandGuidelinesUrl(e.target.value)}
+                    placeholder="https://drive.google.com/..."
+                    className="flex-1 px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs text-left font-mono"
+                  />
+                  {brandGuidelinesUrl && (
+                    <a
+                      href={brandGuidelinesUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-2 text-sky-600 hover:bg-sky-100 rounded-lg transition-colors"
+                      title="فتح الرابط"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  )}
+                </div>
+              </div>
 
-            <div>
-              <label className="font-bold text-slate-800 flex items-center gap-1.5 mb-1">
-                <Link2 className="w-3.5 h-3.5 text-amber-600" />
-                مجلد أصول ومراجع العميل (Drive Assets):
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="url"
-                  value={assetsDriveUrl}
-                  onChange={(e) => setAssetsDriveUrl(e.target.value)}
-                  placeholder="https://drive.google.com/..."
-                  className="flex-1 px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs"
-                />
-                {assetsDriveUrl && (
-                  <a
-                    href={assetsDriveUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="p-2 text-amber-600 hover:bg-amber-100 rounded-lg transition-colors"
-                    title="فتح المجلد"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
-                )}
+              <div>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <label className="font-bold text-slate-800 flex items-center gap-1">
+                    مجلد أصول العميل (Drive Assets):
+                  </label>
+                  <span className="text-[10px] text-slate-400">اختياري — يمكن إضافته لاحقاً</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    inputMode="url"
+                    dir="ltr"
+                    value={assetsDriveUrl}
+                    onChange={(e) => setAssetsDriveUrl(e.target.value)}
+                    placeholder="https://drive.google.com/..."
+                    className="flex-1 px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs text-left font-mono"
+                  />
+                  {assetsDriveUrl && (
+                    <a
+                      href={assetsDriveUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-2 text-amber-600 hover:bg-amber-100 rounded-lg transition-colors"
+                      title="فتح المجلد"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <label className="font-bold text-slate-800 flex items-center gap-1">
+                    رابط Brief خارجي (Brief URL):
+                  </label>
+                  <span className="text-[10px] text-slate-400">اختياري — يمكن إضافته لاحقاً</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    inputMode="url"
+                    dir="ltr"
+                    value={briefUrl}
+                    onChange={(e) => setBriefUrl(e.target.value)}
+                    placeholder="https://docs.google.com/..."
+                    className="flex-1 px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-800 text-xs text-left font-mono"
+                  />
+                  {briefUrl && (
+                    <a
+                      href={briefUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors"
+                      title="فتح الـ Brief الخارجي"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  )}
+                </div>
               </div>
             </div>
           </div>
