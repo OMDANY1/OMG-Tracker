@@ -540,7 +540,7 @@ export default function CampaignsPage() {
               setPollingStatusText(`حدث ضغط مؤقت، جاري إعادة المحاولة تلقائياً (محاولة ${job.attempt_count || 1})...`);
             } else {
               setPollingStatusText("في الانتظار... جاري استلام المهمة من قبل الـWorker...");
-              if (attemptsCount === 2 && campaignId) {
+              if ((attemptsCount === 1 || attemptsCount === 3) && campaignId) {
                 fetch("/api/campaigns/process-calendar", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },

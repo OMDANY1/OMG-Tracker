@@ -154,8 +154,7 @@ export class AiDocumentPipeline {
 
   /**
    * Helper to execute Gemini requests with transient retry and automatic candidate model fallback.
-   * Tries preferredModel first ('gemini-2.5-flash'), and if 503/429/404/timeout occurs,
-   * falls back safely to 'gemini-2.5-flash-lite' and 'gemini-2.5-pro'.
+   * Supports current Gemini 3.x / 2.5 models and dynamically follows Google API model upgrade hints on 404.
    */
   private async safeGenerateContent(
     gemini: any,
@@ -164,28 +163,30 @@ export class AiDocumentPipeline {
     config?: any
   ): Promise<{ response: any; usedModel: string }> {
     const candidateModels = [
+      "gemini-3.8-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-flash-latest",
+      "gemini-3.6-flash",
+      "gemini-3.1-pro-preview",
       preferredModel,
       "gemini-2.5-flash",
       "gemini-2.5-flash-lite",
-      "gemini-2.5-pro",
     ].filter(
       (m, idx, arr) =>
         Boolean(m) &&
-        !m.includes("3.8") &&
-        !m.includes("3.6") &&
         !m.includes("1.5") &&
-        !m.includes("latest") &&
         arr.indexOf(m) === idx
     );
 
     let lastError: any = null;
 
-    for (const modelToTry of candidateModels) {
+    for (let i = 0; i < candidateModels.length; i++) {
+      const modelToTry = candidateModels[i];
       try {
         const effectiveConfig = {
           ...config,
           httpOptions: {
-            timeout: 45000,
+            timeout: 20000,
             ...(config?.httpOptions || {}),
           },
           ...(modelToTry.includes("2.5-flash")
@@ -205,7 +206,15 @@ export class AiDocumentPipeline {
         return { response, usedModel: modelToTry };
       } catch (err: any) {
         lastError = err;
-        const msg = (err?.message || "").toLowerCase();
+        const rawErrMsg = String(err?.message || "");
+        const msg = rawErrMsg.toLowerCase();
+
+        // If Google's 404 error recommends a replacement model (e.g. "use models/gemini-3.8-flash"), queue it
+        const suggestedMatch = rawErrMsg.match(/use\s+models\/([a-z0-9._-]+)/i);
+        if (suggestedMatch?.[1] && !candidateModels.includes(suggestedMatch[1])) {
+          candidateModels.splice(i + 1, 0, suggestedMatch[1]);
+        }
+
         const isUnavailableOrNotFound =
           err?.status === 404 ||
           err?.status === 503 ||
@@ -221,13 +230,14 @@ export class AiDocumentPipeline {
           msg.includes("high demand") ||
           msg.includes("unavailable") ||
           msg.includes("not found") ||
+          msg.includes("no longer available") ||
           msg.includes("not supported") ||
           msg.includes("timeout") ||
           msg.includes("aborted") ||
           msg.includes("etimedout") ||
           msg.includes("fetch failed");
 
-        if (isUnavailableOrNotFound && modelToTry !== candidateModels[candidateModels.length - 1]) {
+        if (isUnavailableOrNotFound && i < candidateModels.length - 1) {
           console.warn(
             `[AiDocumentPipeline] Model ${modelToTry} returned ${err?.status || "error"} (${msg}). Falling back to next candidate model...`
           );
@@ -240,7 +250,65 @@ export class AiDocumentPipeline {
   }
 
   /**
-   * Pre-inspect PDF using pdfjs-dist legacy build dynamically.
+   * Reconstructs clean per-page text from pdfjs textContent items,
+   * automatically normalizing and fixing visual-RTL Arabic Presentation Forms (e.g. Canva / Illustrator PDFs).
+   */
+  private extractCleanPageText(items: any[]): string {
+    const valid = (items || [])
+      .filter((it: any) => typeof it?.str === "string" && it.str.length > 0 && Array.isArray(it.transform))
+      .map((it: any) => ({
+        str: it.str as string,
+        x: Number(it.transform[4]) || 0,
+        y: Number(it.transform[5]) || 0,
+      }));
+
+    if (valid.length === 0) {
+      return (items || [])
+        .map((it: any) => String(it?.str || "").normalize("NFKC"))
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    const lines: Array<{ y: number; items: Array<{ str: string; x: number; y: number }> }> = [];
+    for (const item of valid) {
+      let line = lines.find((l) => Math.abs(l.y - item.y) <= 6);
+      if (!line) {
+        line = { y: item.y, items: [] };
+        lines.push(line);
+      }
+      line.items.push(item);
+    }
+    lines.sort((a, b) => b.y - a.y);
+
+    const lineStrings = lines.map((line) => {
+      const rawConcat = line.items.map((i) => i.str).join("");
+      const hasPresentationForms = /[\uFB50-\uFDFF\uFE70-\uFEFF]/.test(rawConcat);
+      const hasArabic = /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(rawConcat);
+
+      if (hasArabic && hasPresentationForms) {
+        const rtlItems = [...line.items].reverse();
+        let out = "";
+        for (const it of rtlItems) {
+          out += it.str.normalize("NFKC");
+        }
+        return out.replace(/\s+/g, " ").trim();
+      } else {
+        return line.items
+          .map((i) => i.str.normalize("NFKC"))
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+    });
+
+    return lineStrings
+      .filter((l) => l && !/^(?:next|click\s*here|ً)$/i.test(l.trim()))
+      .join("\n");
+  }
+
+  /**
+   * Pre-inspect PDF using pdfjs-dist legacy build dynamically (with bundled pdf.worker.mjs for Vercel Serverless).
    * Extracts per-page text for all pages to accelerate and anchor AI extraction.
    */
   private async preInspectPdf(buffer: Buffer): Promise<{
@@ -250,6 +318,12 @@ export class AiDocumentPipeline {
     pages: Array<{ pageNumber: number; text: string }>;
   }> {
     try {
+      // Pre-load pdf.worker.mjs onto globalThis.pdfjsWorker so Next.js/Vercel Serverless bundles it
+      // @ts-ignore
+      if (!(globalThis as any).pdfjsWorker) {
+        // @ts-ignore
+        (globalThis as any).pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs").catch(() => null);
+      }
       // Dynamically load pdfjs-dist legacy build
       // @ts-ignore
       const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -266,11 +340,7 @@ export class AiDocumentPipeline {
       for (let i = 1; i <= Math.min(pageCount, 60); i++) {
         const page = await doc.getPage(i);
         const textContent = await page.getTextContent();
-        const pageText = textContent.items
-          .map((it: any) => it.str)
-          .join(" ")
-          .replace(/\s+/g, " ")
-          .trim();
+        const pageText = this.extractCleanPageText(textContent.items);
         pages.push({ pageNumber: i, text: pageText });
         if (i <= 5) {
           extractedText += pageText + " ";
@@ -286,6 +356,7 @@ export class AiDocumentPipeline {
         pages,
       };
     } catch (e) {
+      console.warn("[AiDocumentPipeline] pdfjs preInspect fallback:", (e as any)?.message || e);
       // Fallback estimate based on byte patterns
       const str = buffer.toString("binary");
       const matches = str.match(/\/Type\s*\/Page\b/g);
@@ -799,17 +870,21 @@ ${pageTextContext}
         const lower = raw.toLowerCase();
         const hasPostMarkers =
           /\bslide\s*\d+/i.test(raw) ||
-          /\btov\s*:/i.test(raw) ||
-          /\btext\s*:/i.test(raw) ||
-          /\bcaption\s*:/i.test(raw) ||
+          /\btov\b/i.test(raw) ||
+          /\bcontent\b/i.test(raw) ||
+          /\btext\s*:?/i.test(raw) ||
+          /\bcaption\s*:?/i.test(raw) ||
+          /\bscript\s*voice\s*over/i.test(raw) ||
           /\bpost\s*\d+/i.test(raw) ||
-          /(?:بوست|منشور|كابشن|سلايد)\s*\d*/i.test(raw);
+          /(?:بوست|منشور|كابشن|سلايد|ريلز|فيديو)\s*\d*/i.test(raw);
 
         if (
           p.pageNumber === 1 &&
           !hasPostMarkers &&
           (lower.includes("presented to") ||
             lower.includes("marketing group") ||
+            lower.includes("markting group") ||
+            lower.includes("monthly campaign") ||
             lower.includes("content calendar") ||
             raw.length < 180)
         ) {
@@ -891,26 +966,58 @@ ${pageTextContext}
           }
         }
 
-        // Parse TOV / Brief and Text / Caption sections if present
+        // Parse TOV / Brief and CONTENT / Text / Caption / Script sections if present
         let onDesignText = "";
         let briefText: string | null = null;
         let captionText: string | null = null;
 
-        const tovMatch = raw.match(/\btov\s*:\s*/i);
-        const textMatch = raw.match(/\b(?:text|caption)\s*:\s*/i);
+        const tovMatch = raw.match(/\btov\s*:?\s*/i);
+        const textMatch = raw.match(/\b(?:content|text|caption|script\s*voice\s*over)\s*:?\s*/i);
 
         if (tovMatch && tovMatch.index !== undefined) {
-          onDesignText = raw.slice(0, tovMatch.index).trim();
+          const beforeTov = raw.slice(0, tovMatch.index).trim();
           const afterTovStart = tovMatch.index + tovMatch[0].length;
+          const isNumericOrTagPrefix =
+            !beforeTov ||
+            /^\d+(?:\s*reel)?$/i.test(beforeTov) ||
+            (beforeTov.length < 35 && /\d/.test(beforeTov));
+
           if (textMatch && textMatch.index !== undefined && textMatch.index > afterTovStart) {
-            briefText = raw.slice(afterTovStart, textMatch.index).trim();
-            captionText = raw.slice(textMatch.index + textMatch[0].length).trim();
+            const betweenTovAndContent = raw.slice(afterTovStart, textMatch.index).trim();
+            const afterContent = raw.slice(textMatch.index + textMatch[0].length).trim();
+            if (isNumericOrTagPrefix) {
+              onDesignText = betweenTovAndContent;
+              captionText = afterContent || betweenTovAndContent;
+              const cleanTag = beforeTov.replace(/^\d+|\d+$/g, "").trim();
+              briefText = cleanTag || betweenTovAndContent;
+            } else {
+              onDesignText = beforeTov;
+              briefText = betweenTovAndContent;
+              captionText = afterContent;
+            }
           } else {
-            briefText = raw.slice(afterTovStart).trim();
+            const afterTov = raw.slice(afterTovStart).trim();
+            if (isNumericOrTagPrefix) {
+              onDesignText = afterTov.split("\n")[0] || afterTov.substring(0, 180);
+              captionText = afterTov;
+              briefText = afterTov;
+            } else {
+              onDesignText = beforeTov;
+              briefText = afterTov;
+              captionText = afterTov;
+            }
           }
         } else if (textMatch && textMatch.index !== undefined) {
-          onDesignText = raw.slice(0, textMatch.index).trim();
-          captionText = raw.slice(textMatch.index + textMatch[0].length).trim();
+          const beforeContent = raw.slice(0, textMatch.index).trim();
+          const afterContent = raw.slice(textMatch.index + textMatch[0].length).trim();
+          if (!beforeContent || /^\d+(?:\s*reel)?$/i.test(beforeContent)) {
+            onDesignText = afterContent.split("\n")[0] || afterContent.substring(0, 180);
+            captionText = afterContent;
+            briefText = /voice\s*over|reel/i.test(raw) ? "Reel — Script Voice Over" : null;
+          } else {
+            onDesignText = beforeContent;
+            captionText = afterContent;
+          }
         } else if (slides.length > 0) {
           onDesignText = slides[0].text.substring(0, 180);
           captionText = slides.map((s) => `Slide ${s.slide_number}: ${s.text}`).join("\n\n");
@@ -923,9 +1030,15 @@ ${pageTextContext}
         const cleanHeadline = (onDesignText || slides[0]?.text || raw)
           .replace(/^slide\s*\d+\s*/i, "")
           .replace(/^let[’']s\s+talk\s+month\s+campaign\s*/i, "")
+          .replace(/\s+/g, " ")
           .trim();
         const title = (cleanHeadline.split(/[.?!\n]/)[0] || cleanHeadline || postNumber).trim().substring(0, 100);
-        const contentFormat = slides.length > 1 ? "Carousel" : /\breel\b|\bvideo\b|ريلز|فيديو/i.test(raw) ? "Reel" : "Static";
+        const contentFormat =
+          slides.length > 1
+            ? "Carousel"
+            : /\breel\b|\bvideo\b|\bvoice\s*over\b|ريلز|فيديو/i.test(raw)
+            ? "Reel"
+            : "Static";
 
         // Evenly distribute publish_date across the month and set design_due_date 2 days prior
         const pubDay = Math.min(daysInMonth, Math.max(3, Math.round(((idx + 1) * (daysInMonth - 2)) / Math.max(1, totalOps)) + 1));

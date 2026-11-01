@@ -23,6 +23,11 @@ export function isGeminiConfigured(): boolean {
 
 export const VALID_GEMINI_MODELS = [
   "gemini-2.5-flash",
+  "gemini-3.8-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-flash-latest",
+  "gemini-3.6-flash",
+  "gemini-3.1-pro-preview",
   "gemini-2.5-flash-lite",
   "gemini-2.5-pro",
   "gemini-2.0-flash",
@@ -30,8 +35,7 @@ export const VALID_GEMINI_MODELS = [
 
 /**
  * Returns the Gemini document analysis model.
- * Sanitizes deprecated or invalid model names (such as 3.8, 3.6, 1.5, or hanging latest aliases)
- * and defaults centrally to 'gemini-2.5-flash'.
+ * Defaults centrally to 'gemini-2.5-flash' (with automatic candidate fallback in pipeline).
  */
 export function getGeminiModel(): string {
   const envModel = process.env.GEMINI_DOCUMENT_MODEL?.trim();
@@ -39,9 +43,7 @@ export function getGeminiModel(): string {
     envModel &&
     envModel.length > 0 &&
     !envModel.includes("3.8") &&
-    !envModel.includes("3.6") &&
     !envModel.includes("1.5") &&
-    !envModel.includes("latest") &&
     VALID_GEMINI_MODELS.includes(envModel)
   ) {
     return envModel;
@@ -61,7 +63,7 @@ export function getGeminiClient(): GoogleGenAI | null {
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
-      timeout: 45000,
+      timeout: 30000,
     },
   });
 }
@@ -204,6 +206,11 @@ export async function testGeminiConnection(): Promise<{
   }
 
   const modelsToTry = [
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-latest",
+    "gemini-3.6-flash",
+    "gemini-3.1-pro-preview",
     preferredModel,
     ...VALID_GEMINI_MODELS,
   ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
