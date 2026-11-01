@@ -363,23 +363,30 @@ export async function getContentCalendarDetails(params: {
   userRosterId?: string;
   isOwner?: boolean;
   canViewAll?: boolean;
+  accessibleClientIds?: Set<string> | null;
 }) {
   const admin = createAdminClient();
   if (!admin) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
-  const hasGlobalRead = Boolean(params.isOwner || params.canViewAll);
+  if (params.accessibleClientIds !== undefined) {
+    if (params.accessibleClientIds !== null && !params.accessibleClientIds.has(params.clientId)) {
+      throw new Error("غير مصرح لك باستعراض تقويم هذا العميل (العميل خارج نطاق صلاحياتك).");
+    }
+  } else {
+    const hasGlobalRead = Boolean(params.isOwner || params.canViewAll);
 
-  // If not global reader, verify client is assigned to this team member (across all tracks)
-  if (!hasGlobalRead && params.userRosterId) {
-    const { data: client } = await admin
-      .from("clients")
-      .select("id, owner_roster_id, team_assignment:client_team_assignments(*)")
-      .eq("id", params.clientId)
-      .eq("workspace_id", params.workspaceId)
-      .maybeSingle();
+    // If not global reader, verify client is assigned to this team member (across all tracks)
+    if (!hasGlobalRead && params.userRosterId) {
+      const { data: client } = await admin
+        .from("clients")
+        .select("id, owner_roster_id, team_assignment:client_team_assignments(*)")
+        .eq("id", params.clientId)
+        .eq("workspace_id", params.workspaceId)
+        .maybeSingle();
 
-    if (!isMemberAssignedToClient(client, params.userRosterId)) {
-      throw new Error("غير مصرح لك باستعراض تقويم هذا العميل.");
+      if (!isMemberAssignedToClient(client, params.userRosterId)) {
+        throw new Error("غير مصرح لك باستعراض تقويم هذا العميل.");
+      }
     }
   }
 
@@ -498,6 +505,7 @@ export async function listClientCalendars(params: {
   userRosterId?: string;
   isOwner?: boolean;
   canViewAll?: boolean;
+  accessibleClientIds?: Set<string> | null;
 }) {
   const admin = createAdminClient();
   if (!admin) return [];
@@ -521,9 +529,14 @@ export async function listClientCalendars(params: {
 
   if (error || !rawClients) return [];
 
-  const clients = hasGlobalRead
-    ? rawClients
-    : rawClients.filter((c) => isMemberAssignedToClient(c, params.userRosterId));
+  const clients =
+    params.accessibleClientIds !== undefined
+      ? params.accessibleClientIds === null
+        ? rawClients
+        : rawClients.filter((c) => params.accessibleClientIds!.has(c.id))
+      : hasGlobalRead
+      ? rawClients
+      : rawClients.filter((c) => isMemberAssignedToClient(c, params.userRosterId));
 
   // Fetch current campaigns for this month
   const { data: campaigns } = await admin

@@ -4,6 +4,7 @@ import {
   validateSameOrigin,
   isFullAdminRole,
   hasGranularPermission,
+  canAccessClient,
 } from "@/lib/auth/server-auth";
 
 export async function PATCH(
@@ -30,7 +31,30 @@ export async function PATCH(
       membership.role !== "manager" &&
       !hasGranularPermission(membership, "create_campaigns")
     ) {
-      return NextResponse.json({ error: "تعديل البوستات مسموح فقط للمدير العام أو الشريك." }, { status: 403 });
+      return NextResponse.json(
+        { error: "تعديل البوستات يتطلب صلاحية إدارة الكامبينز." },
+        { status: 403 }
+      );
+    }
+
+    // Verify item exists in workspace and caller has access to its client scope
+    const { data: existingItem } = await admin
+      .from("content_calendar_items")
+      .select("id, client_id")
+      .eq("id", params.itemId)
+      .eq("workspace_id", membership.workspaceId)
+      .maybeSingle();
+
+    if (!existingItem) {
+      return NextResponse.json({ error: "العنصر غير موجود." }, { status: 404 });
+    }
+
+    const inScope = await canAccessClient(admin, membership, existingItem.client_id);
+    if (!inScope) {
+      return NextResponse.json(
+        { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+        { status: 403 }
+      );
     }
 
     const body = await req.json();
@@ -48,6 +72,7 @@ export async function PATCH(
     if (body.design_due_date !== undefined) updateData.design_due_date = body.design_due_date || null;
     if (body.approved_assignee_id !== undefined) {
       if (body.approved_assignee_id) {
+        // Validated against non-viewer roster (.neq("role", "viewer")) using enum-safe check below
         const { data: assignee } = await admin
           .from("roster_people")
           .select("id, role, is_active")
@@ -63,7 +88,7 @@ export async function PATCH(
           (assignee.role as string) === "viewer"
         ) {
           return NextResponse.json(
-            { error: "العضو المختار غير مؤهل للتنفيذ في مساحة العمل (يجب أن يكون عضواً نشطاً في مسار تنفيذي)." },
+            { error: "العضو المختار غير صالح أو غير مؤهل للتنفيذ في مساحة العمل (يجب أن يكون عضواً نشطاً في مسار تنفيذي)." },
             { status: 400 }
           );
         }
@@ -124,19 +149,30 @@ export async function DELETE(
       membership.role !== "manager" &&
       !hasGranularPermission(membership, "create_campaigns")
     ) {
-      return NextResponse.json({ error: "حذف البوستات مسموح فقط للمدير العام أو الشريك." }, { status: 403 });
+      return NextResponse.json(
+        { error: "حذف البوستات يتطلب صلاحية إدارة الكامبينز." },
+        { status: 403 }
+      );
     }
 
-    // Ensure item has not been imported as a task
+    // Ensure item exists in workspace and has not been imported as a task
     const { data: item } = await admin
       .from("content_calendar_items")
-      .select("id, task_id")
+      .select("id, client_id, task_id")
       .eq("id", params.itemId)
       .eq("workspace_id", membership.workspaceId)
       .single();
 
     if (!item) {
       return NextResponse.json({ error: "العنصر غير موجود." }, { status: 404 });
+    }
+
+    const inScope = await canAccessClient(admin, membership, item.client_id);
+    if (!inScope) {
+      return NextResponse.json(
+        { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+        { status: 403 }
+      );
     }
 
     if (item.task_id) {

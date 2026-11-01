@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireWorkspaceMembership } from "@/lib/auth/server-auth";
+import { requireWorkspaceMembership, canAccessClient } from "@/lib/auth/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +20,18 @@ export async function GET(req: NextRequest) {
 
     if (!storagePath.startsWith(`${membership.workspaceId}/`)) {
       return NextResponse.json({ error: "غير مصرح بالوصول إلى هذا الملف." }, { status: 403 });
+    }
+
+    const pathSegments = storagePath.split("/");
+    const clientIdFromPath = pathSegments.length >= 2 ? pathSegments[1] : null;
+    if (clientIdFromPath) {
+      const inScope = await canAccessClient(admin, membership, clientIdFromPath);
+      if (!inScope) {
+        return NextResponse.json(
+          { error: "غير مصرح: هذا الملف يخص عميلاً خارج نطاق صلاحياتك." },
+          { status: 403 }
+        );
+      }
     }
 
     const { data, error } = await admin.storage

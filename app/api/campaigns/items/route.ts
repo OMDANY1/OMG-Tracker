@@ -4,6 +4,7 @@ import {
   validateSameOrigin,
   isFullAdminRole,
   hasGranularPermission,
+  canAccessClient,
 } from "@/lib/auth/server-auth";
 
 export async function POST(req: NextRequest) {
@@ -27,7 +28,10 @@ export async function POST(req: NextRequest) {
       membership.role !== "manager" &&
       !hasGranularPermission(membership, "create_campaigns")
     ) {
-      return NextResponse.json({ error: "إضافة البوستات مسموحة فقط للمدير العام أو الشريك." }, { status: 403 });
+      return NextResponse.json(
+        { error: "إضافة البوستات تتطلب صلاحية إدارة الكامبينز." },
+        { status: 403 }
+      );
     }
 
     const body = await req.json();
@@ -55,15 +59,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "البيانات الأساسية للبوست مطلوبة." }, { status: 400 });
     }
 
+    const inScope = await canAccessClient(admin, membership, clientId);
+    if (!inScope) {
+      return NextResponse.json(
+        { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+        { status: 403 }
+      );
+    }
+
     if (suggestedAssigneeId) {
       const { data: assignee } = await admin
         .from("roster_people")
-        .select("id, is_active")
+        .select("id, is_active, role")
         .eq("id", suggestedAssigneeId)
         .eq("workspace_id", membership.workspaceId)
         .maybeSingle();
 
-      if (!assignee || !assignee.is_active) {
+      if (
+        !assignee ||
+        !assignee.is_active ||
+        assignee.role === "business_owner_viewer" ||
+        assignee.role === "marketing_director" ||
+        (assignee.role as string) === "viewer"
+      ) {
         return NextResponse.json(
           { error: "العضو المختار غير صالح أو غير نشط في مساحة العمل." },
           { status: 400 }

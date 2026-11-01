@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
+import {
+  requireOwner,
+  requireCampaignAccess,
+  validateSameOrigin,
+  canAccessClient,
+} from "@/lib/auth/server-auth";
 import { AiJobQueue } from "@/lib/services/ai-job-queue";
-import { createAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +18,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const authRes = await requireOwner(req);
+    const authRes = await requireCampaignAccess(req);
     if (!authRes.success) {
       return authRes.errorResponse;
     }
@@ -29,6 +33,21 @@ export async function POST(req: NextRequest) {
         { error: "معرف المهمة (jobId) مطلوب لإعادة المحاولة." },
         { status: 400 }
       );
+    }
+
+    const existingJob = await AiJobQueue.getJobStatus(jobId, membership.workspaceId);
+    if (!existingJob) {
+      return NextResponse.json({ error: "مهمة المعالجة غير موجودة." }, { status: 404 });
+    }
+
+    if (existingJob.client_id) {
+      const inScope = await canAccessClient(admin, membership, existingJob.client_id);
+      if (!inScope) {
+        return NextResponse.json(
+          { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+          { status: 403 }
+        );
+      }
     }
 
     const job = await AiJobQueue.retryJob(jobId, membership.workspaceId);

@@ -60,7 +60,7 @@ export type DetectedContentBlock = z.infer<typeof DetectedContentBlockSchema>;
 export const CarouselSlideSchema = z.object({
   slide_number: z.number().int().min(1),
   text: z.string(),
-  visual_notes: z.string().optional(),
+  visual_notes: z.string().nullable().optional(),
 });
 
 export const DetailedPostItemSchema = z.object({

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
-import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  requireOwner,
+  requireCampaignAccess,
+  validateSameOrigin,
+  canAccessClient,
+} from "@/lib/auth/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +17,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const authRes = await requireOwner(req);
+    const authRes = await requireCampaignAccess(req);
     if (!authRes.success) {
       return authRes.errorResponse;
     }
@@ -27,6 +31,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "معرف الكامبين (campaignId) مطلوب لتطبيق التعديلات." },
         { status: 400 }
+      );
+    }
+
+    const { data: camp } = await admin
+      .from("campaigns")
+      .select("id, client_id")
+      .eq("id", campaignId)
+      .eq("workspace_id", membership.workspaceId)
+      .maybeSingle();
+
+    if (!camp) {
+      return NextResponse.json(
+        { error: "سجل التقويم غير موجود في مساحة العمل." },
+        { status: 404 }
+      );
+    }
+
+    const inScope = await canAccessClient(admin, membership, camp.client_id);
+    if (!inScope) {
+      return NextResponse.json(
+        { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+        { status: 403 }
       );
     }
 

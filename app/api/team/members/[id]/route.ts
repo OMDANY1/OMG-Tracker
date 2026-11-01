@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
+import {
+  resolveEffectiveAccessScope,
+  resolveEffectivePermissions,
+  resolvePermissionDetails,
+  sanitizeCustomPermissionsForRole,
+} from "@/lib/auth/permissions";
 import type { RosterRole } from "@/types/database";
 
 export const dynamic = "force-dynamic";
@@ -29,7 +35,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { jobTitle, specialties, role, accessScope, customPermissions } = body;
+    const { jobTitle, specialties, role, accessScope, customPermissions, displayName } = body;
 
     if (!jobTitle || typeof jobTitle !== "string" || !jobTitle.trim()) {
       return NextResponse.json({ error: "المسمى الوظيفي مطلوب." }, { status: 400 });
@@ -41,6 +47,20 @@ export async function PATCH(
 
     const validRole: RosterRole = role || "designer";
 
+    // Prevent self-role downgrade or self-permission alteration
+    if (membership.rosterPersonId === rosterPersonId && validRole !== membership.role) {
+      return NextResponse.json(
+        { error: "غير مسموح: لا يمكن للعضو تغيير دوره الأمني الخاص بنفسه." },
+        { status: 400 }
+      );
+    }
+
+    const sanitizedScope = resolveEffectiveAccessScope(validRole, accessScope);
+    const sanitizedPermissions = sanitizeCustomPermissionsForRole(
+      validRole,
+      customPermissions
+    );
+
     // Call admin_update_roster_person RPC with authenticated serverClient
     const { data: result, error: rpcErr } = await serverClient.rpc("admin_update_roster_person", {
       p_workspace_id: membership.workspaceId,
@@ -48,8 +68,9 @@ export async function PATCH(
       p_job_title: jobTitle.trim(),
       p_specialties: validSpecialties,
       p_role: validRole,
-      p_access_scope: accessScope || null,
-      p_custom_permissions: customPermissions || null,
+      p_access_scope: sanitizedScope,
+      p_custom_permissions: sanitizedPermissions,
+      p_display_name: typeof displayName === "string" && displayName.trim() ? displayName.trim() : null,
     });
 
     if (rpcErr) {
@@ -59,10 +80,23 @@ export async function PATCH(
       );
     }
 
+    const effectivePermissions = resolveEffectivePermissions(validRole, sanitizedPermissions);
+    const permissionDetails = resolvePermissionDetails(validRole, sanitizedPermissions);
+
     return NextResponse.json({
       success: true,
-      message: "تم تحديث بيانات العضو بنجاح.",
-      member: result,
+      message: "تم تحديث بيانات وصلاحيات العضو بنجاح.",
+      member: {
+        ...(result || {}),
+        id: rosterPersonId,
+        role: validRole,
+        access_scope: sanitizedScope,
+        accessScope: sanitizedScope,
+        custom_permissions: effectivePermissions,
+        customPermissions: effectivePermissions,
+        effectivePermissions,
+        permissionDetails,
+      },
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "حدث خطأ غير متوقع." }, { status: 500 });

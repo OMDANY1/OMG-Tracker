@@ -6,6 +6,7 @@ import {
   validateSameOrigin,
   isFullAdminRole,
   hasGranularPermission,
+  canAccessClient,
 } from "@/lib/auth/server-auth";
 
 export const runtime = "nodejs";
@@ -27,7 +28,7 @@ export async function GET(req: NextRequest) {
       !hasGranularPermission(membership, "create_campaigns")
     ) {
       return NextResponse.json(
-        { error: "صلاحية غير كافية: الفحص التشخيصي مسموح فقط للمدير العام أو الشريك." },
+        { error: "صلاحية غير كافية: الفحص التشخيصي مسموح فقط للمدير العام أو الشريك أو المصرح لهم." },
         { status: 403 }
       );
     }
@@ -63,7 +64,7 @@ export async function POST(req: NextRequest) {
       return authRes.errorResponse;
     }
 
-    const { membership } = authRes.data;
+    const { membership, admin } = authRes.data;
 
     if (
       !isFullAdminRole(membership.role) &&
@@ -71,7 +72,7 @@ export async function POST(req: NextRequest) {
       !hasGranularPermission(membership, "create_campaigns")
     ) {
       return NextResponse.json(
-        { error: "صلاحية غير كافية: معالجة تقويم المحتوى مسموح فقط للمدير العام أو الشريك." },
+        { error: "صلاحية غير كافية: معالجة تقويم المحتوى تتطلب صلاحية إدارة الكامبينز." },
         { status: 403 }
       );
     }
@@ -96,6 +97,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "معرف الكامبين (campaignId) مطلوب لبدء المعالجة." },
         { status: 400 }
+      );
+    }
+
+    // Verify campaign exists in workspace and caller has access to its client scope
+    const { data: camp } = await admin
+      .from("campaigns")
+      .select("id, client_id")
+      .eq("id", campaignId)
+      .eq("workspace_id", membership.workspaceId)
+      .maybeSingle();
+
+    if (!camp) {
+      return NextResponse.json(
+        { error: "سجل الكامبين غير موجود في مساحة العمل." },
+        { status: 404 }
+      );
+    }
+
+    const inScope = await canAccessClient(admin, membership, camp.client_id);
+    if (!inScope) {
+      return NextResponse.json(
+        { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+        { status: 403 }
       );
     }
 

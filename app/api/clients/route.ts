@@ -16,6 +16,8 @@ import {
   validateSameOrigin,
   isFullAdminRole,
   hasGranularPermission,
+  getAccessibleClientIds,
+  canAccessClient,
 } from "@/lib/auth/server-auth";
 
 export async function GET(req: NextRequest) {
@@ -30,6 +32,10 @@ export async function GET(req: NextRequest) {
   const isViewer = membership.role === "business_owner_viewer";
   const callerRosterId = membership.rosterPersonId || null;
   const callerRole = membership.role;
+  const canManageCampaigns = hasGranularPermission(membership, "create_campaigns");
+  const canManageClients = hasGranularPermission(membership, "manage_clients");
+  const canAssignTeam = hasGranularPermission(membership, "assign_team");
+  const accessibleClientIds = await getAccessibleClientIds(admin, membership);
 
   // Fetch clients with full relations scoped to workspace
   const { data: rawClients, error } = await admin
@@ -61,11 +67,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Normalize array relations to single objects
+  // Normalize array relations to single objects and annotate scope
   const clients = (rawClients || []).map((c: any) => ({
     ...c,
     team_assignment: Array.isArray(c.team_assignment) ? c.team_assignment[0] || null : c.team_assignment,
     brief_data: Array.isArray(c.brief_data) ? c.brief_data[0] || null : c.brief_data,
+    inCampaignScope: accessibleClientIds === null ? true : accessibleClientIds.has(c.id),
   }));
 
   // Fetch active roster people with memberships and invitations scoped to workspace
@@ -181,21 +188,34 @@ export async function GET(req: NextRequest) {
   );
   const reviewers = allTeamMembers.filter((m) => m.canApproveReviews);
 
-  return NextResponse.json({
-    clients: clients || [],
-    designers,
-    allTeamMembers,
-    strategists,
-    writers,
-    videoEditors,
-    managers,
-    reviewers,
-    reviewRules: reviewRules || [],
-    isOwner,
-    isViewer,
-    callerRosterId,
-    callerRole,
-  });
+  return NextResponse.json(
+    {
+      clients: clients || [],
+      designers,
+      allTeamMembers,
+      strategists,
+      writers,
+      videoEditors,
+      managers,
+      reviewers,
+      reviewRules: reviewRules || [],
+      isOwner,
+      isViewer,
+      canManageCampaigns,
+      canManageClients,
+      canAssignTeam,
+      accessScope: membership.accessScope,
+      effectivePermissions: membership.effectivePermissions,
+      accessibleClientIds: accessibleClientIds ? Array.from(accessibleClientIds) : null,
+      callerRosterId,
+      callerRole,
+    },
+    {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      },
+    }
+  );
 }
 
 export async function PUT(req: NextRequest) {
@@ -212,7 +232,7 @@ export async function PUT(req: NextRequest) {
       return authRes.errorResponse;
     }
 
-    const { membership, serverClient } = authRes.data;
+    const { membership, admin, serverClient } = authRes.data;
 
     if (membership.role === "business_owner_viewer" || membership.role === "marketing_director") {
       return NextResponse.json(
@@ -265,6 +285,14 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "clientId is required" }, { status: 400 });
     }
 
+    const inScope = await canAccessClient(admin, membership, clientId);
+    if (!inScope) {
+      return NextResponse.json(
+        { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+        { status: 403 }
+      );
+    }
+
     const isAdminOrManager =
       isFullAdminRole(membership.role) ||
       membership.role === "manager" ||
@@ -274,7 +302,7 @@ export async function PUT(req: NextRequest) {
     if (action === "update_team") {
       if (!isAdminOrManager && !hasGranularPermission(membership, "assign_team")) {
         return NextResponse.json(
-          { error: "غير مصرح: توزيع فريق العميل مقتصر على الإدارة فقط." },
+          { error: "غير مصرح: توزيع فريق العميل مقتصر على الإدارة والمصرح لهم فقط." },
           { status: 403 }
         );
       }
@@ -554,4 +582,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: safeMsg }, { status: 400 });
   }
 }
-

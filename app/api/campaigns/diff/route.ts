@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { computeCalendarDiff } from "@/lib/services/calendar-diff";
-import { requireWorkspaceMembership } from "@/lib/auth/server-auth";
+import { requireWorkspaceMembership, canAccessClient } from "@/lib/auth/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +30,14 @@ export async function GET(req: NextRequest) {
 
     if (campErr || !campaign) {
       return NextResponse.json({ error: "لم يتم العثور على سجل التقويم المحدد." }, { status: 404 });
+    }
+
+    const inScope = await canAccessClient(admin, membership, campaign.client_id);
+    if (!inScope) {
+      return NextResponse.json(
+        { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+        { status: 403 }
+      );
     }
 
     // 2. Fetch items for current campaign

@@ -62,22 +62,40 @@ export async function GET(req: NextRequest) {
       const client = getGeminiClient();
       if (client) {
         const testCandidates = [
-          "gemini-flash-latest",
-          "gemini-3.8-flash",
-          "gemini-3.6-flash",
           "gemini-2.5-flash",
+          "gemini-2.5-flash-lite",
+          "gemini-2.5-pro",
+          "gemini-2.0-flash",
         ];
-        for (const m of testCandidates) {
-          try {
-            const res = await client.models.generateContent({
-              model: m,
-              contents: "Hello",
-            });
-            testResults.push({ model: m, ok: true, text: res.text?.substring(0, 50) });
-          } catch (err: any) {
-            testResults.push({ model: m, ok: false, status: err?.status, message: err?.message });
-          }
-        }
+        testResults = await Promise.all(
+          testCandidates.map(async (m) => {
+            const startedAt = Date.now();
+            try {
+              const res = await client.models.generateContent({
+                model: m,
+                contents: "Respond with OK",
+                config: {
+                  httpOptions: { timeout: 8000 },
+                  ...(m.includes("2.5-flash") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+                },
+              });
+              return {
+                model: m,
+                ok: true,
+                durationMs: Date.now() - startedAt,
+                text: res.text?.substring(0, 50),
+              };
+            } catch (err: any) {
+              return {
+                model: m,
+                ok: false,
+                durationMs: Date.now() - startedAt,
+                status: err?.status,
+                message: err?.message,
+              };
+            }
+          })
+        );
       }
     }
 

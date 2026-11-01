@@ -40,15 +40,26 @@ import {
   GRANULAR_PERMISSIONS_LIST,
   ACCESS_SCOPE_CONFIGS,
   DEFAULT_ROLE_PERMISSIONS,
+  RosterRole,
 } from "@/types/database";
+import {
+  resolveEffectivePermissions,
+  resolvePermissionDetails,
+  resolveEffectiveAccessScope,
+  type PermissionResolutionDetail,
+} from "@/lib/auth/permissions";
 
 export interface WorkloadMember {
   id: string;
   displayName: string;
   jobTitle: string;
   role: string;
+  accessScope?: AccessScope;
   access_scope?: AccessScope;
+  customPermissions?: CustomPermissions;
   custom_permissions?: CustomPermissions;
+  effectivePermissions?: Required<CustomPermissions>;
+  permissionDetails?: Record<GranularPermissionKey, PermissionResolutionDetail>;
   specialties?: string[];
   hasJoined?: boolean;
   isActive?: boolean;
@@ -430,20 +441,28 @@ export default function TeamPage() {
     setEditSpecialties(member.specialties || []);
     setEditWeeklyHours(member.weeklyHours || 40);
     setEditMaxLoad(member.maxWeightedLoad || 15);
-    const defaultScope = getDefaultScopeForRole(member.role);
-    setEditAccessScope(member.access_scope || defaultScope);
-    const defaultPerms = DEFAULT_ROLE_PERMISSIONS[member.role as keyof typeof DEFAULT_ROLE_PERMISSIONS] || {};
-    setEditCustomPermissions(
-      member.custom_permissions && Object.keys(member.custom_permissions).length > 0
-        ? { ...member.custom_permissions }
-        : { ...defaultPerms }
+    const resolvedScope = resolveEffectiveAccessScope(
+      (member.role || "designer") as RosterRole,
+      member.access_scope || member.accessScope || getDefaultScopeForRole(member.role)
     );
+    setEditAccessScope(resolvedScope);
+    const rawPerms =
+      member.effectivePermissions ||
+      member.custom_permissions ||
+      member.customPermissions ||
+      DEFAULT_ROLE_PERMISSIONS[member.role as keyof typeof DEFAULT_ROLE_PERMISSIONS] ||
+      {};
+    const resolvedPerms = resolveEffectivePermissions(
+      (member.role || "designer") as RosterRole,
+      rawPerms
+    );
+    setEditCustomPermissions({ ...resolvedPerms });
     setEditError(null);
   };
 
   const handleSaveEditMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingMember) return;
+    if (!editingMember || savingMember) return;
 
     if (!editName.trim() || !editJobTitle.trim()) {
       setEditError("يرجى كتابة الاسم والمسمى الوظيفي.");
@@ -470,14 +489,23 @@ export default function TeamPage() {
       });
 
       const data = await res.json();
-      if (!res.ok) {
+      if (!res.ok || !data.success) {
         throw new Error(data.error || "فشل حفظ التعديلات.");
       }
 
+      // Re-fetch persisted state from database before closing modal and showing confirmation toast
+      await fetchTeamData(true);
+      const savedName = editName.trim();
       setEditingMember(null);
-      fetchTeamData();
+      setActionToast(`تم حفظ وتحديث صلاحيات وبيانات "${savedName}" بنجاح في قاعدة البيانات.`);
+      setTimeout(() => setActionToast(null), 4000);
+
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("membership_data_changed", { detail: data.member }));
+        window.dispatchEvent(new CustomEvent("team_data_changed", { detail: data.member }));
+      }
     } catch (err: any) {
-      setEditError(err.message || "حدث خطأ أثناء حفظ التعديلات.");
+      setEditError(err.message || "حدث خطأ أثناء حفظ التعديلات. لم يتم فقدان التغييرات المدخلة؛ يرجى المحاولة مرة أخرى.");
     } finally {
       setSavingMember(false);
     }
@@ -974,11 +1002,26 @@ export default function TeamPage() {
                           <span className="px-2 py-0.5 rounded-md font-semibold text-[10px] bg-slate-100 text-slate-700">
                             {ROSTER_ROLE_LABELS[member.role as keyof typeof ROSTER_ROLE_LABELS] || member.role}
                           </span>
-                          {member.access_scope && ACCESS_SCOPE_CONFIGS[member.access_scope] && (
-                            <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-semibold border", ACCESS_SCOPE_CONFIGS[member.access_scope].badgeClass)}>
-                              {ACCESS_SCOPE_CONFIGS[member.access_scope].label.split(" (")[0]}
-                            </span>
-                          )}
+                          {(() => {
+                            const scopeKey = (member.access_scope || member.accessScope) as AccessScope | undefined;
+                            return scopeKey && ACCESS_SCOPE_CONFIGS[scopeKey] ? (
+                              <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-semibold border", ACCESS_SCOPE_CONFIGS[scopeKey].badgeClass)}>
+                                {ACCESS_SCOPE_CONFIGS[scopeKey].label.split(" (")[0]}
+                              </span>
+                            ) : null;
+                          })()}
+                          {(() => {
+                            const details = member.permissionDetails;
+                            if (!details) return null;
+                            const customCount = Object.values(details).filter(
+                              (d) => d.source === "custom_grant" || d.source === "custom_deny"
+                            ).length;
+                            return customCount > 0 ? (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                                {customCount} تخصيص صلاحية
+                              </span>
+                            ) : null;
+                          })()}
                         </div>
                       </div>
                     </div>
@@ -1853,129 +1896,204 @@ export default function TeamPage() {
               )}
 
               {/* Granular Permissions (14 Permissions) for Edit Member */}
-              {editingMember.role !== "owner" && editingMember.role !== "company_owner" && (
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="font-bold text-slate-700 block">
-                      الصلاحيات الفردية المخصصة (14 صلاحية):
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const def = DEFAULT_ROLE_PERMISSIONS[editRole as keyof typeof DEFAULT_ROLE_PERMISSIONS];
-                        if (def) setEditCustomPermissions({ ...def });
-                      }}
-                      className="text-[10px] font-semibold text-sky-600 hover:text-sky-800 underline"
-                    >
-                      استعادة الافتراضي للدور
-                    </button>
+              {editingMember.role !== "owner" && editingMember.role !== "company_owner" && (() => {
+                const currentDetails = resolvePermissionDetails(
+                  (editRole || "designer") as RosterRole,
+                  editCustomPermissions
+                );
+                const renderPermBadge = (detail?: PermissionResolutionDetail) => {
+                  if (!detail) return null;
+                  if (detail.source === "locked") {
+                    return (
+                      <span
+                        title={detail.lockedReason || "محمية حسب قواعد الدور"}
+                        className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-slate-200 text-slate-700 border border-slate-300 shrink-0"
+                      >
+                        محمية حسب الدور
+                      </span>
+                    );
+                  }
+                  if (detail.source === "custom_grant") {
+                    return (
+                      <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300 shrink-0">
+                        ممنوحة مخصصاً (+)
+                      </span>
+                    );
+                  }
+                  if (detail.source === "custom_deny") {
+                    return (
+                      <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-rose-100 text-rose-900 border border-rose-300 shrink-0">
+                        ممنوعة مخصصاً (-)
+                      </span>
+                    );
+                  }
+                  return (
+                    <span className="px-1.5 py-0.5 rounded text-[8px] font-medium bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
+                      موروثة من الدور
+                    </span>
+                  );
+                };
+
+                return (
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="font-bold text-slate-700 block">
+                        الصلاحيات الفردية المخصصة (14 صلاحية):
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const def = resolveEffectivePermissions(
+                            (editRole || "designer") as RosterRole,
+                            DEFAULT_ROLE_PERMISSIONS[editRole as keyof typeof DEFAULT_ROLE_PERMISSIONS]
+                          );
+                          setEditCustomPermissions({ ...def });
+                        }}
+                        className="text-[10px] font-semibold text-sky-600 hover:text-sky-800 underline"
+                      >
+                        استعادة الافتراضي للدور
+                      </button>
+                    </div>
+
+                    <div className="space-y-3 bg-slate-50/80 p-3 rounded-xl border border-slate-200">
+                      {/* Group 1: النظام والإدارة */}
+                      <div>
+                        <span className="text-[10px] font-bold text-purple-900 block mb-1">1. النظام والإدارة</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                          {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "system").map((p) => {
+                            const detail = currentDetails[p.key];
+                            const isLocked = detail?.source === "locked";
+                            const checked = detail ? detail.effective : !!editCustomPermissions[p.key];
+                            return (
+                              <label
+                                key={p.key}
+                                className={cn(
+                                  "flex items-start gap-2 p-2 rounded-lg border text-[10px] transition-colors",
+                                  isLocked ? "cursor-not-allowed opacity-75 bg-slate-100 border-slate-200 text-slate-500" : "cursor-pointer",
+                                  !isLocked && checked
+                                    ? "bg-purple-50 border-purple-200 text-purple-950 font-semibold"
+                                    : !isLocked
+                                    ? "bg-white border-slate-200 text-slate-600"
+                                    : ""
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={isLocked}
+                                  onChange={(e) =>
+                                    setEditCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
+                                  }
+                                  className="mt-0.5 rounded text-purple-600 focus:ring-purple-500 disabled:opacity-50"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span className="leading-tight truncate">{p.label}</span>
+                                    {renderPermBadge(detail)}
+                                  </div>
+                                  <div className="text-[9px] text-slate-400 font-normal mt-0.5">
+                                    {isLocked && detail?.lockedReason ? detail.lockedReason : p.description}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Group 2: إدارة العملاء والمهام */}
+                      <div>
+                        <span className="text-[10px] font-bold text-sky-900 block mb-1">2. إدارة العملاء والمهام</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                          {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "clients_tasks").map((p) => {
+                            const detail = currentDetails[p.key];
+                            const isLocked = detail?.source === "locked";
+                            const checked = detail ? detail.effective : !!editCustomPermissions[p.key];
+                            return (
+                              <label
+                                key={p.key}
+                                className={cn(
+                                  "flex items-start gap-2 p-2 rounded-lg border text-[10px] transition-colors",
+                                  isLocked ? "cursor-not-allowed opacity-75 bg-slate-100 border-slate-200 text-slate-500" : "cursor-pointer",
+                                  !isLocked && checked
+                                    ? "bg-sky-50 border-sky-200 text-sky-950 font-semibold"
+                                    : !isLocked
+                                    ? "bg-white border-slate-200 text-slate-600"
+                                    : ""
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={isLocked}
+                                  onChange={(e) =>
+                                    setEditCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
+                                  }
+                                  className="mt-0.5 rounded text-sky-600 focus:ring-sky-500 disabled:opacity-50"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span className="leading-tight truncate">{p.label}</span>
+                                    {renderPermBadge(detail)}
+                                  </div>
+                                  <div className="text-[9px] text-slate-400 font-normal mt-0.5">
+                                    {isLocked && detail?.lockedReason ? detail.lockedReason : p.description}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Group 3: المراجعات والوقت والتقارير */}
+                      <div>
+                        <span className="text-[10px] font-bold text-emerald-900 block mb-1">3. المراجعات والوقت والتقارير</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                          {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "reviews_time").map((p) => {
+                            const detail = currentDetails[p.key];
+                            const isLocked = detail?.source === "locked";
+                            const checked = detail ? detail.effective : !!editCustomPermissions[p.key];
+                            return (
+                              <label
+                                key={p.key}
+                                className={cn(
+                                  "flex items-start gap-2 p-2 rounded-lg border text-[10px] transition-colors",
+                                  isLocked ? "cursor-not-allowed opacity-75 bg-slate-100 border-slate-200 text-slate-500" : "cursor-pointer",
+                                  !isLocked && checked
+                                    ? "bg-emerald-50 border-emerald-200 text-emerald-950 font-semibold"
+                                    : !isLocked
+                                    ? "bg-white border-slate-200 text-slate-600"
+                                    : ""
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={isLocked}
+                                  onChange={(e) =>
+                                    setEditCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
+                                  }
+                                  className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 disabled:opacity-50"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span className="leading-tight truncate">{p.label}</span>
+                                    {renderPermBadge(detail)}
+                                  </div>
+                                  <div className="text-[9px] text-slate-400 font-normal mt-0.5">
+                                    {isLocked && detail?.lockedReason ? detail.lockedReason : p.description}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-
-                  <div className="space-y-3 bg-slate-50/80 p-3 rounded-xl border border-slate-200">
-                    {/* Group 1: النظام والإدارة */}
-                    <div>
-                      <span className="text-[10px] font-bold text-purple-900 block mb-1">1. النظام والإدارة</span>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                        {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "system").map((p) => {
-                          const checked = !!editCustomPermissions[p.key];
-                          return (
-                            <label
-                              key={p.key}
-                              className={cn(
-                                "flex items-start gap-2 p-2 rounded-lg border text-[10px] cursor-pointer transition-colors",
-                                checked
-                                  ? "bg-purple-50 border-purple-200 text-purple-950 font-semibold"
-                                  : "bg-white border-slate-200 text-slate-600"
-                              )}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(e) =>
-                                  setEditCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
-                                }
-                                className="mt-0.5 rounded text-purple-600 focus:ring-purple-500"
-                              />
-                              <div>
-                                <div className="leading-tight">{p.label}</div>
-                                <div className="text-[9px] text-slate-400 font-normal mt-0.5">{p.description}</div>
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Group 2: إدارة العملاء والمهام */}
-                    <div>
-                      <span className="text-[10px] font-bold text-sky-900 block mb-1">2. إدارة العملاء والمهام</span>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                        {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "clients_tasks").map((p) => {
-                          const checked = !!editCustomPermissions[p.key];
-                          return (
-                            <label
-                              key={p.key}
-                              className={cn(
-                                "flex items-start gap-2 p-2 rounded-lg border text-[10px] cursor-pointer transition-colors",
-                                checked
-                                  ? "bg-sky-50 border-sky-200 text-sky-950 font-semibold"
-                                  : "bg-white border-slate-200 text-slate-600"
-                              )}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(e) =>
-                                  setEditCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
-                                }
-                                className="mt-0.5 rounded text-sky-600 focus:ring-sky-500"
-                              />
-                              <div>
-                                <div className="leading-tight">{p.label}</div>
-                                <div className="text-[9px] text-slate-400 font-normal mt-0.5">{p.description}</div>
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Group 3: المراجعات والوقت والتقارير */}
-                    <div>
-                      <span className="text-[10px] font-bold text-emerald-900 block mb-1">3. المراجعات والوقت والتقارير</span>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                        {GRANULAR_PERMISSIONS_LIST.filter((p) => p.category === "reviews_time").map((p) => {
-                          const checked = !!editCustomPermissions[p.key];
-                          return (
-                            <label
-                              key={p.key}
-                              className={cn(
-                                "flex items-start gap-2 p-2 rounded-lg border text-[10px] cursor-pointer transition-colors",
-                                checked
-                                  ? "bg-emerald-50 border-emerald-200 text-emerald-950 font-semibold"
-                                  : "bg-white border-slate-200 text-slate-600"
-                              )}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(e) =>
-                                  setEditCustomPermissions((prev) => ({ ...prev, [p.key]: e.target.checked }))
-                                }
-                                className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500"
-                              />
-                              <div>
-                                <div className="leading-tight">{p.label}</div>
-                                <div className="text-[9px] text-slate-400 font-normal mt-0.5">{p.description}</div>
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
 
               <div>
                 <label className="font-bold text-slate-700 block mb-1">التخصصات المعتمدة:</label>

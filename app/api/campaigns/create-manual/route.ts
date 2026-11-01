@@ -4,6 +4,7 @@ import {
   validateSameOrigin,
   isFullAdminRole,
   hasGranularPermission,
+  canAccessClient,
 } from "@/lib/auth/server-auth";
 import { createManualContentCalendar } from "@/lib/services/content-calendars";
 
@@ -20,14 +21,14 @@ export async function POST(req: NextRequest) {
   const authRes = await requireWorkspaceMembership(req);
   if (!authRes.success) return authRes.errorResponse;
 
-  const { membership } = authRes.data;
+  const { membership, admin } = authRes.data;
   if (
     !isFullAdminRole(membership.role) &&
     membership.role !== "manager" &&
     !hasGranularPermission(membership, "create_campaigns")
   ) {
     return NextResponse.json(
-      { error: "غير مصرح: إنشاء خطط المحتوى والحملات مقتصر على الإدارة." },
+      { error: "غير مصرح: إنشاء خطط المحتوى والحملات يتطلب صلاحية إنشاء الكامبينز." },
       { status: 403 }
     );
   }
@@ -47,6 +48,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "تنسيق الشهر غير صالح. يرجى استخدام تنسيق YYYY-MM." },
         { status: 400 }
+      );
+    }
+
+    const inScope = await canAccessClient(admin, membership, clientId);
+    if (!inScope) {
+      return NextResponse.json(
+        { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+        { status: 403 }
       );
     }
 

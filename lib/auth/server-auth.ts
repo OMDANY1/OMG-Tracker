@@ -9,6 +9,14 @@ import type {
   GranularPermissionKey,
 } from "@/types/database";
 import { DEFAULT_ROLE_PERMISSIONS } from "@/types/database";
+import {
+  resolveEffectivePermissions,
+  resolvePermissionDetails,
+  resolveEffectiveAccessScope,
+  mergeCustomPermissions,
+  isClientInMemberScope,
+  type PermissionResolutionDetail,
+} from "@/lib/auth/permissions";
 
 export interface ActiveMembershipContext {
   id: string;
@@ -18,7 +26,12 @@ export interface ActiveMembershipContext {
   role: RosterRole;
   accessScope?: AccessScope;
   customPermissions?: CustomPermissions;
+  effectivePermissions?: Required<CustomPermissions>;
+  permissionDetails?: Record<GranularPermissionKey, PermissionResolutionDetail>;
   displayName?: string;
+  jobTitle?: string;
+  specialties?: string[];
+  updatedAt?: string;
 }
 
 export type AuthResult<T> =
@@ -134,7 +147,7 @@ export async function requireAuthenticatedUser(
 
 /**
  * Ensures caller is an authenticated user belonging to an active workspace membership.
- * Derives workspace_id, role, and roster_person_id exclusively from DB.
+ * Derives workspace_id, role, access_scope, custom_permissions, and roster_person_id exclusively from DB.
  */
 export async function requireWorkspaceMembership(
   req: NextRequest,
@@ -180,7 +193,18 @@ export async function requireWorkspaceMembership(
       access_scope,
       custom_permissions,
       is_active,
-      roster_person:roster_people!fk_membership_roster(id, display_name, job_title, is_active)
+      updated_at,
+      roster_person:roster_people!fk_membership_roster(
+        id,
+        display_name,
+        job_title,
+        role,
+        access_scope,
+        custom_permissions,
+        specialties,
+        is_active,
+        updated_at
+      )
     `)
     .eq("user_id", user.id)
     .eq("is_active", true)
@@ -212,7 +236,7 @@ export async function requireWorkspaceMembership(
     };
   }
 
-  const role = membership.role as ActiveMembershipContext["role"];
+  const role = (membership.role || rosterObj.role || "designer") as RosterRole;
 
   if (options?.allowedRoles && !options.allowedRoles.includes(role)) {
     return {
@@ -224,6 +248,25 @@ export async function requireWorkspaceMembership(
     };
   }
 
+  const mergedCustom = mergeCustomPermissions(
+    membership.custom_permissions as CustomPermissions,
+    rosterObj?.custom_permissions as CustomPermissions
+  );
+  const effectivePermissions = resolveEffectivePermissions(
+    role,
+    membership.custom_permissions as CustomPermissions,
+    rosterObj?.custom_permissions as CustomPermissions
+  );
+  const permissionDetails = resolvePermissionDetails(
+    role,
+    membership.custom_permissions as CustomPermissions,
+    rosterObj?.custom_permissions as CustomPermissions
+  );
+  const accessScope = resolveEffectiveAccessScope(
+    role,
+    (membership.access_scope || rosterObj?.access_scope) as AccessScope
+  );
+
   return {
     success: true,
     data: {
@@ -234,9 +277,14 @@ export async function requireWorkspaceMembership(
         userId: membership.user_id,
         rosterPersonId: membership.roster_person_id,
         role,
-        accessScope: membership.access_scope as AccessScope,
-        customPermissions: (membership.custom_permissions || {}) as CustomPermissions,
+        accessScope,
+        customPermissions: mergedCustom,
+        effectivePermissions,
+        permissionDetails,
         displayName: rosterObj?.display_name,
+        jobTitle: rosterObj?.job_title,
+        specialties: Array.isArray(rosterObj?.specialties) ? rosterObj.specialties : [],
+        updatedAt: membership.updated_at || rosterObj?.updated_at,
       },
       admin,
       serverClient,
@@ -246,32 +294,17 @@ export async function requireWorkspaceMembership(
 
 /**
  * Checks whether an active membership has a specific granular permission.
- * Owner and Company Owner have all permissions unconditionally.
- * Business Owner Viewer has no modification or export permissions.
- * Marketing Director has only view_reports_and_export permission.
- * Explicit custom_permissions overrides default role permissions for other roles.
+ * Uses canonical permission resolution (locked role invariants -> custom_permissions -> role defaults).
  */
 export function hasGranularPermission(
   membership: ActiveMembershipContext,
   permission: GranularPermissionKey
 ): boolean {
-  if (membership.role === "owner" || membership.role === "company_owner") return true;
-  if (membership.role === "business_owner_viewer") return false;
-  if (membership.role === "marketing_director") {
-    return permission === "view_time_logs" || permission === "export_reports";
-  }
-
-  // Check custom override if explicitly defined
-  if (
-    membership.customPermissions &&
-    typeof membership.customPermissions[permission] === "boolean"
-  ) {
-    return Boolean(membership.customPermissions[permission]);
-  }
-
-  // Fall back to default role permission matrix
-  const roleDefaults = DEFAULT_ROLE_PERMISSIONS[membership.role];
-  return Boolean(roleDefaults?.[permission]);
+  const effective = resolveEffectivePermissions(
+    membership.role,
+    membership.customPermissions
+  );
+  return Boolean(effective[permission]);
 }
 
 /**
@@ -299,6 +332,136 @@ export async function requireGranularPermission(
         { status: 403 }
       ),
     };
+  }
+
+  return result;
+}
+
+/**
+ * Computes the set of client IDs accessible to the given membership according to their role and access_scope.
+ * Returns null if the member has full workspace scope ('workspace').
+ */
+export async function getAccessibleClientIds(
+  admin: SupabaseClient,
+  membership: ActiveMembershipContext
+): Promise<Set<string> | null> {
+  const effectiveScope = resolveEffectiveAccessScope(
+    membership.role,
+    membership.accessScope
+  );
+
+  if (effectiveScope === "workspace") {
+    return null; // Full workspace client access
+  }
+
+  const [clientsRes, rosterRes] = await Promise.all([
+    admin
+      .from("clients")
+      .select(`
+        id,
+        owner_roster_id,
+        team_assignment:client_team_assignments(*),
+        tasks(id, primary_assignee_id, reviewer_id)
+      `)
+      .eq("workspace_id", membership.workspaceId),
+    admin
+      .from("roster_people")
+      .select("id, role, specialties, is_active")
+      .eq("workspace_id", membership.workspaceId)
+      .eq("is_active", true),
+  ]);
+
+  const clients = clientsRes.data || [];
+  const rosterMembers = rosterRes.data || [];
+  const allowedIds = new Set<string>();
+
+  for (const client of clients) {
+    if (
+      isClientInMemberScope({
+        client,
+        rosterPersonId: membership.rosterPersonId,
+        role: membership.role,
+        accessScope: effectiveScope,
+        rosterMembers,
+      })
+    ) {
+      allowedIds.add(client.id);
+    }
+  }
+
+  return allowedIds;
+}
+
+/**
+ * Checks whether the caller's membership is allowed to access a specific client within their scope.
+ */
+export async function canAccessClient(
+  admin: SupabaseClient,
+  membership: ActiveMembershipContext,
+  clientId: string
+): Promise<boolean> {
+  if (!clientId) return false;
+  const effectiveScope = resolveEffectiveAccessScope(
+    membership.role,
+    membership.accessScope
+  );
+  if (effectiveScope === "workspace") {
+    const { data: client } = await admin
+      .from("clients")
+      .select("id")
+      .eq("id", clientId)
+      .eq("workspace_id", membership.workspaceId)
+      .maybeSingle();
+    return Boolean(client);
+  }
+
+  const allowedIds = await getAccessibleClientIds(admin, membership);
+  if (!allowedIds) return true;
+  return allowedIds.has(clientId);
+}
+
+/**
+ * Enforces that the caller has the `create_campaigns` granular permission (e.g. Owner, Company Owner,
+ * Manager, Strategy Lead, or a member explicitly granted `create_campaigns`) AND (when clientId is provided)
+ * that the target client is within the caller's resolved access scope.
+ */
+export async function requireCampaignAccess(
+  req: NextRequest,
+  clientId?: string | null
+): Promise<
+  AuthResult<{
+    user: User;
+    membership: ActiveMembershipContext;
+    admin: SupabaseClient;
+    serverClient: SupabaseClient;
+  }>
+> {
+  const result = await requireWorkspaceMembership(req);
+  if (!result.success) return result;
+
+  const { membership, admin } = result.data;
+
+  if (!hasGranularPermission(membership, "create_campaigns")) {
+    return {
+      success: false,
+      errorResponse: NextResponse.json(
+        { error: "غير مصرح: ليس لديك صلاحية إنشاء أو إدارة الكامبينز وتقاويم المحتوى." },
+        { status: 403 }
+      ),
+    };
+  }
+
+  if (clientId) {
+    const inScope = await canAccessClient(admin, membership, clientId);
+    if (!inScope) {
+      return {
+        success: false,
+        errorResponse: NextResponse.json(
+          { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+          { status: 403 }
+        ),
+      };
+    }
   }
 
   return result;
@@ -387,8 +550,9 @@ export async function requireMarketingDirector(
 }
 
 /**
- * Ensures caller is specifically authorized to export data/reports (Owner, Company Owner, Manager, Marketing Director).
- * Rejects Business Owner Viewer, Designers, and other unprivileged roles.
+ * Ensures caller is specifically authorized to export data/reports (Owner, Company Owner, Manager, Marketing Director,
+ * or any member explicitly granted `export_reports`).
+ * Rejects Business Owner Viewer, Designers without grant, and other unprivileged roles.
  */
 export async function requireExportPermission(
   req: NextRequest
@@ -400,14 +564,15 @@ export async function requireExportPermission(
     serverClient: SupabaseClient;
   }>
 > {
-  const result = await requireWorkspaceMembership(req, {
-    allowedRoles: ["owner", "company_owner", "manager", "marketing_director"],
-  });
+  const result = await requireWorkspaceMembership(req);
   if (!result.success) {
+    return result;
+  }
+  if (!hasGranularPermission(result.data.membership, "export_reports")) {
     return {
       success: false,
       errorResponse: NextResponse.json(
-        { error: "غير مصرح: صلاحية تصدير التقارير وسجلات الوقت مقتصرة على الإدارة ومدير التسويق فقط." },
+        { error: "غير مصرح: صلاحية تصدير التقارير وسجلات الوقت مقتصرة على الإدارة ومدير التسويق والمصرح لهم فقط." },
         { status: 403 }
       ),
     };

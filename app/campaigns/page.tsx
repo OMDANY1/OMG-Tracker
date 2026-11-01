@@ -128,6 +128,7 @@ export default function CampaignsPage() {
   const [allTeamMembers, setAllTeamMembers] = useState<any[]>([]);
   const [reviewRules, setReviewRules] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState<boolean>(false);
+  const [permissionNotice, setPermissionNotice] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -241,25 +242,31 @@ export default function CampaignsPage() {
     }
   }, []);
 
-  const fetchData = async () => {
-    setLoading(true);
-    setApiError(null);
+  const fetchData = async (isBackground: boolean | any = false) => {
+    if (isBackground !== true) {
+      setLoading(true);
+      setApiError(null);
+    }
     try {
       // Parallel fetch: /api/clients & /api/campaigns/calendar (monthly states)
       const [clientsRes, calRes] = await Promise.all([
-        fetch("/api/clients"),
-        fetch(`/api/campaigns/calendar?monthKey=${selectedMonth}`),
+        fetch("/api/clients", { cache: "no-store" }),
+        fetch(`/api/campaigns/calendar?monthKey=${selectedMonth}`, { cache: "no-store" }),
       ]);
 
       let rawClientsList: any[] = [];
       const calendarsMap = new Map<string, any>();
+      let resolvedCanManageCampaigns = false;
+      let accessibleClientSet: Set<string> | null = null;
 
       // 1. Process /api/clients
       if (clientsRes.ok) {
         const clData = await clientsRes.json();
         if (Array.isArray(clData.clients)) {
           rawClientsList = clData.clients;
-          setAllClients(clData.clients);
+        }
+        if (Array.isArray(clData.accessibleClientIds)) {
+          accessibleClientSet = new Set(clData.accessibleClientIds);
         }
         const normalizeRoster = (arr: any[]) =>
           arr.map((d: any) => ({
@@ -275,7 +282,9 @@ export default function CampaignsPage() {
         if (Array.isArray(clData.videoEditors)) setVideoEditors(normalizeRoster(clData.videoEditors));
         if (Array.isArray(clData.allTeamMembers)) setAllTeamMembers(normalizeRoster(clData.allTeamMembers));
         if (Array.isArray(clData.reviewRules)) setReviewRules(clData.reviewRules);
-        if (typeof clData.isOwner === "boolean") setIsOwner(clData.isOwner);
+        resolvedCanManageCampaigns = Boolean(
+          clData.canManageCampaigns ?? clData.isOwner
+        );
         if (clData.workspaceId) setWorkspaceId(clData.workspaceId);
       } else {
         console.error("Clients API error status:", clientsRes.status);
@@ -285,7 +294,16 @@ export default function CampaignsPage() {
       if (calRes.ok) {
         const calData = await calRes.json();
         if (calData.workspaceId) setWorkspaceId(calData.workspaceId);
-        if (typeof calData.isOwner === "boolean") setIsOwner(calData.isOwner);
+        if (typeof calData.canManageCampaigns === "boolean") {
+          resolvedCanManageCampaigns = calData.canManageCampaigns;
+        } else if (typeof calData.isOwner === "boolean") {
+          resolvedCanManageCampaigns = calData.isOwner;
+        }
+        if (Array.isArray(calData.accessibleClientIds)) {
+          accessibleClientSet = new Set(calData.accessibleClientIds);
+        } else if (calData.accessibleClientIds === null) {
+          accessibleClientSet = null;
+        }
         if (Array.isArray(calData.clientCalendars)) {
           calData.clientCalendars.forEach((row: any) => {
             if (row.client?.id) {
@@ -297,14 +315,39 @@ export default function CampaignsPage() {
         console.error("Calendar API error status:", calRes.status);
       }
 
+      setIsOwner((prevCanManage) => {
+        if (isBackground && prevCanManage !== resolvedCanManageCampaigns) {
+          if (!resolvedCanManageCampaigns) {
+            setPermissionNotice(
+              "تم تحديث صلاحيات حسابك من قِبل الإدارة: تم إيقاف صلاحية إنشاء ورفع الكامبينز، وأصبحت هذه الصفحة في وضع القراءة والمراجعة فقط."
+            );
+            setShowUploadModal(false);
+            setShowAddPostModal(false);
+          } else {
+            setPermissionNotice(
+              "تم تحديث صلاحيات حسابك من قِبل الإدارة: تم تفعيل صلاحية إنشاء ورفع الكامبينز ضمن نطاق العملاء المخصص لك."
+            );
+          }
+        }
+        return resolvedCanManageCampaigns;
+      });
+
       // If both completely failed, throw error
       if (!clientsRes.ok && !calRes.ok) {
         throw new Error("تعذر الاتصال بالخادم لجلب بيانات العملاء والتقويمات.");
       }
 
-      // 3. Guaranteed Left Join: every client from rawClientsList is represented
-      if (rawClientsList.length > 0) {
-        const combined: ClientCalendarRow[] = rawClientsList.map((client) => {
+      // Filter clients strictly to the caller's resolved scope (e.g. Strategy Team scope for Strategy Lead)
+      const scopedClientsList = rawClientsList.filter((client: any) => {
+        if (client.inCampaignScope === false) return false;
+        if (accessibleClientSet !== null && !accessibleClientSet.has(client.id)) return false;
+        return true;
+      });
+      setAllClients(scopedClientsList);
+
+      // 3. Guaranteed Left Join: every client in the caller's scope is represented
+      if (scopedClientsList.length > 0) {
+        const combined: ClientCalendarRow[] = scopedClientsList.map((client) => {
           const calRow = calendarsMap.get(client.id);
           if (calRow) {
             return {
@@ -319,7 +362,7 @@ export default function CampaignsPage() {
                 state: client.state,
               },
               aiConfidence: calRow.campaign?.ai_overall_confidence || null,
-              detectedPostCount: calRow.campaign?.detected_post_count || calRow.postCount,
+              detectedPostCount: calRow.campaign?.ai_detected_post_count || calRow.campaign?.detected_post_count || calRow.postCount,
             };
           }
 
@@ -355,14 +398,35 @@ export default function CampaignsPage() {
       }
     } catch (err: any) {
       console.error("fetchData error:", err);
-      setApiError(err.message || "تعذر تحميل بيانات العملاء. يرجى التحقق من الاتصال بالخادم.");
+      if (isBackground !== true) {
+        setApiError(err.message || "تعذر تحميل بيانات العملاء. يرجى التحقق من الاتصال بالخادم.");
+      }
     } finally {
-      setLoading(false);
+      if (isBackground !== true) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    fetchData();
+    fetchData(false);
+  }, [selectedMonth]);
+
+  // Live permission & client scope propagation without logout or page reload
+  useEffect(() => {
+    const handleLivePermissionOrScopeChange = () => {
+      fetchData(true);
+    };
+    window.addEventListener("membership_data_changed", handleLivePermissionOrScopeChange);
+    window.addEventListener("team_data_changed", handleLivePermissionOrScopeChange);
+    window.addEventListener("clients_data_changed", handleLivePermissionOrScopeChange);
+    window.addEventListener("window_reconnected_sync", handleLivePermissionOrScopeChange);
+    return () => {
+      window.removeEventListener("membership_data_changed", handleLivePermissionOrScopeChange);
+      window.removeEventListener("team_data_changed", handleLivePermissionOrScopeChange);
+      window.removeEventListener("clients_data_changed", handleLivePermissionOrScopeChange);
+      window.removeEventListener("window_reconnected_sync", handleLivePermissionOrScopeChange);
+    };
   }, [selectedMonth]);
 
   const changeMonth = (delta: number) => {
@@ -476,6 +540,13 @@ export default function CampaignsPage() {
               setPollingStatusText(`حدث ضغط مؤقت، جاري إعادة المحاولة تلقائياً (محاولة ${job.attempt_count || 1})...`);
             } else {
               setPollingStatusText("في الانتظار... جاري استلام المهمة من قبل الـWorker...");
+              if (attemptsCount === 2 && campaignId) {
+                fetch("/api/campaigns/process-calendar", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ campaignId }),
+                }).catch(() => {});
+              }
             }
           }
         }
@@ -993,7 +1064,7 @@ export default function CampaignsPage() {
             </button>
           </div>
 
-          {/* Standalone Primary Upload Button for Owner */}
+          {/* Standalone Primary Upload Button for Authorized Campaign Managers */}
           {isOwner && (
             <button
               onClick={() => handleOpenUpload(null)}
@@ -1005,6 +1076,22 @@ export default function CampaignsPage() {
           )}
         </div>
       </div>
+
+      {permissionNotice && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 flex items-center justify-between gap-3 text-xs text-amber-900 shadow-xs">
+          <div className="flex items-center gap-2 font-bold">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>{permissionNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setPermissionNotice(null)}
+            className="text-amber-700 hover:text-amber-900 font-bold px-2 py-0.5 rounded-lg hover:bg-amber-100"
+          >
+            إغلاق
+          </button>
+        </div>
+      )}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">

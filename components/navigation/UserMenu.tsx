@@ -27,7 +27,7 @@ export function UserMenu() {
 
     const fetchMe = async () => {
       try {
-        const res = await fetch("/api/auth/me");
+        const res = await fetch("/api/auth/me", { cache: "no-store" });
         if (res.ok) {
           const data = await res.json();
           setProfile({
@@ -55,8 +55,21 @@ export function UserMenu() {
 
     fetchMe();
 
+    const handleLiveAuthRefresh = () => {
+      fetchMe();
+    };
+    window.addEventListener("membership_data_changed", handleLiveAuthRefresh);
+    window.addEventListener("team_data_changed", handleLiveAuthRefresh);
+    window.addEventListener("window_reconnected_sync", handleLiveAuthRefresh);
+
     const supabase = createClient();
-    if (!supabase) return;
+    if (!supabase) {
+      return () => {
+        window.removeEventListener("membership_data_changed", handleLiveAuthRefresh);
+        window.removeEventListener("team_data_changed", handleLiveAuthRefresh);
+        window.removeEventListener("window_reconnected_sync", handleLiveAuthRefresh);
+      };
+    }
 
     const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
@@ -67,6 +80,9 @@ export function UserMenu() {
     });
 
     return () => {
+      window.removeEventListener("membership_data_changed", handleLiveAuthRefresh);
+      window.removeEventListener("team_data_changed", handleLiveAuthRefresh);
+      window.removeEventListener("window_reconnected_sync", handleLiveAuthRefresh);
       authListener.subscription.unsubscribe();
     };
   }, []);

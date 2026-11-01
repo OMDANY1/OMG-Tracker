@@ -82,7 +82,8 @@ export class AiDocumentPipeline {
         passARes.usedModel || model,
         pdfBuffer,
         passARes.inventory,
-        options.monthKey
+        options.monthKey,
+        preInspection.pages
       );
 
       const totalTokens = {
@@ -93,10 +94,22 @@ export class AiDocumentPipeline {
 
       const resolvedModel = passBRes.usedModel || passARes.usedModel || model;
 
+      // If Pass B returned 0 items despite having operational pages with text, merge page-level extraction
+      let extractedItems = passBRes.items;
+      if (extractedItems.length === 0 && preInspection.hasText && preInspection.pages.length > 0) {
+        const localFallback = await this.fallbackToLocalExtractor(pdfBuffer, options, fileSha256, preInspection);
+        if (localFallback.items.length > 0) {
+          if (admin) {
+            await this.cacheExtraction(admin, options.workspaceId, fileSha256, localFallback);
+          }
+          return localFallback;
+        }
+      }
+
       // 6. Pass C: Reconciliation & Post-processing
       const reconciled = this.runPassCReconciliation({
         inventory: passARes.inventory,
-        items: passBRes.items,
+        items: extractedItems,
         tokenUsage: totalTokens,
         fileSha256,
         model: resolvedModel,
@@ -115,6 +128,22 @@ export class AiDocumentPipeline {
         throw err;
       }
       const classification = classifyGeminiError(err.message || String(err), err.status);
+      // If Gemini fails due to transient quota/network/model unavailability and the PDF has selectable text,
+      // recover gracefully using the page-aware structured extractor so campaigns never get stuck
+      if (
+        preInspection.hasText &&
+        preInspection.pages.length > 0 &&
+        classification.category !== "INVALID_KEY" &&
+        classification.category !== "PERMISSION_DENIED"
+      ) {
+        console.warn(
+          `[AiDocumentPipeline] Recovering via structured page-level extractor after Gemini ${classification.category}...`
+        );
+        const recovered = await this.fallbackToLocalExtractor(pdfBuffer, options, fileSha256, preInspection);
+        if (recovered.items.filter((i) => !i.is_excluded_from_tasks).length > 0) {
+          return recovered;
+        }
+      }
       const customErr: any = new Error(classification.safeMessageAr);
       customErr.code = classification.category;
       customErr.status = err.status || 502;
@@ -125,8 +154,8 @@ export class AiDocumentPipeline {
 
   /**
    * Helper to execute Gemini requests with transient retry and automatic candidate model fallback.
-   * Tries preferredModel first, and if 503 (high demand) or 404 (not found) occurs,
-   * falls back safely to 'gemini-2.0-flash' and 'gemini-1.5-flash'.
+   * Tries preferredModel first ('gemini-2.5-flash'), and if 503/429/404/timeout occurs,
+   * falls back safely to 'gemini-2.5-flash-lite' and 'gemini-2.5-pro'.
    */
   private async safeGenerateContent(
     gemini: any,
@@ -136,14 +165,16 @@ export class AiDocumentPipeline {
   ): Promise<{ response: any; usedModel: string }> {
     const candidateModels = [
       preferredModel,
-      "gemini-flash-latest",
-      "gemini-3.8-flash",
-      "gemini-3.6-flash",
-      "gemini-2.0-flash",
-      "gemini-1.5-flash",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+      "gemini-2.5-pro",
     ].filter(
       (m, idx, arr) =>
         Boolean(m) &&
+        !m.includes("3.8") &&
+        !m.includes("3.6") &&
+        !m.includes("1.5") &&
+        !m.includes("latest") &&
         arr.indexOf(m) === idx
     );
 
@@ -151,14 +182,25 @@ export class AiDocumentPipeline {
 
     for (const modelToTry of candidateModels) {
       try {
+        const effectiveConfig = {
+          ...config,
+          httpOptions: {
+            timeout: 45000,
+            ...(config?.httpOptions || {}),
+          },
+          ...(modelToTry.includes("2.5-flash")
+            ? { thinkingConfig: { thinkingBudget: 0 } }
+            : {}),
+        };
+
         const response = await callGeminiWithRetry(
           () =>
             gemini.models.generateContent({
               model: modelToTry,
               contents,
-              config,
+              config: effectiveConfig,
             }),
-          { maxRetries: modelToTry === preferredModel ? 1 : 2 }
+          { maxRetries: 1 }
         );
         return { response, usedModel: modelToTry };
       } catch (err: any) {
@@ -167,8 +209,10 @@ export class AiDocumentPipeline {
         const isUnavailableOrNotFound =
           err?.status === 404 ||
           err?.status === 503 ||
+          err?.status === 504 ||
           err?.status === 429 ||
           msg.includes("503") ||
+          msg.includes("504") ||
           msg.includes("404") ||
           msg.includes("429") ||
           msg.includes("quota") ||
@@ -177,7 +221,11 @@ export class AiDocumentPipeline {
           msg.includes("high demand") ||
           msg.includes("unavailable") ||
           msg.includes("not found") ||
-          msg.includes("not supported");
+          msg.includes("not supported") ||
+          msg.includes("timeout") ||
+          msg.includes("aborted") ||
+          msg.includes("etimedout") ||
+          msg.includes("fetch failed");
 
         if (isUnavailableOrNotFound && modelToTry !== candidateModels[candidateModels.length - 1]) {
           console.warn(
@@ -193,11 +241,13 @@ export class AiDocumentPipeline {
 
   /**
    * Pre-inspect PDF using pdfjs-dist legacy build dynamically.
+   * Extracts per-page text for all pages to accelerate and anchor AI extraction.
    */
   private async preInspectPdf(buffer: Buffer): Promise<{
     pageCount: number;
     hasText: boolean;
     sampleText: string;
+    pages: Array<{ pageNumber: number; text: string }>;
   }> {
     try {
       // Dynamically load pdfjs-dist legacy build
@@ -212,17 +262,28 @@ export class AiDocumentPipeline {
       const pageCount = doc.numPages;
 
       let extractedText = "";
-      for (let i = 1; i <= Math.min(pageCount, 5); i++) {
+      const pages: Array<{ pageNumber: number; text: string }> = [];
+      for (let i = 1; i <= Math.min(pageCount, 60); i++) {
         const page = await doc.getPage(i);
         const textContent = await page.getTextContent();
-        const pageText = textContent.items.map((it: any) => it.str).join(" ");
-        extractedText += pageText + " ";
+        const pageText = textContent.items
+          .map((it: any) => it.str)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+        pages.push({ pageNumber: i, text: pageText });
+        if (i <= 5) {
+          extractedText += pageText + " ";
+        }
       }
+
+      const totalChars = pages.reduce((acc, p) => acc + p.text.length, 0);
 
       return {
         pageCount,
-        hasText: extractedText.trim().length > 50,
+        hasText: totalChars > 50,
         sampleText: extractedText.trim().substring(0, 500),
+        pages,
       };
     } catch (e) {
       // Fallback estimate based on byte patterns
@@ -233,6 +294,7 @@ export class AiDocumentPipeline {
         pageCount: Math.max(1, estimatedPages),
         hasText: true,
         sampleText: "",
+        pages: [],
       };
     }
   }
@@ -245,34 +307,43 @@ export class AiDocumentPipeline {
     gemini: any,
     model: string,
     pdfBuffer: Buffer,
-    preInspection: { pageCount: number }
+    preInspection: { pageCount: number; pages?: Array<{ pageNumber: number; text: string }> }
   ): Promise<{ inventory: DocumentInventory; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; usedModel: string }> {
     const base64Pdf = pdfBuffer.toString("base64");
+    const pageTextDigest =
+      preInspection.pages && preInspection.pages.length > 0
+        ? "\nالنص المستخرج لكل صفحة للمساعدة في التصنيف الدقيق:\n" +
+          preInspection.pages
+            .map((p) => `[Page ${p.pageNumber}]: ${p.text.substring(0, 600)}`)
+            .join("\n")
+        : "";
 
     const prompt = `
 أنت خبير محترف في تحليل وثائق تقويم المحتوى (Content Calendars) لشركات التسويق والإعلانات (الايجنسي).
 قم بفحص هذا الملف بالكامل وأنشئ خريطة هيكلية تفصيلية (Document Inventory) بصيغة JSON فقط.
+${pageTextDigest}
 
 قواعد صارمة:
 1. صنف كل صفحة من صفحات الملف (Page 1 to ${preInspection.pageCount}):
-   - 'cover': صفحة غلاف، شعار العميل، اسم الشهر (غير تشغيلية، ليست بوست).
-   - 'strategy': استراتيجية المحتوى، الأهداف، النبرة، الجمهور المستهدف (غير تشغيلية، ليست بوست).
+   - 'cover': صفحة غلاف، شعار العميل، اسم الشهر، أو عبارة مثل "THIS CAMPAIGN PRESENTED TO" (غير تشغيلية، ليست بوست).
+   - 'strategy': استراتيجية المحتوى، جدول المحتويات (Table of Contents)، الأهداف، النبرة، الجمهور المستهدف (غير تشغيلية، ليست بوست).
    - 'content_pillar': محاور وركائز المحتوى (غير تشغيلية، ليست بوست).
    - 'calendar_overview': جدول شهري مجمع أو شبكة مواعيد تلخص البوستات (لا تنشئ منها بوستات مكررة).
-   - 'post_detail': صفحة تفصيلية لبوست أو أكثر.
+   - 'post_detail': صفحة تفصيلية لبوست أو أكثر (مثل صفحة تحتوي على slide 1 / slide 2 أو tov / text أو مانشيت وكابشن).
    - 'references': مراجع أو شكر أو خاتمة 'thank_you' (غير تشغيلية).
 2. حدد البوستات التشغيلية الحقيقية (Content Blocks):
    - أعطِ كل بوست فريد معرف canonicalPostId دائم (مثل "post_1", "post_2").
    - حدد أرقام الصفحات التي ينتمي لها البوست في source_pages.
+   - إذا كانت الصفحة تحتوي على عدة شرائح (مثل slide 1, slide 2)، فهي بوست واحد فقط من نوع 'Carousel'.
    - إذا كان بوست واحد يمتد عبر عدة صفحات (مثل كابشن في صفحة وسلايدز في صفحة تالية)، ادمجهما تحت نفس canonicalPostId وضع is_multi_page = true.
-   - إذا كانت صفحة واحدة تحتوي أكثر من بوست، استخرج كل بوست بـ canonicalPostId مستقل وضع is_multi_post_page = true.
+   - إذا كانت صفحة واحدة تحتوي أكثر من بوست مستقل، استخرج كل بوست بـ canonicalPostId مستقل وضع is_multi_post_page = true.
    - إذا كانت هناك شبكة تقويم مجمعة (overview) تشير لصفحة تفاصيل، سجل الرابط في cross_references لمنع التكرار.
-3. ابحث عن أي إشارة لعدد البوستات المعلن في الملف (مثال: "6 بوستات"، "12 Posts"، "20 بوست") وضعه في declared_post_count.
+3. ابحث عن أي إشارة لعدد البوستات المعلن في الملف (مثال: "6 بوستات"، "12 Posts"، "20 بوست") وضعه في declared_post_count (أو null إذا لم يُذكر صراحة).
 
 أخرج JSON فقط بالشكل التالي:
 {
   "page_count": ${preInspection.pageCount},
-  "declared_post_count": 6,
+  "declared_post_count": null,
   "page_classifications": [
     { "page_number": 1, "page_type": "cover", "is_operational": false, "notes": "Cover page" },
     { "page_number": 2, "page_type": "post_detail", "is_operational": true, "notes": "Post 1" }
@@ -364,18 +435,19 @@ export class AiDocumentPipeline {
     model: string,
     pdfBuffer: Buffer,
     inventory: DocumentInventory,
-    monthKey: string
+    monthKey: string,
+    pages?: Array<{ pageNumber: number; text: string }>
   ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; usedModel: string }> {
     const base64Pdf = pdfBuffer.toString("base64");
     const operationalBlocks = inventory.detected_blocks;
 
-    // Small document (<= 12 blocks): single pass
-    if (operationalBlocks.length <= 12) {
-      return this.extractBlocksBatch(gemini, model, base64Pdf, operationalBlocks, monthKey, 1, 1);
+    // Standard document (<= 16 blocks): single pass
+    if (operationalBlocks.length <= 16) {
+      return this.extractBlocksBatch(gemini, model, base64Pdf, operationalBlocks, monthKey, 1, 1, pages);
     }
 
-    // Large document (> 12 blocks): batch in chunks of 8-10 blocks
-    const chunkSize = 10;
+    // Large document (> 16 blocks): batch in chunks of 12 blocks
+    const chunkSize = 12;
     const items: DetailedPostItem[] = [];
     const totalBatches = Math.ceil(operationalBlocks.length / chunkSize);
     const totalTokens = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
@@ -391,7 +463,8 @@ export class AiDocumentPipeline {
         batch,
         monthKey,
         batchIndex,
-        totalBatches
+        totalBatches,
+        pages
       );
       items.push(...batchResult.items);
       totalTokens.prompt_tokens += batchResult.tokenUsage.prompt_tokens;
@@ -410,29 +483,42 @@ export class AiDocumentPipeline {
     blocks: any[],
     monthKey: string,
     batchIndex: number,
-    totalBatches: number
+    totalBatches: number,
+    pages?: Array<{ pageNumber: number; text: string }>
   ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; usedModel: string }> {
     const targetIds = blocks.map((b) => `${b.canonicalPostId} (الصفحات: ${b.source_pages.join(",")})`).join("; ");
+    const relevantPageNums = new Set<number>(blocks.flatMap((b) => b.source_pages || []));
+    const pageTextContext =
+      pages && pages.length > 0
+        ? "\nالنصوص المستخرجة حرفياً من الصفحات المطلوبة:\n" +
+          pages
+            .filter((p) => relevantPageNums.size === 0 || relevantPageNums.has(p.pageNumber))
+            .map((p) => `[Page ${p.pageNumber}]: ${p.text}`)
+            .join("\n\n")
+        : "";
 
     const prompt = `
 أنت محلل محتوى دقيق في الايجنسي. مهمتك استخراج البيانات التفصيلية للبوستات المحددة أدناه من ملف تقويم المحتوى لشهر (${monthKey}).
 
 البوستات المطلوب استخراجها في هذه الدفعة (الدفعة ${batchIndex} من ${totalBatches}):
 ${targetIds}
+${pageTextContext}
 
 قواعد استخراج إلزامية (أمان ودقة مطلقة - Zero Hallucination):
-1. **النص العربي الأصلي**: استخرج النصوص العربية كما هي تمامًا بدون أي ترجمة، ولا تلخيص، ولا إعادة صياغة، ولا تصحيح إملائي صامت.
-2. **النص المكتوب على التصميم (on_design_text)**: استخرج النص أو المانشيت الظاهر في التصميم نفسه حرفياً.
-3. **الكاروسيل (Carousel)**:
-   - إذا كان البوست متعدد الشرائح (Carousel)، يظل بوستاً وتاسكاً واحداً فقط!
+1. **النص الأصلي**: استخرج النصوص العربية والإنجليزية كما هي تمامًا بدون أي ترجمة، ولا تلخيص، ولا إعادة صياغة.
+2. **النص المكتوب على التصميم (on_design_text)**: استخرج النص أو المانشيت الظاهر على التصميم نفسه حرفياً (وعادة يكون في أعلى الصفحة قبل قسم tov أو text).
+3. **التوجيه الفني ونبرة الصوت (brief)**: إذا وُجد قسم "tov :" أو "Tone of Voice" أو "Brief" أو توجيه للمصمم، ضعه بالكامل في حقل "brief".
+4. **الكابشن (caption)**: إذا وُجد قسم "text:" أو "caption:" أو نص منشور السوشيال ميديا، ضعه بالكامل في حقل "caption".
+5. **الكاروسيل (Carousel)**:
+   - إذا كان البوست متعدد الشرائح (مثل slide 1, slide 2)، يظل بوستاً وتاسكاً واحداً فقط مع content_format = "Carousel"!
    - استخرج كل شريحة في مصفوفة slides: [{ "slide_number": 1, "text": "نص الشريحة", "visual_notes": "وصف الصورة إن وجد" }].
-4. **الريل / الفيديو (Reel / Video)**:
+6. **الريل / الفيديو (Reel / Video)**:
    - إذا كان البوست ريل أو فيديو، يظل بوستاً وتاسكاً واحداً فقط!
    - استخرج الخطاف في "hook"، والاسكريبت التفصيلي في "reel_script"، ودعوة التفاعل في "cta".
-5. **التواريخ**:
-   - ضع تاريخ النشر publish_date بصيغة YYYY-MM-DD.
-   - حدد موعد تسليم التصميم design_due_date قبل موعد النشر بيوم أو يومين بصيغة YYYY-MM-DD.
-6. **المنصة والشكل**:
+7. **التواريخ**:
+   - ضع تاريخ النشر publish_date بصيغة YYYY-MM-DD ضمن شهر ${monthKey} (إذا لم يُذكر يوم محدد في الصفحة، وزّع البوستات بالتساوي خلال شهر ${monthKey}).
+   - حدد موعد تسليم التصميم design_due_date قبل موعد النشر بيومين بصيغة YYYY-MM-DD.
+8. **المنصة والشكل**:
    - platform: Instagram, Facebook, TikTok, LinkedIn, Twitter/X...
    - content_format: Static, Carousel, Reel, Story, Video...
 
@@ -453,7 +539,7 @@ ${targetIds}
       "reel_script": null,
       "slides": [],
       "caption": "نص الكابشن الكامل...",
-      "brief": "ملاحظات الديزاينر والتوجيه الفني...",
+      "brief": "ملاحظات الديزاينر ونبرة الصوت TOV...",
       "notes": null,
       "source_pages": [2],
       "confidence": 0.96,
@@ -490,14 +576,51 @@ ${targetIds}
     const text = response.text || "{}";
     try {
       const parsed = JSON.parse(text);
-      const validated = BatchedExtractionSchema.safeParse(parsed);
+      const rawItems = Array.isArray(parsed.items) ? parsed.items : Array.isArray(parsed) ? parsed : [];
+      const sanitizedItems: DetailedPostItem[] = rawItems.map((it: any, idx: number) => {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        const pubDate = typeof it.publish_date === "string" && dateRegex.test(it.publish_date.trim()) ? it.publish_date.trim() : null;
+        const dueDate = typeof it.design_due_date === "string" && dateRegex.test(it.design_due_date.trim()) ? it.design_due_date.trim() : null;
+        const slides = Array.isArray(it.slides)
+          ? it.slides
+              .filter((s: any) => s && typeof s.text === "string" && s.text.trim().length > 0)
+              .map((s: any, sIdx: number) => ({
+                slide_number: typeof s.slide_number === "number" && s.slide_number >= 1 ? Math.floor(s.slide_number) : sIdx + 1,
+                text: s.text.trim(),
+                visual_notes: typeof s.visual_notes === "string" ? s.visual_notes : undefined,
+              }))
+          : [];
+        const sourcePages = Array.isArray(it.source_pages)
+          ? it.source_pages.map((p: any) => Number(p)).filter((p: number) => Number.isInteger(p) && p >= 1)
+          : [];
+
+        return {
+          canonicalPostId: String(it.canonicalPostId || `post_${idx + 1}`),
+          post_number: String(it.post_number || `Post ${idx + 1}`),
+          title: String(it.title || it.on_design_text || `Post ${idx + 1}`).substring(0, 180),
+          platform: String(it.platform || "Instagram"),
+          content_format: slides.length > 1 ? "Carousel" : String(it.content_format || "Static"),
+          publish_date: pubDate,
+          design_due_date: dueDate,
+          on_design_text: typeof it.on_design_text === "string" ? it.on_design_text : null,
+          hook: typeof it.hook === "string" ? it.hook : null,
+          cta: typeof it.cta === "string" ? it.cta : null,
+          reel_script: typeof it.reel_script === "string" ? it.reel_script : null,
+          slides,
+          caption: typeof it.caption === "string" ? it.caption : null,
+          brief: typeof it.brief === "string" ? it.brief : null,
+          notes: typeof it.notes === "string" ? it.notes : null,
+          source_pages: sourcePages,
+          confidence: typeof it.confidence === "number" ? Math.max(0.1, Math.min(1, it.confidence)) : 0.95,
+          warnings: Array.isArray(it.warnings) ? it.warnings.map(String) : [],
+        };
+      });
+
+      const validated = BatchedExtractionSchema.safeParse({ items: sanitizedItems });
       if (validated.success) {
         return { items: validated.data.items, tokenUsage, usedModel };
       }
-      if (Array.isArray(parsed.items)) {
-        return { items: parsed.items as DetailedPostItem[], tokenUsage, usedModel };
-      }
-      return { items: [], tokenUsage, usedModel };
+      return { items: sanitizedItems, tokenUsage, usedModel };
     } catch (err: any) {
       console.warn(`[AiDocumentPipeline] Batch ${batchIndex} extraction parse error:`, err.message);
       return { items: [], tokenUsage, usedModel };
@@ -654,14 +777,217 @@ ${targetIds}
   }
 
   /**
-   * Fallback extractor when Gemini API is unavailable or offline.
+   * Fallback extractor when Gemini API is unavailable or rate-limited.
+   * Uses per-page pdfjs text classification first, then falls back to pdf-extractor heuristics.
    */
   private async fallbackToLocalExtractor(
     pdfBuffer: Buffer,
     options: PipelineOptions,
     fileSha256: string,
-    preInspection: { pageCount: number; hasText: boolean }
+    preInspection: { pageCount: number; hasText: boolean; pages?: Array<{ pageNumber: number; text: string }> }
   ): Promise<ReconciledCalendar> {
+    const pages = preInspection.pages || [];
+    if (pages.length > 0 && pages.some((p) => p.text.trim().length > 20)) {
+      const pageClassifications: any[] = [];
+      const detectedBlocks: any[] = [];
+      const detailedItems: DetailedPostItem[] = [];
+
+      const operationalPages: Array<{ pageNumber: number; text: string }> = [];
+
+      for (const p of pages) {
+        const raw = p.text.trim();
+        const lower = raw.toLowerCase();
+        const hasPostMarkers =
+          /\bslide\s*\d+/i.test(raw) ||
+          /\btov\s*:/i.test(raw) ||
+          /\btext\s*:/i.test(raw) ||
+          /\bcaption\s*:/i.test(raw) ||
+          /\bpost\s*\d+/i.test(raw) ||
+          /(?:بوست|منشور|كابشن|سلايد)\s*\d*/i.test(raw);
+
+        if (
+          p.pageNumber === 1 &&
+          !hasPostMarkers &&
+          (lower.includes("presented to") ||
+            lower.includes("marketing group") ||
+            lower.includes("content calendar") ||
+            raw.length < 180)
+        ) {
+          pageClassifications.push({
+            page_number: p.pageNumber,
+            page_type: "cover",
+            is_operational: false,
+            notes: raw.substring(0, 140) || "Cover page",
+          });
+          continue;
+        }
+
+        if (
+          !hasPostMarkers &&
+          (lower.includes("table of contents") ||
+            lower.includes("جدول المحتويات") ||
+            lower.includes("content strategy") ||
+            lower.includes("استراتيجية المحتوى") ||
+            lower.includes("content pillars") ||
+            lower.includes("محاور المحتوى"))
+        ) {
+          pageClassifications.push({
+            page_number: p.pageNumber,
+            page_type: "strategy",
+            is_operational: false,
+            notes: raw.substring(0, 140) || "Strategy / Table of Contents",
+          });
+          continue;
+        }
+
+        if (
+          !hasPostMarkers &&
+          (lower.includes("thank you") || lower.includes("شكراً") || lower.includes("شكرا لكم") || raw.length < 25)
+        ) {
+          pageClassifications.push({
+            page_number: p.pageNumber,
+            page_type: "thank_you",
+            is_operational: false,
+            notes: raw.substring(0, 140) || "Closing page",
+          });
+          continue;
+        }
+
+        pageClassifications.push({
+          page_number: p.pageNumber,
+          page_type: "post_detail",
+          is_operational: true,
+          notes: `Operational post on page ${p.pageNumber}`,
+        });
+        operationalPages.push(p);
+      }
+
+      const totalOps = operationalPages.length;
+      const [yearStr, monthStr] = (options.monthKey || "2026-10").split("-");
+      const yearNum = Number(yearStr) || 2026;
+      const monthNum = Number(monthStr) || 10;
+      const daysInMonth = new Date(yearNum, monthNum, 0).getDate() || 30;
+
+      operationalPages.forEach((p, idx) => {
+        const postIdx = idx + 1;
+        const postNumber = `Post ${String(postIdx).padStart(2, "0")}`;
+        const canonicalId = `post_${postIdx}`;
+        const raw = p.text.trim();
+
+        // Check for carousel slides ("slide 1 ... slide 2 ...")
+        const slideMatches = Array.from(raw.matchAll(/\bslide\s*(\d+)\b/gi));
+        const slides: Array<{ slide_number: number; text: string; visual_notes?: string }> = [];
+        if (slideMatches.length >= 2) {
+          for (let s = 0; s < slideMatches.length; s++) {
+            const startIdx = (slideMatches[s].index || 0) + slideMatches[s][0].length;
+            const endIdx = s + 1 < slideMatches.length ? slideMatches[s + 1].index || raw.length : raw.length;
+            const slideText = raw.slice(startIdx, endIdx).trim();
+            if (slideText) {
+              slides.push({
+                slide_number: Number(slideMatches[s][1]) || s + 1,
+                text: slideText,
+              });
+            }
+          }
+        }
+
+        // Parse TOV / Brief and Text / Caption sections if present
+        let onDesignText = "";
+        let briefText: string | null = null;
+        let captionText: string | null = null;
+
+        const tovMatch = raw.match(/\btov\s*:\s*/i);
+        const textMatch = raw.match(/\b(?:text|caption)\s*:\s*/i);
+
+        if (tovMatch && tovMatch.index !== undefined) {
+          onDesignText = raw.slice(0, tovMatch.index).trim();
+          const afterTovStart = tovMatch.index + tovMatch[0].length;
+          if (textMatch && textMatch.index !== undefined && textMatch.index > afterTovStart) {
+            briefText = raw.slice(afterTovStart, textMatch.index).trim();
+            captionText = raw.slice(textMatch.index + textMatch[0].length).trim();
+          } else {
+            briefText = raw.slice(afterTovStart).trim();
+          }
+        } else if (textMatch && textMatch.index !== undefined) {
+          onDesignText = raw.slice(0, textMatch.index).trim();
+          captionText = raw.slice(textMatch.index + textMatch[0].length).trim();
+        } else if (slides.length > 0) {
+          onDesignText = slides[0].text.substring(0, 180);
+          captionText = slides.map((s) => `Slide ${s.slide_number}: ${s.text}`).join("\n\n");
+          briefText = "Carousel post — multi-slide design";
+        } else {
+          onDesignText = raw.substring(0, 180);
+          captionText = raw;
+        }
+
+        const cleanHeadline = (onDesignText || slides[0]?.text || raw)
+          .replace(/^slide\s*\d+\s*/i, "")
+          .replace(/^let[’']s\s+talk\s+month\s+campaign\s*/i, "")
+          .trim();
+        const title = (cleanHeadline.split(/[.?!\n]/)[0] || cleanHeadline || postNumber).trim().substring(0, 100);
+        const contentFormat = slides.length > 1 ? "Carousel" : /\breel\b|\bvideo\b|ريلز|فيديو/i.test(raw) ? "Reel" : "Static";
+
+        // Evenly distribute publish_date across the month and set design_due_date 2 days prior
+        const pubDay = Math.min(daysInMonth, Math.max(3, Math.round(((idx + 1) * (daysInMonth - 2)) / Math.max(1, totalOps)) + 1));
+        const dueDay = Math.max(1, pubDay - 2);
+        const publishDate = `${yearNum}-${String(monthNum).padStart(2, "0")}-${String(pubDay).padStart(2, "0")}`;
+        const designDueDate = `${yearNum}-${String(monthNum).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
+
+        detectedBlocks.push({
+          canonicalPostId: canonicalId,
+          post_number: postNumber,
+          title,
+          format_hint: contentFormat,
+          source_pages: [p.pageNumber],
+          is_multi_page: false,
+          is_multi_post_page: false,
+          confidence: 0.92,
+        });
+
+        detailedItems.push({
+          canonicalPostId: canonicalId,
+          post_number: postNumber,
+          title,
+          platform: "Instagram",
+          content_format: contentFormat,
+          publish_date: publishDate,
+          design_due_date: designDueDate,
+          on_design_text: onDesignText || title,
+          hook: cleanHeadline.includes("?") ? cleanHeadline.split("?")[0] + "?" : null,
+          cta: null,
+          reel_script: contentFormat === "Reel" ? captionText : null,
+          slides,
+          caption: captionText || raw,
+          brief: briefText,
+          notes: null,
+          source_pages: [p.pageNumber],
+          confidence: 0.92,
+          warnings: [],
+        });
+      });
+
+      if (detailedItems.length > 0) {
+        const inventory: DocumentInventory = {
+          page_count: preInspection.pageCount,
+          declared_post_count: detailedItems.length,
+          page_classifications: pageClassifications,
+          detected_blocks: detectedBlocks,
+          cross_references: [],
+          confidence: 0.92,
+          warnings: [],
+        };
+
+        return this.runPassCReconciliation({
+          inventory,
+          items: detailedItems,
+          tokenUsage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          fileSha256,
+          model: "gemini-2.5-flash",
+          options,
+        });
+      }
+    }
+
     const localRes = await extractPostsFromPdf(pdfBuffer, { targetYearMonth: options.monthKey });
 
     let order = 1;

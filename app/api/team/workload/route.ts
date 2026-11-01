@@ -1,5 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireOwner, requireOwnerOrViewer } from "@/lib/auth/server-auth";
+import {
+  resolveEffectivePermissions,
+  resolvePermissionDetails,
+  resolveEffectiveAccessScope,
+  mergeCustomPermissions,
+  isClientInMemberScope,
+  type PermissionResolutionDetail,
+} from "@/lib/auth/permissions";
+import type {
+  AccessScope,
+  CustomPermissions,
+  GranularPermissionKey,
+  RosterRole,
+} from "@/types/database";
 
 export const dynamic = "force-dynamic";
 
@@ -8,8 +22,15 @@ export interface DesignerWorkloadMetric {
   displayName: string;
   jobTitle: string;
   role: string;
+  accessScope: AccessScope;
+  access_scope: AccessScope;
+  customPermissions: CustomPermissions;
+  custom_permissions: CustomPermissions;
+  effectivePermissions: Required<CustomPermissions>;
+  permissionDetails: Record<GranularPermissionKey, PermissionResolutionDetail>;
   specialties?: string[];
   hasJoined?: boolean;
+  isActive?: boolean;
   weeklyHours: number;
   reservedHours: number;
   activeClientsCount: number;
@@ -48,12 +69,12 @@ export async function GET(req: NextRequest) {
     const [rosterRes, membershipsRes, capacitiesRes, clientsRes, assignmentsRes, tasksRes, invitesRes] = await Promise.all([
       admin
         .from("roster_people")
-        .select("id, display_name, job_title, is_active, specialties, role, access_scope, custom_permissions")
+        .select("id, display_name, job_title, is_active, specialties, role, access_scope, custom_permissions, updated_at")
         .eq("workspace_id", workspaceId)
         .order("display_name", { ascending: true }),
       admin
         .from("workspace_memberships")
-        .select("roster_person_id, role, user_id")
+        .select("roster_person_id, role, user_id, access_scope, custom_permissions, updated_at")
         .eq("workspace_id", workspaceId)
         .eq("is_active", true),
       admin
@@ -111,12 +132,10 @@ export async function GET(req: NextRequest) {
       assignmentsByClientId.set(a.client_id, a);
     }
 
-    const membershipRoleMap = new Map<string, string>();
-    const membershipUserMap = new Map<string, string | null>();
+    const membershipMap = new Map<string, any>();
     for (const m of memberships) {
       if (m.roster_person_id) {
-        if (m.role) membershipRoleMap.set(m.roster_person_id, m.role);
-        membershipUserMap.set(m.roster_person_id, m.user_id || null);
+        membershipMap.set(m.roster_person_id, m);
       }
     }
 
@@ -139,36 +158,51 @@ export async function GET(req: NextRequest) {
     const in14Days = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
 
     const metrics: DesignerWorkloadMetric[] = roster.map((person) => {
-      let role = membershipRoleMap.get(person.id) || (person as any).role;
-      if (!role) {
-        const title = (person.job_title || "").toLowerCase();
-        const name = (person.display_name || "").toLowerCase();
-        if (name.includes("عماد") || title.includes("owner") || title.includes("art director")) {
-          role = "owner";
-        } else if (name.includes("ندى") || title.includes("senior") || title.includes("reviewer")) {
-          role = "senior_reviewer";
-        } else if (title.includes("marketing")) {
-          role = "marketing_director";
-        } else if (title.includes("strategy lead")) {
-          role = "strategy_lead";
-        } else if (title.includes("strategist")) {
-          role = "strategist";
-        } else if (title.includes("content") || title.includes("writer")) {
-          role = "content_writer";
-        } else if (title.includes("video") || title.includes("editor")) {
-          role = "video_editor";
-        } else {
-          role = "designer";
-        }
-      }
+      const mem = membershipMap.get(person.id);
+      // Security role is strictly derived from DB role columns (never inferred from display_name or job_title)
+      const role = ((mem?.role || (person as any).role || "designer") as RosterRole);
+
+      const resolvedAccessScope = resolveEffectiveAccessScope(
+        role,
+        (mem?.access_scope || (person as any).access_scope) as AccessScope
+      );
+      const mergedCustomPerms = mergeCustomPermissions(
+        mem?.custom_permissions as CustomPermissions,
+        (person as any).custom_permissions as CustomPermissions
+      );
+      const effectivePermissions = resolveEffectivePermissions(
+        role,
+        mem?.custom_permissions as CustomPermissions,
+        (person as any).custom_permissions as CustomPermissions
+      );
+      const permissionDetails = resolvePermissionDetails(
+        role,
+        mem?.custom_permissions as CustomPermissions,
+        (person as any).custom_permissions as CustomPermissions
+      );
+
       const assignedClients = (clients || []).filter((c) => {
         const team = assignmentsByClientId.get(c.id);
+        if (role === "strategy_lead" || role === "senior_reviewer") {
+          return isClientInMemberScope({
+            client: { ...c, team_assignment: team },
+            rosterPersonId: person.id,
+            role,
+            accessScope: resolvedAccessScope,
+            rosterMembers: roster,
+          });
+        }
         if (team) {
           return (
             team.primary_designer_id === person.id ||
             team.primary_copywriter_id === person.id ||
             team.primary_strategist_id === person.id ||
             team.primary_video_editor_id === person.id ||
+            team.strategy_reviewer_id === person.id ||
+            team.copywriting_reviewer_id === person.id ||
+            team.design_reviewer_id === person.id ||
+            team.video_reviewer_id === person.id ||
+            team.strategy_lead_id === person.id ||
             c.owner_roster_id === person.id
           );
         }
@@ -231,7 +265,7 @@ export async function GET(req: NextRequest) {
       if (loadRatio < 60) status = "underutilized";
       else if (loadRatio > 90) status = "overloaded";
 
-      const userId = membershipUserMap.get(person.id);
+      const userId = mem?.user_id || null;
       // Strictly verify if member has truly joined:
       // Must have userId AND (be the active Owner/Company Owner OR have an accepted invitation)
       const hasJoined = Boolean(userId && (role === "owner" || role === "company_owner" || acceptedInvitesRosterSet.has(person.id)));
@@ -240,9 +274,14 @@ export async function GET(req: NextRequest) {
         id: person.id,
         displayName: person.display_name,
         jobTitle: person.job_title || "Graphic Designer",
-        role: role || "designer",
-        accessScope: (person as any).access_scope || "assigned_tasks",
-        customPermissions: (person as any).custom_permissions || {},
+        role,
+        accessScope: resolvedAccessScope,
+        access_scope: resolvedAccessScope,
+        customPermissions: effectivePermissions,
+        custom_permissions: effectivePermissions,
+        rawCustomPermissions: mergedCustomPerms,
+        effectivePermissions,
+        permissionDetails,
         specialties: (person as any).specialties || [],
         hasJoined,
         isActive: person.is_active !== false,
@@ -270,17 +309,24 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({
-      success: true,
-      workspaceId,
-      isOwner,
-      isViewer,
-      callerRole: membership.role,
-      invitationsPaused: Boolean(ws?.invitations_paused),
-      members: metrics,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        workspaceId,
+        isOwner,
+        isViewer,
+        callerRole: membership.role,
+        callerRosterId: membership.rosterPersonId,
+        invitationsPaused: Boolean(ws?.invitations_paused),
+        members: metrics,
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        },
+      }
+    );
   } catch (err: any) {
-    console.error("Error in /api/team/workload:", err);
-    return NextResponse.json({ error: err.message || "Failed to load team workload" }, { status: 500 });
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

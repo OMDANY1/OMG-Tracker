@@ -298,16 +298,22 @@ async function runSecurityTests() {
     return { allowed: false, status: 403 };
   }
 
-  const ownerAccess = evaluateTaskAccess(sampleTask, mockOwnerMembership);
+  const effectiveSampleTask = sampleTask || {
+    workspace_id: "a180f3ab-33bb-4431-88a4-592add7c773e",
+    primary_assignee_id: "00a38eae-a90e-4796-89e4-56394e987666",
+    reviewer_id: null,
+  };
+
+  const ownerAccess = evaluateTaskAccess(effectiveSampleTask, mockOwnerMembership);
   assert(ownerAccess.allowed && ownerAccess.status === 200, "Owner has universal task access (200)");
 
-  const assignedAccess = evaluateTaskAccess(sampleTask, mockDesignerMembership);
+  const assignedAccess = evaluateTaskAccess(effectiveSampleTask, mockDesignerMembership);
   assert(assignedAccess.allowed && assignedAccess.status === 200, "Assigned designer has task access (200)");
 
-  const unassignedAccess = evaluateTaskAccess(sampleTask, mockUnassignedDesignerMembership);
+  const unassignedAccess = evaluateTaskAccess(effectiveSampleTask, mockUnassignedDesignerMembership);
   assert(!unassignedAccess.allowed && unassignedAccess.status === 403, "Unassigned designer is rejected with 403");
 
-  const foreignAccess = evaluateTaskAccess(sampleTask, mockForeignDesignerMembership);
+  const foreignAccess = evaluateTaskAccess(effectiveSampleTask, mockForeignDesignerMembership);
   assert(!foreignAccess.allowed && foreignAccess.status === 404, "Cross-workspace user is rejected with 404");
 
   // Body Spoofing Invariant Test

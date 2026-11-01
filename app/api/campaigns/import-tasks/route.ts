@@ -4,6 +4,7 @@ import {
   validateSameOrigin,
   isFullAdminRole,
   hasGranularPermission,
+  canAccessClient,
 } from "@/lib/auth/server-auth";
 
 export async function POST(req: NextRequest) {
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
       !hasGranularPermission(membership, "create_campaigns")
     ) {
       return NextResponse.json(
-        { error: "اعتماد واستيراد التاسكات مسموح فقط للمدير العام أو الشريك." },
+        { error: "اعتماد واستيراد التاسكات يتطلب صلاحية إنشاء وإدارة الكامبينز." },
         { status: 403 }
       );
     }
@@ -64,6 +65,14 @@ export async function POST(req: NextRequest) {
 
     if (!campaign) {
       return NextResponse.json({ error: "سجل التقويم غير موجود في مساحة العمل." }, { status: 404 });
+    }
+
+    const inScope = await canAccessClient(admin, membership, campaign.client_id);
+    if (!inScope) {
+      return NextResponse.json(
+        { error: "غير مصرح: هذا العميل خارج نطاق الفريق أو العملاء المسندين إليك." },
+        { status: 403 }
+      );
     }
 
     const rawTeam = (campaign?.client as any)?.team_assignment;

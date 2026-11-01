@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
+import {
+  requireOwner,
+  requireCampaignAccess,
+  validateSameOrigin,
+} from "@/lib/auth/server-auth";
 import { uploadCalendarFileOnly as uploadContentCalendar } from "@/lib/services/content-calendars";
 import { AiJobQueue } from "@/lib/services/ai-job-queue";
 
@@ -16,24 +20,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const authRes = await requireOwner(req);
-    if (!authRes.success) {
-      return authRes.errorResponse;
-    }
-
-    const { membership } = authRes.data;
-
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
     const clientId = formData.get("clientId") as string | null;
     const monthKey = formData.get("monthKey") as string | null;
 
     if (!file || !clientId || !monthKey) {
+      // First verify authentication/permission even if form fields are incomplete
+      const preAuth = await requireCampaignAccess(req);
+      if (!preAuth.success) return preAuth.errorResponse;
       return NextResponse.json(
         { error: "الملف والعميل والشهر مطلوبون لإتمام عملية الرفع." },
         { status: 400 }
       );
     }
+
+    // Verify caller has `create_campaigns` AND `clientId` is within caller's scope (e.g. Strategy Team scope for Arwa)
+    const authRes = await requireCampaignAccess(req, clientId);
+    if (!authRes.success) {
+      return authRes.errorResponse;
+    }
+
+    const { membership } = authRes.data;
 
     if (!/^\d{4}-\d{2}$/.test(monthKey)) {
       return NextResponse.json(
@@ -64,7 +72,7 @@ export async function POST(req: NextRequest) {
       createdById: membership.rosterPersonId,
     });
 
-    // 3. Return HTTP 202 Accepted immediately - processing is handled durably by Supabase Cron Worker
+    // 3. Return HTTP 202 Accepted immediately - processing is handled durably by Supabase Cron Worker / client trigger
     return NextResponse.json(
       {
         success: true,
@@ -83,4 +91,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
-

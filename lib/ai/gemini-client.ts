@@ -22,26 +22,31 @@ export function isGeminiConfigured(): boolean {
 }
 
 export const VALID_GEMINI_MODELS = [
-  "gemini-flash-latest",
-  "gemini-3.8-flash",
-  "gemini-3.6-flash",
   "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-2.5-pro",
-  "gemini-1.5-pro",
+  "gemini-2.0-flash",
 ];
 
 /**
  * Returns the Gemini document analysis model.
- * Defaults centrally to 'gemini-flash-latest' (or process.env.GEMINI_DOCUMENT_MODEL).
+ * Sanitizes deprecated or invalid model names (such as 3.8, 3.6, 1.5, or hanging latest aliases)
+ * and defaults centrally to 'gemini-2.5-flash'.
  */
 export function getGeminiModel(): string {
   const envModel = process.env.GEMINI_DOCUMENT_MODEL?.trim();
-  if (envModel && envModel.length > 0) {
+  if (
+    envModel &&
+    envModel.length > 0 &&
+    !envModel.includes("3.8") &&
+    !envModel.includes("3.6") &&
+    !envModel.includes("1.5") &&
+    !envModel.includes("latest") &&
+    VALID_GEMINI_MODELS.includes(envModel)
+  ) {
     return envModel;
   }
-  return "gemini-flash-latest";
+  return "gemini-2.5-flash";
 }
 
 /**
@@ -53,7 +58,12 @@ export function getGeminiClient(): GoogleGenAI | null {
   if (!apiKey) {
     return null;
   }
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      timeout: 45000,
+    },
+  });
 }
 
 /**
@@ -151,6 +161,22 @@ export function classifyGeminiError(errMsg: string, status?: number): {
     };
   }
 
+  if (
+    status === 503 ||
+    status === 504 ||
+    msg.includes("timeout") ||
+    msg.includes("aborted") ||
+    msg.includes("fetch failed") ||
+    msg.includes("etimedout") ||
+    msg.includes("overloaded") ||
+    msg.includes("unavailable")
+  ) {
+    return {
+      category: "NETWORK_ERROR",
+      safeMessageAr: "انتهت مهلة الاتصال بخدمة الذكاء الاصطناعي أو الخدمة مشغولة مؤقتاً. ستتم إعادة المحاولة تلقائياً.",
+    };
+  }
+
   return {
     category: "UNKNOWN_ERROR",
     safeMessageAr: `خطأ في معالجة الذكاء الاصطناعي: ${errMsg}`,
@@ -190,6 +216,10 @@ export async function testGeminiConnection(): Promise<{
       await client.models.generateContent({
         model: m,
         contents: "ping",
+        config: {
+          httpOptions: { timeout: 8000 },
+          ...(m.includes("2.5-flash") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+        },
       });
       return {
         ok: true,
@@ -198,7 +228,12 @@ export async function testGeminiConnection(): Promise<{
     } catch (err: any) {
       lastErrorMsg = err?.message || String(err);
       lastClassification = classifyGeminiError(lastErrorMsg, err?.status);
-      if (lastClassification.category === "MODEL_NOT_FOUND" && m !== modelsToTry[modelsToTry.length - 1]) {
+      if (
+        (lastClassification.category === "MODEL_NOT_FOUND" ||
+          lastClassification.category === "QUOTA_EXCEEDED" ||
+          lastClassification.category === "NETWORK_ERROR") &&
+        m !== modelsToTry[modelsToTry.length - 1]
+      ) {
         continue;
       }
       break;

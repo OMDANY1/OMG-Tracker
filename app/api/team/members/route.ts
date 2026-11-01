@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireOwner, validateSameOrigin } from "@/lib/auth/server-auth";
+import {
+  resolveEffectiveAccessScope,
+  sanitizeCustomPermissionsForRole,
+} from "@/lib/auth/permissions";
 import type { RosterRole } from "@/types/database";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +45,11 @@ export async function POST(req: NextRequest) {
       : [];
 
     const validRole: RosterRole = role || "designer";
+    const sanitizedScope = resolveEffectiveAccessScope(validRole, accessScope);
+    const sanitizedPermissions = sanitizeCustomPermissionsForRole(
+      validRole,
+      customPermissions
+    );
 
     // Call admin_create_roster_person RPC with authenticated serverClient
     const { data: result, error: rpcErr } = await serverClient.rpc("admin_create_roster_person", {
@@ -49,8 +58,8 @@ export async function POST(req: NextRequest) {
       p_job_title: jobTitle.trim(),
       p_specialties: validSpecialties,
       p_role: validRole,
-      p_access_scope: accessScope || "assigned_tasks",
-      p_custom_permissions: customPermissions || {},
+      p_access_scope: sanitizedScope,
+      p_custom_permissions: sanitizedPermissions,
     });
 
     if (rpcErr) {
