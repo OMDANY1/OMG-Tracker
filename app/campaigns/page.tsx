@@ -492,19 +492,63 @@ export default function CampaignsPage() {
     setUploadError(null);
     setUploadStage("uploading");
 
-    const formData = new FormData();
-    formData.append("file", uploadFile);
-    formData.append("clientId", uploadClientId);
-    formData.append("monthKey", uploadMonth || selectedMonth);
+    const targetMonthKey = uploadMonth || selectedMonth;
+
+    const parseJsonResponseSafely = async (res: Response, defaultErrMsg: string) => {
+      const rawText = await res.text();
+      if (res.status === 413 || rawText.startsWith("Request Entity Too Large")) {
+        throw new Error("حجم الملف أكبر من حد الطلب المباشر. جاري استخدام الرفع المباشر للتخزين السحابي.");
+      }
+      try {
+        return JSON.parse(rawText);
+      } catch {
+        throw new Error(defaultErrMsg);
+      }
+    };
 
     try {
-      // Step 1: Fast Storage Upload & Durable Job Enqueue (returns 202 Accepted)
+      // Step 1A: Request Signed Upload URL (tiny JSON request, bypasses Vercel 4.5MB limit)
+      const initRes = await fetch("/api/campaigns/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create_upload_url",
+          clientId: uploadClientId,
+          monthKey: targetMonthKey,
+          fileName: uploadFile.name,
+          fileSize: uploadFile.size,
+        }),
+      });
+      const initData = await parseJsonResponseSafely(initRes, "تعذر تهيئة رابط رفع الملف.");
+      if (!initRes.ok) {
+        throw new Error(initData.error || "فشل تهيئة رابط رفع الملف.");
+      }
+
+      // Step 1B: Direct PUT Upload from Browser to Supabase Storage (supports up to 15MB+)
+      const storagePutRes = await fetch(initData.signedUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/pdf" },
+        body: uploadFile,
+      });
+      if (!storagePutRes.ok) {
+        throw new Error("فشل رفع ملف الـ PDF إلى التخزين السحابي. يرجى التحقق من اتصال الإنترنت والمحاولة مجدداً.");
+      }
+
+      // Step 1C: Finalize Campaign Record & Enqueue Durable AI Job (tiny JSON request)
       const uploadRes = await fetch("/api/campaigns/upload", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "finalize_upload",
+          campaignId: initData.campaignId,
+          clientId: uploadClientId,
+          monthKey: targetMonthKey,
+          fileName: uploadFile.name,
+          storagePath: initData.storagePath,
+        }),
       });
 
-      const uploadData = await uploadRes.json();
+      const uploadData = await parseJsonResponseSafely(uploadRes, "فشل تسجيل ملف التقويم بعد الرفع.");
       if (!uploadRes.ok) {
         throw new Error(uploadData.error || "فشل رفع الملف إلى التخزين.");
       }

@@ -123,6 +123,162 @@ export async function uploadCalendarFileOnly(params: {
   };
 }
 
+export async function createCalendarSignedUploadUrl(params: {
+  workspaceId: string;
+  clientId: string;
+  monthKey: string;
+  fileName: string;
+}) {
+  const admin = createAdminClient();
+  if (!admin) throw new Error("تعذر الاتصال بقاعدة البيانات.");
+
+  if (!/^\d{4}-\d{2}$/.test(params.monthKey)) {
+    throw new Error("تنسيق الشهر غير صالح. يجب أن يكون YYYY-MM.");
+  }
+
+  const { data: client, error: clientErr } = await admin
+    .from("clients")
+    .select("id, name")
+    .eq("workspace_id", params.workspaceId)
+    .eq("id", params.clientId)
+    .single();
+
+  if (clientErr || !client) {
+    throw new Error("العميل غير موجود في مساحة العمل.");
+  }
+
+  const campaignId = crypto.randomUUID();
+  const safeFileName = (params.fileName || "calendar.pdf").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const storagePath = `${params.workspaceId}/${params.clientId}/${params.monthKey}/${campaignId}/${safeFileName}`;
+
+  const { data: signedData, error: signErr } = await admin.storage
+    .from("content-calendars")
+    .createSignedUploadUrl(storagePath, { upsert: true });
+
+  if (signErr || !signedData?.signedUrl) {
+    throw new Error(`فشل إنشاء رابط الرفع الآمن: ${signErr?.message || "خطأ غير معروف"}`);
+  }
+
+  return {
+    campaignId,
+    storagePath,
+    signedUrl: signedData.signedUrl,
+    token: signedData.token,
+  };
+}
+
+export async function finalizeCalendarSignedUpload(params: {
+  workspaceId: string;
+  campaignId: string;
+  clientId: string;
+  monthKey: string;
+  fileName: string;
+  storagePath: string;
+  uploaderRosterId: string;
+}) {
+  const admin = createAdminClient();
+  if (!admin) throw new Error("تعذر الاتصال بقاعدة البيانات.");
+
+  if (!/^\d{4}-\d{2}$/.test(params.monthKey)) {
+    throw new Error("تنسيق الشهر غير صالح. يجب أن يكون YYYY-MM.");
+  }
+
+  const expectedPrefix = `${params.workspaceId}/${params.clientId}/${params.monthKey}/${params.campaignId}/`;
+  if (!params.storagePath || !params.storagePath.startsWith(expectedPrefix)) {
+    throw new Error("مسار الملف المرفوع غير صالح أو لا يطابق العميل والشهر المحددين.");
+  }
+
+  const { data: client, error: clientErr } = await admin
+    .from("clients")
+    .select("id, name, owner_roster_id, difficulty")
+    .eq("workspace_id", params.workspaceId)
+    .eq("id", params.clientId)
+    .single();
+
+  if (clientErr || !client) {
+    throw new Error("العميل غير موجود في مساحة العمل.");
+  }
+
+  const { data: fileBlob, error: downloadErr } = await admin.storage
+    .from("content-calendars")
+    .download(params.storagePath);
+
+  if (downloadErr || !fileBlob) {
+    throw new Error(`تعذر التحقق من الملف المرفوع في التخزين: ${downloadErr?.message || "الملف غير موجود"}`);
+  }
+
+  const fileBuffer = Buffer.from(await fileBlob.arrayBuffer());
+  const val = validatePdfBuffer(fileBuffer);
+  if (!val.valid) {
+    await admin.storage.from("content-calendars").remove([params.storagePath]);
+    throw new Error(val.error);
+  }
+
+  const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+
+  const { data: existingCampaigns } = await admin
+    .from("campaigns")
+    .select("id, revision_number")
+    .eq("workspace_id", params.workspaceId)
+    .eq("client_id", params.clientId)
+    .eq("month_key", params.monthKey)
+    .order("revision_number", { ascending: false });
+
+  const nextRevision =
+    existingCampaigns && existingCampaigns.length > 0
+      ? existingCampaigns[0].revision_number + 1
+      : 1;
+
+  if (existingCampaigns && existingCampaigns.length > 0) {
+    await admin
+      .from("campaigns")
+      .update({ is_current_revision: false })
+      .eq("workspace_id", params.workspaceId)
+      .eq("client_id", params.clientId)
+      .eq("month_key", params.monthKey);
+  }
+
+  const campaignTitle = `Content Calendar — ${client.name} (${params.monthKey}) (Rev ${nextRevision})`;
+
+  const { data: campaign, error: campErr } = await admin
+    .from("campaigns")
+    .insert({
+      id: params.campaignId,
+      workspace_id: params.workspaceId,
+      client_id: params.clientId,
+      title: campaignTitle,
+      brief: null,
+      month_key: params.monthKey,
+      revision_number: nextRevision,
+      calendar_status: "uploaded",
+      original_file_name: params.fileName,
+      storage_path: params.storagePath,
+      file_hash: fileHash,
+      file_sha256: fileHash,
+      uploaded_by_roster_id: params.uploaderRosterId,
+      uploaded_at: new Date().toISOString(),
+      is_current_revision: true,
+      status: "Draft",
+    })
+    .select()
+    .single();
+
+  if (campErr) {
+    throw new Error(`فشل إنشاء سجل الكامبين: ${campErr.message}`);
+  }
+
+  const { data: signedData } = await admin.storage
+    .from("content-calendars")
+    .createSignedUrl(params.storagePath, 900);
+
+  return {
+    campaign,
+    storagePath: params.storagePath,
+    fileHash,
+    previewUrl: signedData?.signedUrl || null,
+  };
+}
+
 export async function processCalendarCampaign(params: {
   workspaceId: string;
   campaignId: string;
