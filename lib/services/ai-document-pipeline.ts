@@ -1171,7 +1171,21 @@ ${pageTextContext}
       if (!error && data?.extracted_payload) {
         const validated = ReconciledCalendarSchema.safeParse(data.extracted_payload);
         if (validated.success && validated.data.items && validated.data.items.length > 0) {
-          return validated.data;
+          const idMap = new Map<string, string>();
+          for (const it of validated.data.items) {
+            if (it.id) idMap.set(it.id, crypto.randomUUID());
+          }
+          const freshItems = validated.data.items.map((it) => ({
+            ...it,
+            id: (it.id && idMap.get(it.id)) || crypto.randomUUID(),
+            duplicate_of_item_id: it.duplicate_of_item_id
+              ? idMap.get(it.duplicate_of_item_id) || null
+              : null,
+          }));
+          return {
+            ...validated.data,
+            items: freshItems,
+          };
         }
       }
     } catch (e) {

@@ -207,11 +207,19 @@ export async function processCalendarCampaign(params: {
     const team = Array.isArray(rawTeam) ? rawTeam[0] : rawTeam;
     const defaultDesigner = team?.primary_designer_id || campaign.client?.owner_roster_id || null;
     const defaultVideoEditor = team?.primary_video_editor_id || defaultDesigner;
+    const itemIdMap = new Map<string, string>();
+    for (const it of reconciled.items) {
+      if (it.id) itemIdMap.set(it.id, crypto.randomUUID());
+    }
     const itemsToSave = reconciled.items.map((it) => {
       const isVideo = /reel|video|motion/i.test(String(it.content_format || ""));
       const fallbackAssignee = isVideo ? defaultVideoEditor : defaultDesigner;
       return {
         ...it,
+        id: (it.id && itemIdMap.get(it.id)) || crypto.randomUUID(),
+        duplicate_of_item_id: it.duplicate_of_item_id
+          ? itemIdMap.get(it.duplicate_of_item_id) || null
+          : null,
         suggested_assignee_id: it.suggested_assignee_id || fallbackAssignee,
         approved_assignee_id: it.approved_assignee_id || fallbackAssignee,
       };
