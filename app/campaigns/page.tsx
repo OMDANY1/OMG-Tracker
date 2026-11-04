@@ -529,9 +529,11 @@ export default function CampaignsPage() {
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
 
+      // @ts-ignore
       const pdfjsLib: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
       if (!(globalThis as any).pdfjsWorker) {
-        const pdfjsWorker: any = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+        // @ts-ignore
+        const pdfjsWorker: any = await import("pdfjs-dist/legacy/build/pdf.worker.mjs").catch(() => null);
         (globalThis as any).pdfjsWorker = pdfjsWorker;
       }
 
