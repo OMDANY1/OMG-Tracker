@@ -24,10 +24,13 @@ export interface PipelineOptions {
   monthKey: string;
   fileName: string;
   forceRefresh?: boolean;
+  preExtractedPages?: Array<{ pageNumber: number; text: string }>;
+  preComputedSha256?: string;
 }
 
 const PARSER_VERSION = "v2.0-adaptive";
 const SCHEMA_VERSION = "2026-09-08";
+const MAX_GEMINI_INLINE_PDF_BYTES = 14 * 1024 * 1024; // 14 MB (~18.6 MB Base64, safely under Gemini's 20 MB HTTP payload cap)
 
 export class AiDocumentPipeline {
   /**
@@ -37,7 +40,9 @@ export class AiDocumentPipeline {
     pdfBuffer: Buffer,
     options: PipelineOptions
   ): Promise<ReconciledCalendar> {
-    const fileSha256 = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
+    const fileSha256 =
+      options.preComputedSha256 ||
+      crypto.createHash("sha256").update(pdfBuffer).digest("hex");
     const admin = createAdminClient();
 
     // 1. Check AI Extraction Cache (Owner / Server-side)
@@ -52,7 +57,21 @@ export class AiDocumentPipeline {
     }
 
     // 2. Pre-inspection: Check page count & text availability
-    const preInspection = await this.preInspectPdf(pdfBuffer);
+    const preInspection =
+      options.preExtractedPages && options.preExtractedPages.length > 0
+        ? {
+            pageCount: options.preExtractedPages.length,
+            hasText:
+              options.preExtractedPages.reduce((acc, p) => acc + (p.text?.length || 0), 0) > 20,
+            sampleText: options.preExtractedPages
+              .slice(0, 5)
+              .map((p) => p.text)
+              .join(" ")
+              .trim()
+              .substring(0, 500),
+            pages: options.preExtractedPages,
+          }
+        : await this.preInspectPdf(pdfBuffer);
 
     // 3. Strict Check: If Gemini is not configured, throw GEMINI_NOT_CONFIGURED (never fake success)
     if (!isGeminiConfigured()) {
@@ -380,12 +399,15 @@ export class AiDocumentPipeline {
     pdfBuffer: Buffer,
     preInspection: { pageCount: number; pages?: Array<{ pageNumber: number; text: string }> }
   ): Promise<{ inventory: DocumentInventory; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; usedModel: string }> {
-    const base64Pdf = pdfBuffer.toString("base64");
+    const includeInlinePdf =
+      pdfBuffer.length > 512 && pdfBuffer.length <= MAX_GEMINI_INLINE_PDF_BYTES;
+    const base64Pdf = includeInlinePdf ? pdfBuffer.toString("base64") : "";
+    const maxDigestCharsPerPage = includeInlinePdf ? 600 : 2500;
     const pageTextDigest =
       preInspection.pages && preInspection.pages.length > 0
         ? "\nالنص المستخرج لكل صفحة للمساعدة في التصنيف الدقيق:\n" +
           preInspection.pages
-            .map((p) => `[Page ${p.pageNumber}]: ${p.text.substring(0, 600)}`)
+            .map((p) => `[Page ${p.pageNumber}]: ${p.text.substring(0, maxDigestCharsPerPage)}`)
             .join("\n")
         : "";
 
@@ -437,18 +459,22 @@ ${pageTextDigest}
 }
 `;
 
+    const contents = includeInlinePdf
+      ? [
+          {
+            inlineData: {
+              data: base64Pdf,
+              mimeType: "application/pdf",
+            },
+          },
+          { text: prompt },
+        ]
+      : [{ text: prompt }];
+
     const { response, usedModel } = await this.safeGenerateContent(
       gemini,
       model,
-      [
-        {
-          inlineData: {
-            data: base64Pdf,
-            mimeType: "application/pdf",
-          },
-        },
-        { text: prompt },
-      ],
+      contents,
       {
         responseMimeType: "application/json",
         temperature: 0.1,
@@ -509,7 +535,9 @@ ${pageTextDigest}
     monthKey: string,
     pages?: Array<{ pageNumber: number; text: string }>
   ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; usedModel: string }> {
-    const base64Pdf = pdfBuffer.toString("base64");
+    const includeInlinePdf =
+      pdfBuffer.length > 512 && pdfBuffer.length <= MAX_GEMINI_INLINE_PDF_BYTES;
+    const base64Pdf = includeInlinePdf ? pdfBuffer.toString("base64") : "";
     const operationalBlocks = inventory.detected_blocks;
 
     // Standard document (<= 16 blocks): single pass
@@ -557,6 +585,7 @@ ${pageTextDigest}
     totalBatches: number,
     pages?: Array<{ pageNumber: number; text: string }>
   ): Promise<{ items: DetailedPostItem[]; tokenUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; usedModel: string }> {
+    const includeInlinePdf = Boolean(base64Pdf && base64Pdf.length > 0);
     const targetIds = blocks.map((b) => `${b.canonicalPostId} (الصفحات: ${b.source_pages.join(",")})`).join("; ");
     const relevantPageNums = new Set<number>(blocks.flatMap((b) => b.source_pages || []));
     const pageTextContext =
@@ -620,18 +649,22 @@ ${pageTextContext}
 }
 `;
 
+    const contents = includeInlinePdf
+      ? [
+          {
+            inlineData: {
+              data: base64Pdf,
+              mimeType: "application/pdf",
+            },
+          },
+          { text: prompt },
+        ]
+      : [{ text: prompt }];
+
     const { response, usedModel } = await this.safeGenerateContent(
       gemini,
       model,
-      [
-        {
-          inlineData: {
-            data: base64Pdf,
-            mimeType: "application/pdf",
-          },
-        },
-        { text: prompt },
-      ],
+      contents,
       {
         responseMimeType: "application/json",
         temperature: 0.1,

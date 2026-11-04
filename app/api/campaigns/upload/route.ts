@@ -9,6 +9,7 @@ import {
   createCalendarSignedUploadUrl,
   finalizeCalendarSignedUpload,
 } from "@/lib/services/content-calendars";
+import { MAX_CALENDAR_PDF_BYTES } from "@/lib/services/pdf-extractor";
 import { AiJobQueue } from "@/lib/services/ai-job-queue";
 import { getGeminiModel } from "@/lib/ai/gemini-client";
 
@@ -25,10 +26,20 @@ export async function POST(req: NextRequest) {
 
     const contentType = (req.headers.get("content-type") || "").toLowerCase();
 
-    // Direct-to-Storage Signed Upload Flow (bypasses Vercel 4.5MB serverless body limit for PDFs up to 15MB)
+    // Direct-to-Storage Signed Upload Flow (bypasses Vercel 4.5MB serverless body limit for PDFs up to 250MB)
     if (contentType.includes("application/json")) {
       const body = await req.json().catch(() => ({}));
-      const { action, clientId, monthKey, fileName, fileSize, campaignId, storagePath } = body;
+      const {
+        action,
+        clientId,
+        monthKey,
+        fileName,
+        fileSize,
+        campaignId,
+        storagePath,
+        clientExtractedPages,
+        clientFileSha256,
+      } = body;
 
       if (!clientId || !monthKey) {
         const preAuth = await requireCampaignAccess(req);
@@ -53,9 +64,9 @@ export async function POST(req: NextRequest) {
       }
 
       if (action === "create_upload_url") {
-        if (fileSize && Number(fileSize) > 15 * 1024 * 1024) {
+        if (fileSize && Number(fileSize) > MAX_CALENDAR_PDF_BYTES) {
           return NextResponse.json(
-            { error: "حجم الملف يتجاوز الحد الأقصى المسموح به (15 ميجابايت)." },
+            { error: "حجم الملف يتجاوز الحد الأقصى المسموح به (250 ميجابايت)." },
             { status: 400 }
           );
         }
@@ -87,6 +98,8 @@ export async function POST(req: NextRequest) {
           fileName: fileName || "calendar.pdf",
           storagePath,
           uploaderRosterId: membership.rosterPersonId,
+          clientExtractedPages: Array.isArray(clientExtractedPages) ? clientExtractedPages : undefined,
+          clientFileSha256: typeof clientFileSha256 === "string" ? clientFileSha256 : undefined,
         });
 
         const job = await AiJobQueue.enqueueJob({

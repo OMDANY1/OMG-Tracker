@@ -96,6 +96,8 @@ const FORMAT_PATTERNS: { name: string; regex: RegExp }[] = [
   { name: "Static", regex: /(?:static|ثابت|بوست\s*ثابت|single\s*post|image)\b/i },
 ];
 
+export const MAX_CALENDAR_PDF_BYTES = 250 * 1024 * 1024; // 250 MB
+
 /**
  * Validates PDF buffer magic bytes and size
  */
@@ -105,9 +107,10 @@ export function validatePdfBuffer(buffer: Buffer, maxSizeBytes: number = 1572864
   }
 
   if (buffer.length > maxSizeBytes) {
+    const maxMb = Math.round(maxSizeBytes / (1024 * 1024));
     return {
       valid: false,
-      error: `حجم الملف (${(buffer.length / (1024 * 1024)).toFixed(1)} ميجابايت) يتجاوز الحد الأقصى المسموح به (15 ميجابايت).`,
+      error: `حجم الملف (${(buffer.length / (1024 * 1024)).toFixed(1)} ميجابايت) يتجاوز الحد الأقصى المسموح به (${maxMb} ميجابايت).`,
     };
   }
 

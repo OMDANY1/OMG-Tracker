@@ -483,14 +483,19 @@ export default function CampaignsPage() {
       return;
     }
 
-    if (uploadFile.size > 15 * 1024 * 1024) {
-      setUploadError("حجم الملف يتجاوز الحد الأقصى (15 ميجابايت).");
+    const MAX_ALLOWED_PDF_BYTES = 250 * 1024 * 1024; // 250 MB
+    const DIRECT_STORAGE_OBJECT_MAX_BYTES = 48 * 1024 * 1024; // 48 MB (safely below Supabase Storage 50MB single-object cap)
+    const LARGE_PDF_PRE_EXTRACT_THRESHOLD = 10 * 1024 * 1024; // 10 MB
+
+    if (uploadFile.size > MAX_ALLOWED_PDF_BYTES) {
+      setUploadError("حجم الملف يتجاوز الحد الأقصى المسموح به (250 ميجابايت).");
       return;
     }
 
     setUploading(true);
     setUploadError(null);
     setUploadStage("uploading");
+    setPollingStatusText("");
 
     const targetMonthKey = uploadMonth || selectedMonth;
 
@@ -506,7 +511,118 @@ export default function CampaignsPage() {
       }
     };
 
+    const extractLargePdfInBrowser = async (
+      file: File
+    ): Promise<{
+      clientFileSha256: string;
+      clientExtractedPages: Array<{ pageNumber: number; text: string }>;
+    }> => {
+      const arrayBuffer = await file.arrayBuffer();
+      const headerBytes = new Uint8Array(arrayBuffer.slice(0, 5));
+      const headerStr = String.fromCharCode(...Array.from(headerBytes));
+      if (!headerStr.startsWith("%PDF-")) {
+        throw new Error("نوع الملف غير صالح. يجب أن يكون الملف بصيغة PDF حقيقية.");
+      }
+
+      const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
+      const clientFileSha256 = Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      const pdfjsLib: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      if (!(globalThis as any).pdfjsWorker) {
+        const pdfjsWorker: any = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+        (globalThis as any).pdfjsWorker = pdfjsWorker;
+      }
+
+      const loadingTask = pdfjsLib.getDocument({
+        data: new Uint8Array(arrayBuffer),
+        useSystemFonts: true,
+        disableFontFace: true,
+        isEvalSupported: false,
+      });
+      const pdfDoc = await loadingTask.promise;
+      const pageCount = pdfDoc.numPages;
+      const clientExtractedPages: Array<{ pageNumber: number; text: string }> = [];
+
+      const isArabicPresentationChar = (code: number) =>
+        (code >= 0xfb50 && code <= 0xfdff) || (code >= 0xfe70 && code <= 0xfeff);
+
+      const normalizeSegment = (raw: string) => {
+        if (!raw) return "";
+        let presCount = 0;
+        for (let idx = 0; idx < raw.length; idx++) {
+          if (isArabicPresentationChar(raw.charCodeAt(idx))) presCount++;
+        }
+        let s = raw;
+        if (presCount >= 2) {
+          s = Array.from(raw).reverse().join("");
+        }
+        return s.normalize("NFKC").replace(/\0/g, "");
+      };
+
+      for (let i = 1; i <= pageCount; i++) {
+        const page = await pdfDoc.getPage(i);
+        const textContent = await page.getTextContent();
+        const rawItems = (textContent.items as any[]).filter(
+          (it) => typeof it.str === "string" && it.str.trim().length > 0
+        );
+
+        let pageText = "";
+        if (rawItems.length > 0) {
+          const lines: Array<{ y: number; items: Array<{ x: number; text: string }> }> = [];
+          for (const it of rawItems) {
+            const x = Array.isArray(it.transform) ? Number(it.transform[4]) || 0 : 0;
+            const y = Array.isArray(it.transform) ? Number(it.transform[5]) || 0 : 0;
+            const cleanStr = normalizeSegment(it.str);
+            if (!cleanStr.trim()) continue;
+            let line = lines.find((l) => Math.abs(l.y - y) <= 5);
+            if (!line) {
+              line = { y, items: [] };
+              lines.push(line);
+            }
+            line.items.push({ x, text: cleanStr });
+          }
+          lines.sort((a, b) => b.y - a.y);
+          pageText = lines
+            .map((line) => {
+              const lineStr = line.items.map((i) => i.text).join(" ");
+              const hasArabic = /[\u0600-\u06FF]/.test(lineStr);
+              line.items.sort((a, b) => (hasArabic ? b.x - a.x : a.x - b.x));
+              return line.items
+                .map((i) => i.text.trim())
+                .filter(Boolean)
+                .join(" ");
+            })
+            .filter(Boolean)
+            .join("\n")
+            .trim();
+        }
+        clientExtractedPages.push({ pageNumber: i, text: pageText });
+      }
+
+      return { clientFileSha256, clientExtractedPages };
+    };
+
     try {
+      let clientExtractedPages: Array<{ pageNumber: number; text: string }> | undefined;
+      let clientFileSha256: string | undefined;
+
+      if (uploadFile.size > LARGE_PDF_PRE_EXTRACT_THRESHOLD) {
+        try {
+          const extracted = await extractLargePdfInBrowser(uploadFile);
+          clientExtractedPages = extracted.clientExtractedPages;
+          clientFileSha256 = extracted.clientFileSha256;
+        } catch (extractErr: any) {
+          console.warn("[CampaignUpload] Browser pre-extraction warning:", extractErr?.message || extractErr);
+          if (uploadFile.size > DIRECT_STORAGE_OBJECT_MAX_BYTES) {
+            throw new Error(
+              extractErr?.message || "تعذر قراءة صفحات ملف الـ PDF الكبير. تأكد من أن الملف سليم وغير تالف."
+            );
+          }
+        }
+      }
+
       // Step 1A: Request Signed Upload URL (tiny JSON request, bypasses Vercel 4.5MB limit)
       const initRes = await fetch("/api/campaigns/upload", {
         method: "POST",
@@ -524,17 +640,46 @@ export default function CampaignsPage() {
         throw new Error(initData.error || "فشل تهيئة رابط رفع الملف.");
       }
 
-      // Step 1B: Direct PUT Upload from Browser to Supabase Storage (supports up to 15MB+)
-      const storagePutRes = await fetch(initData.signedUrl, {
-        method: "PUT",
-        headers: { "Content-Type": "application/pdf" },
-        body: uploadFile,
-      });
-      if (!storagePutRes.ok) {
-        throw new Error("فشل رفع ملف الـ PDF إلى التخزين السحابي. يرجى التحقق من اتصال الإنترنت والمحاولة مجدداً.");
+      // Step 1B: Direct PUT Upload from Browser to Supabase Storage
+      // For files <= 48MB, upload full original PDF (with automatic stub fallback if cloud storage caps object size);
+      // for files > 48MB up to 250MB, upload compact valid PDF stub while sending full extracted pages to AI pipeline.
+      const createStubPdfBlob = () =>
+        new Blob(["%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"], {
+          type: "application/pdf",
+        });
+
+      if (uploadFile.size <= DIRECT_STORAGE_OBJECT_MAX_BYTES) {
+        const storagePutRes = await fetch(initData.signedUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/pdf" },
+          body: uploadFile,
+        });
+        if (!storagePutRes.ok) {
+          if (clientExtractedPages && clientFileSha256) {
+            const fallbackPutRes = await fetch(initData.signedUrl, {
+              method: "PUT",
+              headers: { "Content-Type": "application/pdf" },
+              body: createStubPdfBlob(),
+            });
+            if (!fallbackPutRes.ok) {
+              throw new Error("فشل رفع ملف الـ PDF إلى التخزين السحابي. يرجى التحقق من اتصال الإنترنت والمحاولة مجدداً.");
+            }
+          } else {
+            throw new Error("فشل رفع ملف الـ PDF إلى التخزين السحابي. يرجى التحقق من اتصال الإنترنت والمحاولة مجدداً.");
+          }
+        }
+      } else {
+        const stubPutRes = await fetch(initData.signedUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/pdf" },
+          body: createStubPdfBlob(),
+        });
+        if (!stubPutRes.ok) {
+          throw new Error("فشل تسجيل ملف الـ PDF في التخزين السحابي. يرجى المحاولة مجدداً.");
+        }
       }
 
-      // Step 1C: Finalize Campaign Record & Enqueue Durable AI Job (tiny JSON request)
+      // Step 1C: Finalize Campaign Record & Enqueue Durable AI Job (JSON request)
       const uploadRes = await fetch("/api/campaigns/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -545,6 +690,9 @@ export default function CampaignsPage() {
           monthKey: targetMonthKey,
           fileName: uploadFile.name,
           storagePath: initData.storagePath,
+          ...(clientExtractedPages && clientFileSha256
+            ? { clientExtractedPages, clientFileSha256 }
+            : {}),
         }),
       });
 
@@ -1567,7 +1715,7 @@ export default function CampaignsPage() {
                     </div>
                   ) : (
                     <p className="text-[10px] text-slate-400 mt-2">
-                      الحد الأقصى 15 ميجابايت. يدعم أي عدد بوستات (1 إلى 100)، والكاروسيل، والريلز.
+                      الحد الأقصى 250 ميجابايت. يدعم الملفات الكبيرة وأي عدد بوستات (1 إلى 100)، والكاروسيل، والريلز.
                     </p>
                   )}
                 </div>

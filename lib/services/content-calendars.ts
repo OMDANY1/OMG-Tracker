@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { validatePdfBuffer } from "./pdf-extractor";
+import { validatePdfBuffer, MAX_CALENDAR_PDF_BYTES } from "./pdf-extractor";
 import { aiDocumentPipeline } from "./ai-document-pipeline";
 import { AiJobQueue } from "./ai-job-queue";
 import { getGeminiModel } from "@/lib/ai/gemini-client";
@@ -18,7 +18,7 @@ export async function uploadCalendarFileOnly(params: {
   if (!admin) throw new Error("تعذر الاتصال بقاعدة البيانات.");
 
   // 1. Validation
-  const val = validatePdfBuffer(params.fileBuffer);
+  const val = validatePdfBuffer(params.fileBuffer, MAX_CALENDAR_PDF_BYTES);
   if (!val.valid) throw new Error(val.error);
 
   if (!/^\d{4}-\d{2}$/.test(params.monthKey)) {
@@ -175,6 +175,8 @@ export async function finalizeCalendarSignedUpload(params: {
   fileName: string;
   storagePath: string;
   uploaderRosterId: string;
+  clientExtractedPages?: Array<{ pageNumber: number; text: string }>;
+  clientFileSha256?: string;
 }) {
   const admin = createAdminClient();
   if (!admin) throw new Error("تعذر الاتصال بقاعدة البيانات.");
@@ -199,22 +201,34 @@ export async function finalizeCalendarSignedUpload(params: {
     throw new Error("العميل غير موجود في مساحة العمل.");
   }
 
-  const { data: fileBlob, error: downloadErr } = await admin.storage
-    .from("content-calendars")
-    .download(params.storagePath);
+  const hasPreExtracted =
+    Array.isArray(params.clientExtractedPages) &&
+    params.clientExtractedPages.length > 0 &&
+    typeof params.clientFileSha256 === "string" &&
+    /^[a-f0-9]{64}$/i.test(params.clientFileSha256.trim());
 
-  if (downloadErr || !fileBlob) {
-    throw new Error(`تعذر التحقق من الملف المرفوع في التخزين: ${downloadErr?.message || "الملف غير موجود"}`);
+  let fileHash = "";
+
+  if (hasPreExtracted) {
+    fileHash = params.clientFileSha256!.trim().toLowerCase();
+  } else {
+    const { data: fileBlob, error: downloadErr } = await admin.storage
+      .from("content-calendars")
+      .download(params.storagePath);
+
+    if (downloadErr || !fileBlob) {
+      throw new Error(`تعذر التحقق من الملف المرفوع في التخزين: ${downloadErr?.message || "الملف غير موجود"}`);
+    }
+
+    const fileBuffer = Buffer.from(await fileBlob.arrayBuffer());
+    const val = validatePdfBuffer(fileBuffer, MAX_CALENDAR_PDF_BYTES);
+    if (!val.valid) {
+      await admin.storage.from("content-calendars").remove([params.storagePath]);
+      throw new Error(val.error);
+    }
+
+    fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
   }
-
-  const fileBuffer = Buffer.from(await fileBlob.arrayBuffer());
-  const val = validatePdfBuffer(fileBuffer);
-  if (!val.valid) {
-    await admin.storage.from("content-calendars").remove([params.storagePath]);
-    throw new Error(val.error);
-  }
-
-  const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
 
   const { data: existingCampaigns } = await admin
     .from("campaigns")
@@ -259,6 +273,14 @@ export async function finalizeCalendarSignedUpload(params: {
       uploaded_at: new Date().toISOString(),
       is_current_revision: true,
       status: "Draft",
+      ...(hasPreExtracted
+        ? {
+            inventory_summary: {
+              preExtractedPages: params.clientExtractedPages,
+              pageCount: params.clientExtractedPages!.length,
+            },
+          }
+        : {}),
     })
     .select()
     .single();
@@ -300,21 +322,33 @@ export async function processCalendarCampaign(params: {
     throw new Error("سجل التقويم غير موجود في مساحة العمل.");
   }
 
-  // 2. Download PDF buffer from storage
+  // 2. Check for pre-extracted pages (for large PDFs > 10MB–250MB) or download PDF buffer from storage
   if (!campaign.storage_path) {
     throw new Error("مسار تخزين الملف مفقود من سجل الكامبين.");
   }
 
-  const { data: fileBlob, error: downloadErr } = await admin.storage
-    .from("content-calendars")
-    .download(campaign.storage_path);
+  const preExtractedPages = Array.isArray((campaign.inventory_summary as any)?.preExtractedPages)
+    ? ((campaign.inventory_summary as any).preExtractedPages as Array<{ pageNumber: number; text: string }>)
+    : undefined;
 
-  if (downloadErr || !fileBlob) {
-    throw new Error(`تعذر تحميل الملف من التخزين: ${downloadErr?.message}`);
+  let buffer: Buffer;
+  let fileSha256: string;
+
+  if (preExtractedPages && preExtractedPages.length > 0 && campaign.file_sha256) {
+    buffer = Buffer.from("%PDF-1.4\n%%EOF\n", "utf-8");
+    fileSha256 = campaign.file_sha256;
+  } else {
+    const { data: fileBlob, error: downloadErr } = await admin.storage
+      .from("content-calendars")
+      .download(campaign.storage_path);
+
+    if (downloadErr || !fileBlob) {
+      throw new Error(`تعذر تحميل الملف من التخزين: ${downloadErr?.message}`);
+    }
+
+    buffer = Buffer.from(await fileBlob.arrayBuffer());
+    fileSha256 = crypto.createHash("sha256").update(buffer).digest("hex");
   }
-
-  const buffer = Buffer.from(await fileBlob.arrayBuffer());
-  const fileSha256 = crypto.createHash("sha256").update(buffer).digest("hex");
 
   // 3. Acquire durable AI processing job lease (if not already provided by worker)
   let jobId = params.jobId;
@@ -356,6 +390,8 @@ export async function processCalendarCampaign(params: {
       monthKey: campaign.month_key,
       fileName: campaign.original_file_name || "calendar.pdf",
       forceRefresh: params.forceRefresh,
+      preExtractedPages,
+      preComputedSha256: fileSha256,
     });
 
     // 6. Default assignee from client_team_assignments (video editor for video/reel, designer for design)
