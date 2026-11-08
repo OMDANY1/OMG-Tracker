@@ -511,23 +511,162 @@ export default function CampaignsPage() {
       }
     };
 
+    const ensureBrowserPdfjsPolyfills = () => {
+      const attachAsyncIterator = (proto: any) => {
+        if (!proto || typeof proto[Symbol.asyncIterator] === "function") return;
+        const asyncIterator = async function* (this: any) {
+          const reader = this.getReader();
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) return;
+              yield value;
+            }
+          } finally {
+            try {
+              reader.releaseLock();
+            } catch {}
+          }
+        };
+        try {
+          Object.defineProperty(proto, Symbol.asyncIterator, {
+            value: asyncIterator,
+            writable: true,
+            configurable: true,
+          });
+          if (typeof proto.values !== "function") {
+            Object.defineProperty(proto, "values", {
+              value: asyncIterator,
+              writable: true,
+              configurable: true,
+            });
+          }
+        } catch {
+          proto[Symbol.asyncIterator] = asyncIterator;
+        }
+      };
+
+      if (typeof ReadableStream !== "undefined" && ReadableStream.prototype) {
+        attachAsyncIterator(ReadableStream.prototype);
+      }
+      if (typeof DecompressionStream !== "undefined") {
+        try {
+          const ds = new DecompressionStream("deflate");
+          if (ds.readable) {
+            attachAsyncIterator(Object.getPrototypeOf(ds.readable));
+          }
+        } catch {}
+      }
+      if (typeof (Promise as any).withResolvers !== "function") {
+        (Promise as any).withResolvers = function <T>() {
+          let resolve!: (value: T | PromiseLike<T>) => void;
+          let reject!: (reason?: any) => void;
+          const promise = new Promise<T>((res, rej) => {
+            resolve = res;
+            reject = rej;
+          });
+          return { promise, resolve, reject };
+        };
+      }
+      if (typeof URL !== "undefined" && typeof (URL as any).parse !== "function") {
+        (URL as any).parse = function (url: string, base?: string) {
+          try {
+            return base !== undefined ? new URL(url, base) : new URL(url);
+          } catch {
+            return null;
+          }
+        };
+      }
+    };
+
+    const readPageTextItemsSafely = async (page: any): Promise<any[]> => {
+      if (typeof page.streamTextContent === "function") {
+        const stream = page.streamTextContent();
+        if (stream && typeof stream.getReader === "function") {
+          const reader = stream.getReader();
+          const items: any[] = [];
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value && Array.isArray(value.items)) {
+                for (let k = 0; k < value.items.length; k++) {
+                  items.push(value.items[k]);
+                }
+              }
+            }
+          } finally {
+            try {
+              reader.releaseLock();
+            } catch {}
+          }
+          return items;
+        }
+      }
+      const textContent = await page.getTextContent();
+      return Array.isArray(textContent?.items) ? textContent.items : [];
+    };
+
+    const computeSafeFileSha256 = async (file: File, fullBuffer?: ArrayBuffer): Promise<string> => {
+      try {
+        if (fullBuffer && file.size <= 64 * 1024 * 1024) {
+          const hashBuffer = await crypto.subtle.digest("SHA-256", fullBuffer);
+          return Array.from(new Uint8Array(hashBuffer))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+        }
+        // For massive files (> 64MB, e.g. 162MB) on mobile devices, sample 3x2MB slices + file metadata to avoid doubling memory in WebCrypto
+        const chunkSize = 2 * 1024 * 1024;
+        const firstSlice = await file.slice(0, Math.min(chunkSize, file.size)).arrayBuffer();
+        const midOffset = Math.max(0, Math.floor(file.size / 2) - Math.floor(chunkSize / 2));
+        const midSlice = await file
+          .slice(midOffset, Math.min(midOffset + chunkSize, file.size))
+          .arrayBuffer();
+        const endOffset = Math.max(0, file.size - chunkSize);
+        const endSlice = await file.slice(endOffset, file.size).arrayBuffer();
+        const metaBytes = new TextEncoder().encode(`${file.name}:${file.size}:`);
+        const combined = new Uint8Array(
+          metaBytes.byteLength + firstSlice.byteLength + midSlice.byteLength + endSlice.byteLength
+        );
+        let offset = 0;
+        combined.set(metaBytes, offset);
+        offset += metaBytes.byteLength;
+        combined.set(new Uint8Array(firstSlice), offset);
+        offset += firstSlice.byteLength;
+        combined.set(new Uint8Array(midSlice), offset);
+        offset += midSlice.byteLength;
+        combined.set(new Uint8Array(endSlice), offset);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", combined);
+        return Array.from(new Uint8Array(hashBuffer))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+      } catch {
+        const fallbackBytes = new TextEncoder().encode(`${file.name}:${file.size}:${file.lastModified}`);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", fallbackBytes);
+        return Array.from(new Uint8Array(hashBuffer))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+      }
+    };
+
     const extractLargePdfInBrowser = async (
       file: File
     ): Promise<{
       clientFileSha256: string;
       clientExtractedPages: Array<{ pageNumber: number; text: string }>;
     }> => {
-      const arrayBuffer = await file.arrayBuffer();
-      const headerBytes = new Uint8Array(arrayBuffer.slice(0, 5));
+      ensureBrowserPdfjsPolyfills();
+
+      const headerSlice = await file.slice(0, 5).arrayBuffer();
+      const headerBytes = new Uint8Array(headerSlice);
       const headerStr = String.fromCharCode(...Array.from(headerBytes));
       if (!headerStr.startsWith("%PDF-")) {
         throw new Error("نوع الملف غير صالح. يجب أن يكون الملف بصيغة PDF حقيقية.");
       }
 
-      const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
-      const clientFileSha256 = Array.from(new Uint8Array(hashBuffer))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
+      setPollingStatusText("المرحلة 1: جاري تجهيز وفحص صفحات الملف الكبير...");
+      const clientFileSha256 = await computeSafeFileSha256(file);
+      const arrayBuffer = await file.arrayBuffer();
 
       // @ts-ignore
       const pdfjsLib: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -563,44 +702,60 @@ export default function CampaignsPage() {
         return s.normalize("NFKC").replace(/\0/g, "");
       };
 
-      for (let i = 1; i <= pageCount; i++) {
-        const page = await pdfDoc.getPage(i);
-        const textContent = await page.getTextContent();
-        const rawItems = (textContent.items as any[]).filter(
-          (it) => typeof it.str === "string" && it.str.trim().length > 0
-        );
-
-        let pageText = "";
-        if (rawItems.length > 0) {
-          const lines: Array<{ y: number; items: Array<{ x: number; text: string }> }> = [];
-          for (const it of rawItems) {
-            const x = Array.isArray(it.transform) ? Number(it.transform[4]) || 0 : 0;
-            const y = Array.isArray(it.transform) ? Number(it.transform[5]) || 0 : 0;
-            const cleanStr = normalizeSegment(it.str);
-            if (!cleanStr.trim()) continue;
-            let line = lines.find((l) => Math.abs(l.y - y) <= 5);
-            if (!line) {
-              line = { y, items: [] };
-              lines.push(line);
-            }
-            line.items.push({ x, text: cleanStr });
+      try {
+        for (let i = 1; i <= pageCount; i++) {
+          if (i === 1 || i % 3 === 0 || i === pageCount) {
+            setPollingStatusText(`المرحلة 1: جاري قراءة صفحات الملف الكبير (${i} من ${pageCount})...`);
           }
-          lines.sort((a, b) => b.y - a.y);
-          pageText = lines
-            .map((line) => {
-              const lineStr = line.items.map((i) => i.text).join(" ");
-              const hasArabic = /[\u0600-\u06FF]/.test(lineStr);
-              line.items.sort((a, b) => (hasArabic ? b.x - a.x : a.x - b.x));
-              return line.items
-                .map((i) => i.text.trim())
+          const page = await pdfDoc.getPage(i);
+          try {
+            const allPageItems = await readPageTextItemsSafely(page);
+            const rawItems = allPageItems.filter(
+              (it) => it && typeof it.str === "string" && it.str.trim().length > 0
+            );
+
+            let pageText = "";
+            if (rawItems.length > 0) {
+              const lines: Array<{ y: number; items: Array<{ x: number; text: string }> }> = [];
+              for (let rIdx = 0; rIdx < rawItems.length; rIdx++) {
+                const it = rawItems[rIdx];
+                const x = Array.isArray(it.transform) ? Number(it.transform[4]) || 0 : 0;
+                const y = Array.isArray(it.transform) ? Number(it.transform[5]) || 0 : 0;
+                const cleanStr = normalizeSegment(it.str);
+                if (!cleanStr.trim()) continue;
+                let line = lines.find((l) => Math.abs(l.y - y) <= 5);
+                if (!line) {
+                  line = { y, items: [] };
+                  lines.push(line);
+                }
+                line.items.push({ x, text: cleanStr });
+              }
+              lines.sort((a, b) => b.y - a.y);
+              pageText = lines
+                .map((line) => {
+                  const lineStr = line.items.map((item) => item.text).join(" ");
+                  const hasArabic = /[\u0600-\u06FF]/.test(lineStr);
+                  line.items.sort((a, b) => (hasArabic ? b.x - a.x : a.x - b.x));
+                  return line.items
+                    .map((item) => item.text.trim())
+                    .filter(Boolean)
+                    .join(" ");
+                })
                 .filter(Boolean)
-                .join(" ");
-            })
-            .filter(Boolean)
-            .join("\n")
-            .trim();
+                .join("\n")
+                .trim();
+            }
+            clientExtractedPages.push({ pageNumber: i, text: pageText });
+          } finally {
+            try {
+              page.cleanup();
+            } catch {}
+          }
         }
-        clientExtractedPages.push({ pageNumber: i, text: pageText });
+      } finally {
+        try {
+          await pdfDoc.destroy();
+        } catch {}
       }
 
       return { clientFileSha256, clientExtractedPages };
@@ -1730,7 +1885,7 @@ export default function CampaignsPage() {
                     <div className="w-3.5 h-3.5 border-2 border-sky-600 border-t-transparent rounded-full animate-spin" />
                     <span>
                       {uploadStage === "uploading"
-                        ? "المرحلة 1: جاري حفظ الملف في التخزين السحابي الآمن..."
+                        ? (pollingStatusText || "المرحلة 1: جاري حفظ الملف في التخزين السحابي الآمن...")
                         : (pollingStatusText || "المرحلة 2: جاري تحليل وفحص التقويم بالذكاء الاصطناعي (Gemini Flash)...")}
                     </span>
                   </div>
