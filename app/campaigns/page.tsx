@@ -1929,10 +1929,10 @@ export default function CampaignsPage() {
 
       {/* Review Matrix Modal */}
       {showReviewModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-6xl w-full p-4 sm:p-6 text-right space-y-4 max-h-[95vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-surface rounded-2xl border border-slate-200 shadow-2xl max-w-6xl w-full p-3 sm:p-6 text-right space-y-3 sm:space-y-4 max-h-[92dvh] sm:max-h-[95vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header */}
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+            <div className="shrink-0 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 pb-3 border-b border-slate-100">
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <h3 className="font-bold text-base sm:text-lg text-slate-900">
@@ -2028,6 +2028,7 @@ export default function CampaignsPage() {
               </div>
             ) : (
               <>
+                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain space-y-3.5 pr-0.5">
                 {/* Notice / Warning Bar - strictly only show when currently failed */}
                 {((reviewCampaign?.calendar_status === "failed" || reviewCampaign?.calendar_status === "extraction_failed") && reviewCampaign?.processing_error || reanalyzeError) && (
                   <div className="p-3 bg-rose-50 border border-rose-200 text-rose-900 rounded-xl text-xs flex items-start justify-between gap-2">
@@ -2108,7 +2109,7 @@ export default function CampaignsPage() {
                 })()}
 
                 {/* Items Matrix Table */}
-                <div className="flex-1 overflow-auto border border-slate-200 rounded-xl">
+                <div className="max-h-[45vh] min-h-[180px] overflow-auto border border-slate-200 rounded-xl">
                   <table className="w-full text-right text-xs divide-y divide-slate-200">
                     <thead className="bg-slate-100/80 sticky top-0 z-10 text-slate-700 font-bold text-[11px]">
                       <tr>
@@ -2493,8 +2494,11 @@ export default function CampaignsPage() {
 
                 {/* Pre-generation confirmation dialog */}
                 {showConfirmation && (
-                  <div className="p-5 bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200 rounded-2xl text-amber-950 space-y-4 text-xs shadow-md">
-                    <div className="flex items-center justify-between">
+                  <div
+                    id="campaign-confirm-section"
+                    className="p-4 sm:p-5 bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200 rounded-2xl text-amber-950 space-y-3.5 text-xs shadow-md"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="font-bold text-sm flex items-center gap-2 text-amber-900">
                         <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
                         <span>معاينة وتأكيد اعتماد الخطة وتوليد التاسكات</span>
@@ -2510,8 +2514,8 @@ export default function CampaignsPage() {
                     </p>
 
                     {/* Pre-Import Tasks Breakdown Table */}
-                    <div className="bg-white border border-amber-200/80 rounded-xl overflow-hidden shadow-xs">
-                      <table className="w-full text-right border-collapse">
+                    <div className="bg-white border border-amber-200/80 rounded-xl overflow-auto max-h-[38vh] shadow-xs">
+                      <table className="w-full text-right border-collapse min-w-[540px]">
                         <thead>
                           <tr className="bg-amber-100/60 border-b border-amber-200/80 text-[11px] font-bold text-amber-950">
                             <th className="p-2 w-20">البوست</th>
@@ -2660,26 +2664,57 @@ export default function CampaignsPage() {
                     <span>{importError}</span>
                   </div>
                 )}
+                </div>
 
-                <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+                <div className="shrink-0 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 bg-surface">
                   <div className="text-[11px] text-slate-400">
                     * تبدأ جميع التاسكات المنشأة بحالة «{TASK_STATUS_LABELS.backlog}» وفق المعايير الرسمية للايجنسي.
                   </div>
 
                   {isOwner && (
-                    <button
-                      onClick={() => {
-                        setShowConfirmation(true);
-                        setImportError(null);
-                      }}
-                      disabled={importingTasks || reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id).length === 0}
-                      className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-2"
-                    >
-                      <CheckCheck className="w-4 h-4" />
-                      <span>
-                        اعتماد وإنشاء التاسكات ({reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id).length})
-                      </span>
-                    </button>
+                    showConfirmation ? (
+                      <div className="flex items-center gap-2 mr-auto">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowConfirmation(false);
+                            setImportError(null);
+                          }}
+                          className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100 shadow-xs"
+                        >
+                          إلغاء المعاينة
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleConfirmImport}
+                          disabled={importingTasks}
+                          className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5"
+                        >
+                          <CheckCheck className="w-4 h-4" />
+                          <span>{importingTasks ? "جاري الإنشاء..." : "تأكيد وإنشاء التاسكات"}</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowConfirmation(true);
+                          setImportError(null);
+                          setTimeout(() => {
+                            document
+                              .getElementById("campaign-confirm-section")
+                              ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                          }, 80);
+                        }}
+                        disabled={importingTasks || reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id).length === 0}
+                        className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-2"
+                      >
+                        <CheckCheck className="w-4 h-4" />
+                        <span>
+                          اعتماد وإنشاء التاسكات ({reviewItems.filter((i) => i.is_included && !i.is_excluded_from_tasks && !i.task_id).length})
+                        </span>
+                      </button>
+                    )
                   )}
                 </div>
               </>
@@ -2788,10 +2823,10 @@ export default function CampaignsPage() {
 
       {/* Modal: Add Manual Post */}
       {showAddPostModal && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs overflow-y-auto">
           <form
             onSubmit={handleAddManualPost}
-            className="bg-surface rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full p-6 text-right space-y-4 animate-in fade-in zoom-in-95 duration-150 text-xs"
+            className="bg-surface rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full p-6 text-right space-y-4 max-h-[90dvh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150 text-xs"
           >
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
